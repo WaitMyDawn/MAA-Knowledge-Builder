@@ -88,7 +88,7 @@ MAA Knowledge Builder 是一款 **Java 21 桌面应用**，面向 Minecraft 模�
 
 ```bash
 # 克隆项目
-git clone https://github.com/your-org/MAA-Knowledge-Builder.git
+git clone https://github.com/WaitMyDawn/MAA-Knowledge-Builder.git
 cd MAA-Knowledge-Builder
 
 # 编译并运行
