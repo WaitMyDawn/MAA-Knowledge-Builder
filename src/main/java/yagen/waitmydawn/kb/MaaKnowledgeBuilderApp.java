@@ -23,6 +23,7 @@ import yagen.waitmydawn.kb.agent.EntityAgent;
 import yagen.waitmydawn.kb.agent.UrlAgent;
 import yagen.waitmydawn.kb.config.AppConfig;
 import yagen.waitmydawn.kb.dto.ClassificationResult;
+import yagen.waitmydawn.kb.dto.QaMetrics;
 import yagen.waitmydawn.kb.dto.RetrievalResult;
 import yagen.waitmydawn.kb.model.*;
 import yagen.waitmydawn.kb.renderer.TemplateManager;
@@ -31,6 +32,7 @@ import yagen.waitmydawn.kb.service.*;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -50,7 +52,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     // UI state
     private StackPane contentArea;
-    private VBox builderPage, qaPage, seedPage, settingsPage;
+    private VBox builderPage, qaPage, seedPage, settingsPage, metricsPage;
     private TextField folderField, apiKeyField, dataDirField;
     private TextArea builderLog, qaLog;
     private ListView<String> modListView;
@@ -68,6 +70,8 @@ public class MaaKnowledgeBuilderApp extends Application {
     private EntityAgent entityAgent;
     private AnswerAgent answerAgent;
     private VBox dbCheckboxList;
+    private MetricsHistoryService metricsHistoryService;
+    private TextArea metricsDisplay;
 
     @Override
     public void init() {
@@ -112,6 +116,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             // Pipeline with agents
             qaPipeline = new QaPipeline(classifyAgent, entityAgent, urlAgent,
                     answerAgent, ragAgent, vectorStore, embedder, db, dbManager);
+            metricsHistoryService = qaPipeline.getMetricsHistory();
             entityResolver.rebuildFromDB(db);
             log.info("Existing DB: {} vectors, {} mods, {} recipes",
                     vectorStore.count(), db.findAllModEntries().size(),
@@ -194,6 +199,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         builderPage = buildBuilderPage(stage);
         qaPage = buildQAPage();
         seedPage = buildSeedPage(stage);
+        metricsPage = buildMetricsPage();
         settingsPage = buildSettingsPage(stage);
 
         contentArea = new StackPane(builderPage); // default page
@@ -245,7 +251,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         navButtons.add(navItem("Builder", () -> switchPage(builderPage, 0)));
         navButtons.add(navItem("Q&A", () -> switchPage(qaPage, 1)));
         navButtons.add(navItem("Seed Mgr", () -> switchPage(seedPage, 2)));
-        navButtons.add(navItem("Settings", () -> switchPage(settingsPage, 3)));
+        navButtons.add(navItem("Metrics", () -> switchPage(metricsPage, 3)));
+        navButtons.add(navItem("Settings", () -> switchPage(settingsPage, 4)));
 
         nav.getChildren().addAll(navButtons);
         setActiveNav(0); // Default: Builder active
@@ -456,6 +463,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             UrlAgent newUrlAgent = new UrlAgent(ragAgent, db);
             qaPipeline = new QaPipeline(classifyAgent, entityAgent, newUrlAgent,
                     answerAgent, ragAgent, vectorStore, embedder, db, dbManager);
+            metricsHistoryService = qaPipeline.getMetricsHistory();
             Platform.runLater(() -> {
                 logText("=== Complete ===");
                 logText("Mods: " + r.parsed + "  Textures: " + r.textures
@@ -866,6 +874,219 @@ public class MaaKnowledgeBuilderApp extends Application {
         return page;
     }
 
+    // =================== Metrics Dashboard Page ===================
+
+    // Quick-card value labels (updated on refresh)
+    private Label cardRequests, cardHitRate, cardTtft, cardLatency;
+    private ComboBox<String> metricsFilterMode;
+    private TextField metricsFilterValue;
+    private static final int DEFAULT_METRICS_DAYS = 7;
+    private static final int DEFAULT_METRICS_COUNT = 100;
+
+    private VBox buildMetricsPage() {
+        VBox page = new VBox(12);
+        page.setPadding(new Insets(20));
+        page.setStyle("-fx-background-color: #f8f9fa;");
+
+        Label title = pageTitle("Metrics Dashboard");
+
+        // --- Filter row ---
+        Label filterLabel = new Label("Filter:");
+        filterLabel.setFont(Font.font(13));
+
+        metricsFilterMode = new ComboBox<>();
+        metricsFilterMode.getItems().addAll("Recent Days", "Recent Count");
+        metricsFilterMode.setValue("Recent Days");
+        metricsFilterMode.setPrefWidth(130);
+        metricsFilterMode.setOnAction(e -> {
+            // Update default value when mode switches
+            if ("Recent Days".equals(metricsFilterMode.getValue())) {
+                metricsFilterValue.setText(String.valueOf(DEFAULT_METRICS_DAYS));
+            } else {
+                metricsFilterValue.setText(String.valueOf(DEFAULT_METRICS_COUNT));
+            }
+        });
+
+        metricsFilterValue = new TextField(String.valueOf(DEFAULT_METRICS_DAYS));
+        metricsFilterValue.setPrefWidth(60);
+        metricsFilterValue.setStyle("-fx-font-size: 13px;");
+        // Only allow digits
+        metricsFilterValue.textProperty().addListener((o, old, val) -> {
+            if (!val.matches("\\d*")) metricsFilterValue.setText(val.replaceAll("[^\\d]", ""));
+        });
+
+        Button refreshBtn = styledButton("Refresh", "#6C63FF");
+        refreshBtn.setOnAction(e -> refreshMetricsDisplay());
+
+        Button exportCsvBtn = new Button("Export CSV");
+        exportCsvBtn.setStyle("-fx-text-fill: #6C63FF; -fx-background-color: transparent;");
+        exportCsvBtn.setOnAction(e -> exportMetricsCsv());
+
+        HBox filterRow = new HBox(8, filterLabel, metricsFilterMode, metricsFilterValue, refreshBtn, exportCsvBtn);
+        filterRow.setAlignment(Pos.CENTER_LEFT);
+
+        // --- Quick-cards ---
+        cardRequests = new Label("0");
+        cardHitRate = new Label("0%");
+        cardTtft = new Label("0ms");
+        cardLatency = new Label("0ms");
+
+        HBox quickCards = new HBox(12);
+        quickCards.setPadding(new Insets(8, 0, 8, 0));
+        quickCards.getChildren().addAll(
+                metricCard("Requests", cardRequests, "#6C63FF"),
+                metricCard("Hit Rate", cardHitRate, "#10b981"),
+                metricCard("Avg TTFT", cardTtft, "#f59e0b"),
+                metricCard("Avg Latency", cardLatency, "#ef4444")
+        );
+
+        VBox quickSection = card("Overview (Filtered)", quickCards);
+
+        // --- Detailed report ---
+        metricsDisplay = new TextArea();
+        metricsDisplay.setEditable(false);
+        metricsDisplay.setPrefRowCount(22);
+        metricsDisplay.setStyle("-fx-font-family: 'Consolas', 'Microsoft YaHei', monospace; -fx-font-size: 12px;");
+
+        VBox.setVgrow(metricsDisplay, Priority.ALWAYS);
+
+        page.getChildren().addAll(title, filterRow, quickSection,
+                card("Detailed Metrics", metricsDisplay));
+
+        // Initial load
+        refreshMetricsDisplay();
+
+        return page;
+    }
+
+    private VBox metricCard(String label, Label valueLabel, String color) {
+        VBox card = new VBox(4);
+        card.setPadding(new Insets(10));
+        card.setStyle("-fx-background-color: #ffffff; -fx-border-color: #e5e7eb; -fx-border-radius: 8; "
+                + "-fx-background-radius: 8; -fx-min-width: 140;");
+        valueLabel.setFont(Font.font("Segoe UI", FontWeight.BOLD, 22));
+        valueLabel.setTextFill(Color.web(color));
+        Label descLabel = new Label(label);
+        descLabel.setFont(Font.font(11));
+        descLabel.setTextFill(Color.web("#6b7280"));
+        card.getChildren().addAll(valueLabel, descLabel);
+        return card;
+    }
+
+    private void refreshMetricsDisplay() {
+        List<QaMetrics> filtered;
+
+        if (metricsHistoryService == null) {
+            metricsDisplay.setText("Metrics service not initialized.");
+            return;
+        }
+
+        String mode = metricsFilterMode.getValue();
+        int val;
+        try {
+            val = Integer.parseInt(metricsFilterValue.getText().trim());
+            if (val <= 0) val = ("Recent Days".equals(mode)) ? DEFAULT_METRICS_DAYS : DEFAULT_METRICS_COUNT;
+        } catch (NumberFormatException e) {
+            val = ("Recent Days".equals(mode)) ? DEFAULT_METRICS_DAYS : DEFAULT_METRICS_COUNT;
+            metricsFilterValue.setText(String.valueOf(val));
+        }
+
+        if ("Recent Days".equals(mode)) {
+            filtered = metricsHistoryService.loadRecentDays(val);
+        } else {
+            filtered = metricsHistoryService.loadRecent(val);
+        }
+
+        // Update quick-cards
+        if (filtered.isEmpty()) {
+            cardRequests.setText("0");
+            cardHitRate.setText("-");
+            cardTtft.setText("-");
+            cardLatency.setText("-");
+        } else {
+            var s = MetricsHistoryService.summarize(filtered);
+            cardRequests.setText(String.valueOf(s.totalRequests));
+            cardHitRate.setText(String.format("%.0f%%", s.hitRate * 100));
+            cardTtft.setText(s.avgTtftMs + "ms");
+            cardLatency.setText(s.avgTotalMs + "ms");
+        }
+
+        // Build detailed report
+        StringBuilder sb = new StringBuilder();
+        sb.append("Filter: ").append(mode).append(" = ").append(val).append("\n");
+
+        if (filtered.isEmpty()) {
+            sb.append("\n(No metrics found for this filter — try increasing the range)\n\n");
+            sb.append("Available data files:\n");
+            for (String date : metricsHistoryService.listDates()) {
+                java.nio.file.Path f = config.getDataDir().resolve("metrics")
+                        .resolve("qa_metrics_" + date + ".jsonl");
+                try {
+                    long lines = java.nio.file.Files.lines(f).count();
+                    sb.append("  ").append(date).append(": ").append(lines).append(" entries\n");
+                } catch (Exception ignored) {}
+            }
+        } else {
+            var summary = MetricsHistoryService.summarize(filtered);
+            sb.append(summary.toTextReport());
+
+            // Per-tier breakdown
+            sb.append("\n--- Per-Tier Latency ---\n");
+            var tierStats = new LinkedHashMap<String, java.util.LongSummaryStatistics>();
+            for (QaMetrics m : filtered) {
+                String tier = m.dataTier != null ? m.dataTier : "TIER D";
+                tierStats.computeIfAbsent(tier, k -> new java.util.LongSummaryStatistics())
+                        .accept(m.totalTimeMs);
+            }
+            for (var e : tierStats.entrySet()) {
+                var stats = e.getValue();
+                sb.append(String.format("  %s: avg=%dms min=%dms max=%dms count=%d\n",
+                        e.getKey(), (long) stats.getAverage(), stats.getMin(), stats.getMax(), stats.getCount()));
+            }
+
+            // Latency distribution histogram (text-based)
+            sb.append("\n--- Latency Distribution ---\n");
+            int[] buckets = new int[10]; // 0-1s, 1-2s, ..., 9-10s, 10s+
+            for (QaMetrics m : filtered) {
+                int bucketIdx = Math.min((int) (m.totalTimeMs / 1000), 9);
+                buckets[bucketIdx]++;
+            }
+            int maxBucket = java.util.Arrays.stream(buckets).max().orElse(1);
+            for (int i = 0; i < buckets.length; i++) {
+                String range = i < 9 ? String.format("%d-%ds", i, i + 1) : "10s+";
+                int barLen = maxBucket > 0 ? (int) (20.0 * buckets[i] / maxBucket) : 0;
+                String bar = "█".repeat(barLen);
+                sb.append(String.format("  %5s: %s %d\n", range, bar, buckets[i]));
+            }
+        }
+
+        metricsDisplay.setText(sb.toString());
+    }
+
+    private void exportMetricsCsv() {
+        if (metricsHistoryService == null) return;
+        try {
+            List<QaMetrics> all = metricsHistoryService.loadAll();
+            if (all.isEmpty()) {
+                metricsDisplay.setText("No metrics to export.");
+                return;
+            }
+            java.nio.file.Path csvPath = config.getDataDir()
+                    .resolve("metrics_export_" + java.time.LocalDate.now() + ".csv");
+            try (java.io.BufferedWriter w = java.nio.file.Files.newBufferedWriter(csvPath)) {
+                w.write(QaMetrics.csvHeader());
+                w.newLine();
+                for (QaMetrics m : all) {
+                    w.write(m.toCsvRow());
+                    w.newLine();
+                }
+            }
+            metricsDisplay.setText("Exported " + all.size() + " entries to:\n" + csvPath);
+        } catch (Exception e) {
+            metricsDisplay.setText("Export failed: " + e.getMessage());
+        }
+    }
+
     // =================== Settings Page ===================
 
     private VBox buildSettingsPage(Stage stage) {
@@ -1139,6 +1360,21 @@ public class MaaKnowledgeBuilderApp extends Application {
     }
 
     public static void main(String[] args) {
+        // Check for headless mode before launching JavaFX
+        boolean headless = false;
+        for (String arg : args) {
+            if ("--headless".equals(arg)) { headless = true; break; }
+        }
+        if (headless) {
+            try {
+                HeadlessRunner.main(args);
+            } catch (Exception e) {
+                System.err.println("Headless run failed: " + e.getMessage());
+                e.printStackTrace();
+                System.exit(1);
+            }
+            return;
+        }
         launch(args);
     }
 }

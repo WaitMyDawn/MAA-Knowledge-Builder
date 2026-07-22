@@ -14,19 +14,25 @@ import yagen.waitmydawn.kb.dto.QaMetrics;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
 import yagen.waitmydawn.kb.service.WikiScraperService.McmodCategory;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.time.Instant;
 import java.util.*;
 
 /**
- * Agentic RAG QA Pipeline.
+ * Agentic RAG QA Pipeline with comprehensive metrics collection.
  *
- *   Agent 1 — ClassifyAgent: LLM classifies question → McmodCategory (with conversation context)
- *   Agent 2 — EntityAgent:   LLM resolves entity registry names (with mod list + entity registry hints)
- *                             → looks up subWebPage → incremental fetch to inc DB
- *   Dual-DB vector search (base + incremental)
- *   Agent 3 — AnswerAgent:   LLM composes Markdown answer (with LLM fallback when no RAG data)
+ *   Agent 1 — ClassifyAgent: LLM classifies question -> McmodCategory
+ *   Agent 2 — EntityAgent:   LLM resolves entity registry names
+ *   Agent 2.5 — UrlAgent:    LLM matches entities to sub-page URLs
+ *   Incremental fetch:       Acquires MC百科 sub-pages into session DB
+ *   Dual-DB vector search:   Base + incremental cosine similarity
+ *   LLM Rerank (optional):   LLM filters relevant vector results
+ *   Recipe search:           SQL LIKE on rag_recipe
+ *   Agent 3 — AnswerAgent:   LLM composes Markdown answer (with fallback)
  */
 public class QaPipeline {
 
@@ -42,10 +48,12 @@ public class QaPipeline {
     private final DatabaseBuilder baseDb;
     private final MultiDBManager dbManager;
     private final IncrementalKnowledgeService incremental;
+    private final MetricsHistoryService metricsHistory;
 
     // Conversation history: last N Q&A pairs for context
     private static final int MAX_CONTEXT_PAIRS = 5;
     private final List<QAPair> conversationHistory = new ArrayList<>();
+    private int conversationTurn = 0;
 
     public QaPipeline(ClassifyAgent classifyAgent, EntityAgent entityAgent,
                       UrlAgent urlAgent, AnswerAgent answerAgent,
@@ -62,13 +70,26 @@ public class QaPipeline {
         this.baseDb = baseDb;
         this.dbManager = dbManager;
         this.incremental = new IncrementalKnowledgeService(baseDb);
+        this.metricsHistory = new MetricsHistoryService(
+                baseDb.getJdbcUrl().contains("file:")
+                    ? java.nio.file.Path.of(baseDb.getJdbcUrl()
+                        .replaceAll(".*file:", "")
+                        .replaceAll(";.*", ""))
+                        .getParent()
+                    : java.nio.file.Path.of("."));
     }
 
     // ==================== Main entry point ====================
 
     public QaResult process(String question) {
         long t0 = System.nanoTime();
+        conversationTurn++;
         QaMetrics m = new QaMetrics();
+        m.timestamp = Instant.now();
+        m.conversationTurn = conversationTurn;
+        m.questionHash = sha256hex(question);
+        m.sessionId = dbManager.getCurrentSessionId();
+
         incremental.resetCache();
         QaResult result = new QaResult();
 
@@ -79,8 +100,8 @@ public class QaPipeline {
         long t1 = System.nanoTime();
         ClassifyAgent.Classification cls = classifyAgent.classify(question, convContext);
         m.classifyTimeMs = (System.nanoTime() - t1) / 1_000_000;
-        m.llmCallCount++;  // classify uses LLM
-        m.tokenEstimateInput += estimatePromptTokens(question) + 200;  // system prompt overhead
+        m.classifyLlmMs = m.classifyTimeMs; // ClassifyAgent = pure LLM call
+        m.recordLlmCall(estimatePromptTokens(question) + 200, 20);
 
         McmodCategory category = cls.category();
         result.questionType = ClassificationResult.toQuestionType(category);
@@ -89,7 +110,7 @@ public class QaPipeline {
         m.classifyConfidence = cls.confidence();
         m.addTrace("Classify", m.classifyTimeMs, m.classifyCategory);
 
-        log.info("QA[Classify] '{}' → {} (conf={}) [{}ms]",
+        log.info("QA[Classify] '{}' -> {} (conf={}) [{}ms]",
                 question, category != null ? category.name() : "GENERAL", cls.confidence(), m.classifyTimeMs);
 
         // === Agent 2: Resolve entities with entity registry hints ===
@@ -101,18 +122,29 @@ public class QaPipeline {
 
         List<ResolvedEntity> resolvedEntities = entityAgent.resolve(question, convContext, entityHints);
         m.entityResolveTimeMs = (System.nanoTime() - t2) / 1_000_000;
+        m.entityLlmMs = m.entityResolveTimeMs; // EntityAgent = pure LLM call
         m.entityCount = resolvedEntities.size();
-        m.llmCallCount++;  // entityAgent uses LLM
-        m.tokenEstimateInput += estimatePromptTokens(question) + estimateModListTokens() + entityHints.size() * 10;
+        m.recordLlmCall(estimatePromptTokens(question) + estimateModListTokens() + entityHints.size() * 10, 30);
 
-        // Agent 2.5: UrlAgent — match entity descriptions to subWebPage cn(en)→URL keys
+        // Agent 2.5: UrlAgent — match entity descriptions to subWebPage cn(en)->URL keys
+        long t25 = System.nanoTime();
         Map<String, String> subPageUrls = matchSubPagesByEntity(resolvedEntities);
+        m.urlMatchTimeMs = (System.nanoTime() - t25) / 1_000_000;
+        m.urlLlmMs = m.urlMatchTimeMs;
         m.subPageUrlCount = subPageUrls.size();
-        m.addTrace("EntityResolve", m.entityResolveTimeMs,
+        // UrlAgent may call LLM — track it
+        if (m.urlMatchTimeMs > 50) {
+            m.recordLlmCall(resolvedEntities.size() * 20, 15);
+        }
+
+        m.addTrace("EntityResolve", m.entityResolveTimeMs + m.urlMatchTimeMs,
                 String.format("%d entities, %d URLs", m.entityCount, m.subPageUrlCount));
 
         log.info("QA[Entity] {} entities ({} hints), {} sub-page URLs [{}ms]",
                 resolvedEntities.size(), entityHints.size(), subPageUrls.size(), m.entityResolveTimeMs);
+
+        result.resolvedEntities = resolvedEntities;
+        result.subPageUrls = subPageUrls;
 
         // === Incremental fetch ===
         long t3 = System.nanoTime();
@@ -122,12 +154,16 @@ public class QaPipeline {
             if (incDb != null) {
                 incremental.setCurrentDB(incDb);
                 incInfo = incremental.acquireFromSubPages(subPageUrls, embedder);
-                if (incInfo != null) log.info("QA[Incremental] {}", incInfo);
+                if (incInfo != null) {
+                    log.info("QA[Incremental] {}", incInfo);
+                    // Count acquired chunks from the info string
+                    m.incrementalChunksAcquired = countChunksFromInfo(incInfo);
+                }
             }
         }
         m.incrementalFetchTimeMs = (System.nanoTime() - t3) / 1_000_000;
         m.addTrace("IncrementalFetch", m.incrementalFetchTimeMs,
-                String.format("%d URLs fetched", subPageUrls.size()));
+                String.format("%d URLs, %d chunks", subPageUrls.size(), m.incrementalChunksAcquired));
 
         // === Vector semantic search ===
         long t4 = System.nanoTime();
@@ -140,9 +176,9 @@ public class QaPipeline {
         m.vectorSearchTimeMs = (System.nanoTime() - t4) / 1_000_000;
         m.vectorResultCount = vectorResults.size();
         m.computeVectorRelevance(vectorResults, 0.2);
-        m.dbQueryCount += activeDbs.size();  // one query per active DB
+        m.dbQueryCount += activeDbs.size();
         m.addTrace("VectorSearch", m.vectorSearchTimeMs,
-                String.format("%d results (%d DBs)", m.vectorResultCount, activeDbs.size()));
+                String.format("%d results (%d DBs), maxScore=%.3f", m.vectorResultCount, activeDbs.size(), m.vectorMaxScore));
 
         // === Recipe search ===
         long t5 = System.nanoTime();
@@ -151,31 +187,51 @@ public class QaPipeline {
             log.info("QA[Fallback] EntityAgent returned 0 entities, searching recipes by text");
             recipeResults = findRecipesByText(question);
             if (recipeResults.isEmpty() && llm != null) {
+                long tLlm = System.nanoTime();
                 recipeResults = findRecipesByLlmExtraction(question);
-                m.llmCallCount++;
-                m.tokenEstimateInput += 50;
+                m.recordLlmCall(50, 20);
+                m.recipeLlmMs = (System.nanoTime() - tLlm) / 1_000_000;
             }
         }
         m.recipeSearchTimeMs = (System.nanoTime() - t5) / 1_000_000;
         m.recipeResultCount = recipeResults.size();
-        m.dbQueryCount += Math.max(1, resolvedEntities.size() * 2);  // approx
+        m.dbQueryCount += Math.max(1, resolvedEntities.size() * 2);
         m.addTrace("RecipeSearch", m.recipeSearchTimeMs,
                 String.format("%d recipes found", m.recipeResultCount));
 
         // === LLM Rerank ===
+        m.rerankTimeMs = 0;
         if (vectorResults.size() > 10 && llm != null) {
             long tr = System.nanoTime();
-            vectorResults = rerankWithLLM(question, vectorResults);
-            m.llmCallCount++;
-            m.tokenEstimateInput += vectorResults.size() * 100;
-            long rerankMs = (System.nanoTime() - tr) / 1_000_000;
-            m.addTrace("Rerank", rerankMs, String.format("%d → %d", m.vectorResultCount, vectorResults.size()));
+            List<VectorStore.SearchResult> reranked = rerankWithLLM(question, vectorResults);
+            m.rerankLlmMs = (System.nanoTime() - tr) / 1_000_000;
+            m.rerankTimeMs = m.rerankLlmMs;
+            m.recordLlmCall(vectorResults.size() * 100, 10);
+            if (reranked != null && reranked.size() < vectorResults.size()) {
+                vectorResults = reranked;
+            }
+            m.addTrace("Rerank", m.rerankTimeMs, String.format("%d -> %d", m.vectorResultCount, vectorResults.size()));
         }
 
         result.recipeResults = recipeResults;
         result.vectorResults = vectorResults;
         result.incrementalInfo = incInfo;
         result.recipesToRender = recipeResults;
+
+        // === Detect data tier (matching AnswerAgent's logic) ===
+        boolean hasRecipes = !recipeResults.isEmpty();
+        boolean hasRelevantVectors = vectorResults.stream().anyMatch(v -> v.score() > 0.3);
+        boolean hasEntities = !resolvedEntities.isEmpty();
+        boolean hasAnyVectors = !vectorResults.isEmpty();
+
+        if (hasRecipes && hasRelevantVectors) m.dataTier = "TIER A";
+        else if (hasEntities && (hasAnyVectors || hasRecipes)) m.dataTier = "TIER B";
+        else if (hasEntities || hasAnyVectors) m.dataTier = "TIER C";
+        else m.dataTier = "TIER D";
+
+        // Count context chunks that will be used (AnswerAgent uses top 8 above 0.1)
+        m.contextChunksUsed = (int) vectorResults.stream()
+                .filter(v -> v.score() > 0.1).limit(8).count();
 
         // === Agent 3: Compose answer (with LLM fallback) ===
         long t6 = System.nanoTime();
@@ -190,32 +246,45 @@ public class QaPipeline {
                 question, category, resolvedEntities, answerRecipeMatches,
                 vectorResults, incInfo);
 
+        long tAnsLlm = System.nanoTime();
         result.answer = answerAgent.compose(ctx);
+        m.answerLlmMs = (System.nanoTime() - tAnsLlm) / 1_000_000;
 
-        // If data is sparse (Tier C/D), supplement with LLM fallback that includes available context
+        // If data is sparse (Tier C/D), supplement with LLM fallback
         m.fallbackUsed = false;
         if (!hasRelevantData && llm != null) {
+            long tFb = System.nanoTime();
             String fallback = answerWithFallback(question, category, resolvedEntities,
                     vectorResults, recipeResults, convContext);
+            m.fallbackLlmMs = (System.nanoTime() - tFb) / 1_000_000;
             if (fallback != null) {
                 result.answer = fallback;
                 m.fallbackUsed = true;
             }
         }
         m.answerGenTimeMs = (System.nanoTime() - t6) / 1_000_000;
-        m.llmCallCount++;  // answer compose uses LLM
-        m.tokenEstimateInput += estimateContextTokens(ctx);
-        m.tokenEstimateOutput += estimateAnswerTokens(result.answer);
+        m.recordLlmCall(estimateContextTokens(ctx), estimateAnswerTokens(result.answer));
+        m.answerLength = result.answer != null ? result.answer.length() : 0;
+
         m.addTrace("AnswerGen", m.answerGenTimeMs, m.fallbackUsed ? "LLM fallback" : "RAG compose");
+
+        // === Compute composite indicators ===
+        m.computeTtft();
+        m.computeQualityIndicators();
 
         // === Totals ===
         m.totalTimeMs = (System.nanoTime() - t0) / 1_000_000;
 
-        // Accumulate
+        // Accumulate session stats
         m.accumulate();
         result.metrics = m;
 
         log.info("QA {}", m.toLogString());
+
+        // Persist metrics
+        try { metricsHistory.save(m); } catch (Exception e) {
+            log.debug("Metrics save failed: {}", e.getMessage());
+        }
 
         // Save to conversation history
         conversationHistory.add(new QAPair(question, result.answer));
@@ -243,11 +312,9 @@ public class QaPipeline {
     /** Extract key info from answer for context (entity names, mod info) */
     private String extractKeyInfo(String answer) {
         if (answer == null || answer.isBlank()) return "(no answer)";
-        // Extract lines with registry names (backtick-wrapped)
         StringBuilder key = new StringBuilder();
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("`([a-z_]+:[a-z_]+)`").matcher(answer);
         while (m.find()) key.append(m.group(1)).append(" ");
-        // Also grab first meaningful sentence
         if (key.isEmpty()) {
             String firstLine = answer.split("\n")[0];
             if (firstLine.length() > 120) firstLine = firstLine.substring(0, 120) + "...";
@@ -258,16 +325,14 @@ public class QaPipeline {
 
     // ==================== Entity registry hints ====================
 
-    /** Collect entity registry names from rag_entity_registry for all installed mods + vanilla */
     private List<String> gatherEntityHints(QaResult result) {
         Set<String> modIds = new LinkedHashSet<>();
-        // Always include vanilla Minecraft
         modIds.add("minecraft");
 
         for (ResolvedEntity e : result.resolvedEntities) {
             if (!"unknown".equals(e.modId())) modIds.add(e.modId());
         }
-        if (modIds.size() <= 1) {  // only minecraft
+        if (modIds.size() <= 1) {
             try {
                 List<yagen.waitmydawn.kb.model.ModEntry> mods = baseDb.findAllModEntries();
                 for (var m : mods) modIds.add(m.getModId());
@@ -283,16 +348,10 @@ public class QaPipeline {
 
     // ==================== Sub-page URL matching (UrlAgent) ====================
 
-    /**
-     * Match resolved entities to subWebPage URLs via UrlAgent.
-     * Groups entities by modId, then uses LLM to match entity descriptions
-     * against cn(en)→URL keys in rag_web_cache.
-     */
     private Map<String, String> matchSubPagesByEntity(List<ResolvedEntity> entities) {
         Map<String, String> urls = new LinkedHashMap<>();
         if (entities.isEmpty()) return urls;
 
-        // Group entity descriptions by modId
         Map<String, List<String>> byModId = new LinkedHashMap<>();
         for (ResolvedEntity e : entities) {
             if ("minecraft".equals(e.modId()) || "unknown".equals(e.modId())) continue;
@@ -300,7 +359,6 @@ public class QaPipeline {
                     .add(e.reason().isEmpty() ? e.registry() : e.reason());
         }
 
-        // For each modId, use UrlAgent to match entity descriptions to URLs
         for (var entry : byModId.entrySet()) {
             String modId = entry.getKey();
             List<String> descriptions = entry.getValue();
@@ -308,7 +366,6 @@ public class QaPipeline {
             if (matched != null) urls.putAll(matched);
         }
 
-        // Also try exact match from EntityAgent.lookupSubPages as fast-path fallback
         Map<String, String> exactUrls = entityAgent.lookupSubPages(entities);
         for (var e : exactUrls.entrySet()) {
             urls.putIfAbsent(e.getKey(), e.getValue());
@@ -319,7 +376,6 @@ public class QaPipeline {
 
     // ==================== LLM fallback ====================
 
-    /** When RAG data is sparse, supplement with LLM knowledge + include what little we have */
     private String answerWithFallback(String question, McmodCategory category,
                                       List<ResolvedEntity> entities,
                                       List<VectorStore.SearchResult> vectorResults,
@@ -341,7 +397,6 @@ public class QaPipeline {
                 }
             }
 
-            // Include any vector snippets (even low-score ones) as context
             if (vectorResults != null && !vectorResults.isEmpty()) {
                 ctx.append("\nAvailable knowledge snippets (may be low relevance):\n");
                 for (int i = 0; i < Math.min(5, vectorResults.size()); i++) {
@@ -422,7 +477,6 @@ public class QaPipeline {
             searchRecipe("output_item LIKE ? OR recipe_data LIKE ?",
                     new String[]{"%" + kw + "%", "%" + kw + "%"}, foundOutputs, matches);
         }
-        // Common English fallbacks
         for (String en : new String[]{"compass", "sword", "pickaxe", "axe", "shovel", "hoe",
                 "helmet", "chestplate", "leggings", "boots", "dragon", "ghost"}) {
             searchRecipe("output_item LIKE ? OR recipe_data LIKE ?",
@@ -521,7 +575,7 @@ public class QaPipeline {
                     }
                 }
                 if (filtered.size() >= 2 && filtered.size() < candidates.size()) {
-                    log.info("Reranker: {} → {} relevant", candidates.size(), filtered.size());
+                    log.info("Reranker: {} -> {} relevant", candidates.size(), filtered.size());
                     return filtered;
                 }
             }
@@ -529,17 +583,45 @@ public class QaPipeline {
         return candidates.subList(0, Math.min(8, candidates.size()));
     }
 
+    // ==================== Helpers ====================
+
     public void setIncrementalDB(IncrementalDB db) { incremental.setCurrentDB(db); }
+
+    public int getConversationTurn() { return conversationTurn; }
 
     /** Clear conversation history (e.g., when switching sessions) */
     public void clearHistory() {
         conversationHistory.clear();
+        conversationTurn = 0;
         QaMetrics.cumulative.reset();
+    }
+
+    /** Access the metrics history service for the dashboard */
+    public MetricsHistoryService getMetricsHistory() { return metricsHistory; }
+
+    /** Count incremental chunks from info string like "Acquired: ghost (3 chunks)" */
+    private static int countChunksFromInfo(String info) {
+        if (info == null) return 0;
+        int total = 0;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\((\\d+) chunks\\)").matcher(info);
+        while (m.find()) {
+            try { total += Integer.parseInt(m.group(1)); } catch (NumberFormatException ignored) {}
+        }
+        return total;
+    }
+
+    private static String sha256hex(String text) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) sb.append(String.format("%02x", b));
+            return sb.substring(0, 12);
+        } catch (Exception e) { return Integer.toHexString(text.hashCode()); }
     }
 
     // ==================== Token estimation helpers ====================
 
-    /** Rough estimate: Chinese chars ≈ 0.5 tokens, English words ≈ 1.3 tokens */
     private static int estimatePromptTokens(String text) {
         if (text == null) return 0;
         int cjk = 0, ascii = 0;

@@ -120,6 +120,23 @@
                 </configuration>
             </plugin>
 
+            <!-- Exec Maven Plugin (for headless/auto-test mode) -->
+            <!-- Uses HeadlessRunner directly — no JavaFX required -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <mainClass>yagen.waitmydawn.kb.HeadlessRunner</mainClass>
+                    <systemProperties>
+                        <systemProperty>
+                            <key>file.encoding</key>
+                            <value>UTF-8</value>
+                        </systemProperty>
+                    </systemProperties>
+                </configuration>
+            </plugin>
+
             <!-- JavaFX Maven Plugin (for mvn javafx:run during development) -->
             <plugin>
                 <groupId>org.openjfx</groupId>

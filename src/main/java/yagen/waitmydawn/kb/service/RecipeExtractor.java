@@ -26,7 +26,6 @@ public class RecipeExtractor {
 
         try (JarFile jar = new JarFile(jarPath.toFile())) {
             String recipesPrefix = "data/" + modId + "/recipe/";
-            String recipesPrefixLower = "data/" + modId.toLowerCase() + "/recipe/";
 
             Enumeration<JarEntry> entries = jar.entries();
             while (entries.hasMoreElements()) {
@@ -34,7 +33,7 @@ public class RecipeExtractor {
                 String name = entry.getName();
 
                 if (!name.endsWith(".json")) continue;
-                if (!name.startsWith(recipesPrefix) && !name.toLowerCase().startsWith(recipesPrefixLower)) continue;
+                if (!name.startsWith(recipesPrefix)) continue;
 
                 try (InputStream is = jar.getInputStream(entry)) {
                     String json = new String(is.readAllBytes());

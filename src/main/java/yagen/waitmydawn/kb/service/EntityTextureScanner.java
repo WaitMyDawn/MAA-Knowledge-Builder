@@ -29,8 +29,6 @@ public class EntityTextureScanner {
         Map<String, String> entities = new LinkedHashMap<>();
 
         String entityDir = "assets/" + modId + "/textures/entity/";
-        // Also try lowercase modId
-        String entityDirLower = "assets/" + modId.toLowerCase() + "/textures/entity/";
 
         try (JarFile jar = new JarFile(jarPath.toFile())) {
             Set<String> addedFolders = new HashSet<>();
@@ -44,8 +42,6 @@ public class EntityTextureScanner {
                 String relative = null;
                 if (name.startsWith(entityDir)) {
                     relative = name.substring(entityDir.length());
-                } else if (name.startsWith(entityDirLower)) {
-                    relative = name.substring(entityDirLower.length());
                 }
                 if (relative == null || relative.isEmpty()) continue;
 
