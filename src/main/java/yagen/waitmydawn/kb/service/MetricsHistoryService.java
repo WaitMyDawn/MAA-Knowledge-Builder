@@ -318,6 +318,7 @@ public class MetricsHistoryService {
         map.put("llmCallCount", m.llmCallCount);
         map.put("tokenEstimateInput", m.tokenEstimateInput);
         map.put("tokenEstimateOutput", m.tokenEstimateOutput);
+        map.put("tokenTotalCount", m.tokenTotalCount);
         map.put("dbQueryCount", m.dbQueryCount);
         map.put("fallbackUsed", m.fallbackUsed);
         map.put("classifyCategory", m.classifyCategory);
@@ -364,6 +365,7 @@ public class MetricsHistoryService {
         m.llmCallCount = i(map, "llmCallCount");
         m.tokenEstimateInput = i(map, "tokenEstimateInput");
         m.tokenEstimateOutput = i(map, "tokenEstimateOutput");
+        m.tokenTotalCount = i(map, "tokenTotalCount");
         m.dbQueryCount = i(map, "dbQueryCount");
         m.fallbackUsed = b(map, "fallbackUsed");
         m.classifyCategory = str(map, "classifyCategory");

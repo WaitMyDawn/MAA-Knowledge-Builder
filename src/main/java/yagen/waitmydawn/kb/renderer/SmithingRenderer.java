@@ -2,79 +2,76 @@ package yagen.waitmydawn.kb.renderer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import yagen.waitmydawn.kb.config.AppConfig;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
-import java.util.List;
+import java.util.Map;
 
 /**
  * 锻造台配方图渲染器。
+ *
+ * 已裁剪底板 (108x58), 有效位点:
+ *   template (1,41)   - 锻造模版
+ *   base     (19,41)  - 被锻造物品
+ *   addition (37,41)  - 锻造材料
+ *   result   (91,41)  - 产物
  */
 public class SmithingRenderer {
 
-    private final TemplateManager templateManager;
-    private final AppConfig config;
     private final ObjectMapper mapper = new ObjectMapper();
+    private static final int SLOT_SIZE = 16;
+    private static final int TMPL_X = 1, TMPL_Y = 41;
+    private static final int BASE_X = 19, BASE_Y = 41;
+    private static final int ADD_X = 37, ADD_Y = 41;
+    private static final int OUT_X = 91, OUT_Y = 41;
 
-    public SmithingRenderer(TemplateManager templateManager, AppConfig config) {
-        this.templateManager = templateManager;
-        this.config = config;
-    }
+    public SmithingRenderer() {}
 
-    public BufferedImage render(String recipeJson, List<String> texturePaths) {
+    public BufferedImage render(String recipeJson, BufferedImage template,
+                                 Map<String, BufferedImage> textureMap) {
         try {
             JsonNode recipe = mapper.readTree(recipeJson);
             String templateItem = resolveItemId(recipe, "template");
             String baseItem = resolveItemId(recipe, "base");
             String additionItem = resolveItemId(recipe, "addition");
-            JsonNode resultNode = recipe.path("result");
-            String resultItem = resultNode.path("id").asText(null);
-            if (resultItem == null) resultItem = resultNode.path("item").asText(null);
-            if (resultItem == null) resultItem = resultNode.asText("");
+            String resultItem = resolveResultItem(recipe);
 
-            BufferedImage template = templateManager.getTemplate("smithing_table");
-            TemplateManager.SlotConfig sc = templateManager.getSlotConfig("smithing_table");
-
-            int width = template.getWidth();
-            int height = template.getHeight() + 50;
-            BufferedImage canvas = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+            int w = template.getWidth();
+            int h = template.getHeight();
+            BufferedImage canvas = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = canvas.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
             g.drawImage(template, 0, 0, null);
 
-            drawSlot(g, sc, "template", templateItem, texturePaths);
-            drawSlot(g, sc, "base", baseItem, texturePaths);
-            drawSlot(g, sc, "addition", additionItem, texturePaths);
+            drawSlot(g, templateItem, TMPL_X, TMPL_Y, textureMap);
+            drawSlot(g, baseItem, BASE_X, BASE_Y, textureMap);
+            drawSlot(g, additionItem, ADD_X, ADD_Y, textureMap);
+            drawSlot(g, resultItem, OUT_X, OUT_Y, textureMap);
 
-            if (sc.outputSlot != null && !resultItem.isBlank()) {
-                BufferedImage outTex = findTexture(resultItem, texturePaths);
-                if (outTex != null) {
-                    int half = sc.outputSize / 2;
-                    g.drawImage(ImageUtils.scale(outTex, sc.outputSize, sc.outputSize),
-                            sc.outputSlot.x - half, sc.outputSlot.y - half, null);
-                }
-            }
-
-            ImageUtils.drawFooter(canvas, "Smithing: " + baseItem + " + " + additionItem + " -> " + resultItem,
-                    template.getHeight());
             g.dispose();
-            return canvas;
+            return ImageUtils.scale(canvas, w * 2, h * 2);
         } catch (Exception e) {
             return null;
         }
     }
 
-    private void drawSlot(Graphics2D g, TemplateManager.SlotConfig sc, String key,
-                           String itemName, List<String> texturePaths) {
-        Point pos = sc.inputSlots.get(key);
-        if (pos != null && !itemName.isBlank()) {
-            BufferedImage tex = findTexture(itemName, texturePaths);
-            if (tex != null) {
-                int half = sc.slotSize / 2;
-                g.drawImage(ImageUtils.scale(tex, sc.slotSize, sc.slotSize),
-                        pos.x - half, pos.y - half, null);
-            }
+    private void drawSlot(Graphics2D g, String item, int x, int y,
+                          Map<String, BufferedImage> textureMap) {
+        if (item == null || item.isBlank()) return;
+        BufferedImage tex = lookupTexture(item, textureMap);
+        if (tex == null) tex = ImageUtils.createPlaceholder(item, Color.GRAY);
+        g.drawImage(ImageUtils.scale(tex, SLOT_SIZE, SLOT_SIZE), x, y, null);
+    }
+
+    private BufferedImage lookupTexture(String registryName, Map<String, BufferedImage> textureMap) {
+        if (registryName == null || registryName.isBlank()) return null;
+        if (textureMap.containsKey(registryName)) return textureMap.get(registryName);
+        String shortName = registryName.contains(":")
+                ? registryName.substring(registryName.indexOf(':') + 1) : registryName;
+        for (var e : textureMap.entrySet()) {
+            if (e.getKey().endsWith(":" + shortName)) return e.getValue();
         }
+        return null;
     }
 
     private String resolveItemId(JsonNode recipe, String key) {
@@ -87,15 +84,13 @@ public class SmithingRenderer {
         return node.asText("");
     }
 
-    private BufferedImage findTexture(String itemName, List<String> texturePaths) {
-        if (itemName == null || itemName.isBlank()) return null;
-        String shortName = itemName.contains(":") ? itemName.substring(itemName.indexOf(':') + 1) : itemName;
-        for (String path : texturePaths) {
-            if (path.replace('\\', '/').toLowerCase().contains(shortName.toLowerCase())) {
-                BufferedImage img = ImageUtils.loadImage(path);
-                if (img != null) return img;
-            }
+    private String resolveResultItem(JsonNode recipe) {
+        JsonNode result = recipe.path("result");
+        if (result.isObject()) {
+            String id = result.path("id").asText(null);
+            if (id != null) return id;
+            return result.path("item").asText("");
         }
-        return ImageUtils.createPlaceholder(shortName, ImageUtils.getColorForItemType("default"));
+        return result.asText("");
     }
 }

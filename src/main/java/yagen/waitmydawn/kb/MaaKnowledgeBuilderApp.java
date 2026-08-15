@@ -6,8 +6,6 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
-import javafx.scene.image.Image;
-import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
@@ -72,6 +70,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     private VBox dbCheckboxList;
     private MetricsHistoryService metricsHistoryService;
     private TextArea metricsDisplay;
+    private RendererService rendererService;
 
     @Override
     public void init() {
@@ -117,6 +116,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             qaPipeline = new QaPipeline(classifyAgent, entityAgent, urlAgent,
                     answerAgent, ragAgent, vectorStore, embedder, db, dbManager);
             metricsHistoryService = qaPipeline.getMetricsHistory();
+            rendererService = new RendererService(config, db);
             entityResolver.rebuildFromDB(db);
             log.info("Existing DB: {} vectors, {} mods, {} recipes",
                     vectorStore.count(), db.findAllModEntries().size(),
@@ -646,7 +646,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         chatHistory.getChildren().clear();
         for (ChatHistoryService.ChatMessage msg : sess.messages) {
             String bg = msg.role().equals("user") ? "#e8f0fe" : "#f0fdf4";
-            addChatBubble(msg.role().equals("user") ? "You" : "MAA", msg.content(), bg, null);
+            addChatBubble(msg.role().equals("user") ? "You" : "MAA", msg.content(), bg);
         }
         qaLog.appendText("Loaded: " + sess.title + " (" + sess.messages.size() + " msgs)\n");
     }
@@ -655,7 +655,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         String q = questionField.getText().trim();
         if (q.isEmpty()) return;
         questionField.clear();
-        addChatBubble("You", q, "#e8f0fe", null);
+        addChatBubble("You", q, "#e8f0fe");
         setStatus("Thinking...", true);
 
         // Init session if needed
@@ -673,63 +673,57 @@ public class MaaKnowledgeBuilderApp extends Application {
             try {
                 QaPipeline.QaResult result = qaPipeline.process(q);
 
-                // Render images from found recipes
-                List<String> imagePaths = new java.util.ArrayList<>();
+                // Render recipe images on demand (skip if already exists)
+                final Map<String, String> recipeImages;
+                final List<String> imagePaths = new java.util.ArrayList<>();
                 if (!result.recipesToRender.isEmpty()) {
-                    TemplateManager tm = new TemplateManager(config);
-                    RendererService renderer = new RendererService(config, tm);
-                    // Build a minimal retrieval result for the renderer
-                    var ret = new RetrievalResult();
-                    ret.setFound(true);
-                    for (QaPipeline.RecipeMatch rm : result.recipesToRender) {
-                        ret.getRecipeJsons().add(rm.recipeJson());
-                    }
-                    var dummyClass = new ClassificationResult();
-                    dummyClass.setQuestionType(result.questionType != null ? result.questionType : ClassificationResult.QuestionType.RECIPE);
-                    Map<String, String> images = renderer.preRender(dummyClass, ret);
-                    imagePaths = new java.util.ArrayList<>();
-                    for (String p : images.values()) {
+                    recipeImages = rendererService.renderRecipes(result.recipesToRender);
+                    for (String p : recipeImages.values()) {
                         java.io.File f = new java.io.File(p);
                         if (f.exists() && f.length() > 2000) imagePaths.add(p);
                     }
+                } else {
+                    recipeImages = Map.of();
                 }
 
-                final String srcInfo = (result.metrics != null ? result.metrics.toUiSummary() : "")
-                        + "Category: " + (result.mcmodCategory != null ? result.mcmodCategory.getName() : result.questionType)
-                        + " | Entities: " + result.resolvedEntities.size()
-                        + " | Recipes: " + result.recipeResults.size()
-                        + " | Vectors: " + result.vectorResults.size()
-                        + (result.incrementalInfo != null ? "\n" + result.incrementalInfo : "");
-                final List<String> finalImagePaths = imagePaths;
+                // Embed image references into the answer at the end
+                final String answerWithImages;
+                if (!recipeImages.isEmpty()) {
+                    StringBuilder imgs = new StringBuilder("\n\n## 配方图\n\n");
+                    for (var e : recipeImages.entrySet()) {
+                        String name = e.getKey().contains(":")
+                                ? e.getKey().substring(e.getKey().indexOf(':') + 1) : e.getKey();
+                        imgs.append("![recipe:").append(name).append("](")
+                                .append(e.getValue().replace('\\', '/')).append(")\n\n");
+                    }
+                    answerWithImages = result.answer + imgs;
+                } else {
+                    answerWithImages = result.answer;
+                }
 
                 Platform.runLater(() -> {
-                    String display = result.answer + "\n\n---\n" + srcInfo;
-                    addChatBubble("MAA", display, "#f0fdf4", finalImagePaths);
-                    qaLog.setText(srcInfo);
+                    addChatBubble("MAA", answerWithImages, "#f0fdf4");
                     if (result.metrics != null) {
-                        log.info("QA Metrics: total={}ms classify={}ms entity={}ms vec={}ms recipe={}ms answer={}ms entities={} recipes={}",
-                                result.metrics.totalTimeMs, result.metrics.classifyTimeMs,
-                                result.metrics.entityResolveTimeMs, result.metrics.vectorSearchTimeMs,
-                                result.metrics.recipeSearchTimeMs, result.metrics.answerGenTimeMs,
-                                result.metrics.entityCount, result.metrics.recipeResultCount);
+                        log.info("QA Metrics: total={}ms answers={} imgs={}",
+                                result.metrics.totalTimeMs, result.metrics.answerLength,
+                                imagePaths.size());
                     }
-                    chatHistoryService.addMessage(currentSession, "maa", result.answer);
+                    chatHistoryService.addMessage(currentSession, "maa", answerWithImages);
                     try {
                         chatHistoryService.save(currentSession);
-                    } catch (Exception ignored) {
-                    }
+                    } catch (Exception ignored) {}
                     setStatus("Ready", false);
                 });
             } catch (Exception ex) {
                 Platform.runLater(() -> {
-                    addChatBubble("Error", ex.getMessage(), "#fee2e2", null);
+                    addChatBubble("Error", ex.getMessage(), "#fee2e2");
                     setStatus("Error", false);
                 });
             }
         }, "qa").start();
     }
 
-    private void addChatBubble(String sender, String msg, String bg, List<String> imagePaths) {
+    private void addChatBubble(String sender, String msg, String bg) {
         VBox b = new VBox(4);
         b.setStyle("-fx-background-color: " + bg + "; -fx-padding: 10; -fx-background-radius: 8; -fx-max-width: 850;");
 
@@ -769,27 +763,6 @@ public class MaaKnowledgeBuilderApp extends Application {
 
             b.getChildren().add(header);
             b.getChildren().add(yagen.waitmydawn.kb.ui.MarkdownRenderer.render(msg));
-        }
-
-        // Image thumbnails
-        if (imagePaths != null && !imagePaths.isEmpty()) {
-            HBox imgRow = new HBox(6);
-            imgRow.setPadding(new Insets(6, 0, 0, 0));
-            for (int i = 0; i < Math.min(6, imagePaths.size()); i++) {
-                try {
-                    File f = new File(imagePaths.get(i));
-                    if (f.exists() && f.length() > 0) {
-                        Image img = new Image(f.toURI().toString(), 120, 120, true, true);
-                        ImageView iv = new ImageView(img);
-                        iv.setFitWidth(120);
-                        iv.setFitHeight(120);
-                        iv.setStyle("-fx-border-color: #d1d5db; -fx-border-width: 1; -fx-background-radius: 4;");
-                        imgRow.getChildren().add(iv);
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-            if (!imgRow.getChildren().isEmpty()) b.getChildren().add(imgRow);
         }
         chatHistory.getChildren().add(b);
     }

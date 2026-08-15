@@ -1,5 +1,11 @@
 package yagen.waitmydawn.kb.agent;
 
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.output.TokenUsage;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.Result;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
@@ -25,6 +31,35 @@ import java.util.Map;
 public class EntityAgent {
 
     private static final Logger log = LoggerFactory.getLogger(EntityAgent.class);
+
+    private static final String ENTITY_SYSTEM_PROMPT = """
+            You are a Minecraft: Java Edition expert assistant specialized in identifying items, blocks, entities, and structures across vanilla Minecraft AND all installed mods.
+
+            IMPORTANT: Always consider vanilla Minecraft entities alongside modded ones.
+            For example, "龙" (dragon) includes both `minecraft:ender_dragon` (vanilla) AND modded dragons like `iceandfire:fire_dragon`.
+            Always list ALL possibilities — vanilla first, then modded.
+
+            Your task: given a Chinese-language user question, identify the EXACT registry name(s) (format: modid:item_name) of EVERY item, block, entity, or structure mentioned or implied.
+
+            [How to translate Chinese → registry names]
+            1. You know Minecraft deeply. Map the Chinese name to the correct English registry name.
+               E.g.: 指南针 → compass, 钻石剑 → diamond_sword, 工作台 → crafting_table,
+               冰龙 → ice_dragon, 火龙 → fire_dragon, 幽灵 → ghost, 龙 → dragon.
+            2. For vanilla Minecraft, always use "minecraft:" prefix.
+            3. For mod items, use the mod's modId as shown in [Installed Mods].
+               If the modId is "iceandfire" and the entity is "dragon", the registry is "iceandfire:dragon".
+            4. Consider multiple word forms: "冰龙" could be ice_dragon, frostdragon, etc.
+            5. If the user mentions a mod by name (e.g. "冰火传说"), all entities likely belong to that mod.
+            6. If the question mentions "它们" (them), "这些" (these), "它" (it) — these are pronouns referring to
+               previously discussed entities. Use the conversation context to resolve them.
+
+            [Output Format]
+            Reply with ONLY a JSON array, no extra text, in this exact shape:
+            [{"registry":"minecraft:compass","modId":"minecraft","confidence":0.95,"reason":"Vanilla compass item"}]
+            - If the entity could belong to multiple mods, list ALL possibilities.
+            - confidence is 0.0 to 1.0.
+            - If you genuinely cannot identify any entity, reply: []
+            """;
 
     private static final String ENTITY_PROMPT = """
             You are a Minecraft: Java Edition expert assistant specialized in identifying items, blocks, entities, and structures across vanilla Minecraft AND all installed mods.
@@ -82,12 +117,37 @@ public class EntityAgent {
             Q: %s
             A:""";
 
+    /** AiServices 结构化实体解析接口：LLM 直接返回 JSON 数组。 */
+    public interface EntityResolver {
+        @SystemMessage(ENTITY_SYSTEM_PROMPT)
+        @UserMessage("{{it}}")
+        Result<ResolvedEntities> resolve(String prompt);
+    }
+
+    /**
+     * 结构化返回包装：1.18.1 的 AiServices 对顶层 List&lt;POJO&gt; 返回类型存在
+     * formatInstructions 未实现的限制（IllegalStateException），因此包一层单 POJO。
+     */
+    public record ResolvedEntities(List<ResolvedEntity> items) {}
+
     private final RagAgentService llm;
     private final DatabaseBuilder db;
+    private final EntityResolver resolver;
+    private volatile TokenUsage lastUsage;
 
     public EntityAgent(RagAgentService llm, DatabaseBuilder db) {
         this.llm = llm;
         this.db = db;
+        ChatModel model = llm.getChatModel();
+        EntityResolver r = null;
+        if (model != null) {
+            try {
+                r = AiServices.builder(EntityResolver.class).chatModel(model).build();
+            } catch (Exception e) {
+                log.warn("AiServices init failed, entity resolve falls back to text parsing: {}", e.getMessage());
+            }
+        }
+        this.resolver = r;
     }
 
     /**
@@ -104,9 +164,38 @@ public class EntityAgent {
         String modContext = buildModContext();
         String hintsSection = buildHintsSection(entityRegistryHints);
 
-        String prompt = ENTITY_PROMPT.formatted(modContext, conversationContext, hintsSection, question);
-
         try {
+            // 优先使用结构化输出（AiServices）
+            if (resolver != null) {
+                try {
+                    // 结构化路径的用户消息只提供上下文，输出格式完全交给 @SystemMessage
+                    String structuredPrompt = "[Installed Mods]\n" + modContext
+                            + "\n[Conversation Context]\n"
+                            + (conversationContext == null || conversationContext.isBlank()
+                                ? "(none)" : conversationContext)
+                            + "\n" + hintsSection
+                            + "\n[Question]\n" + question;
+                    Result<ResolvedEntities> result = resolver.resolve(structuredPrompt);
+                    lastUsage = result.tokenUsage();
+                    ResolvedEntities wrapper = result.content();
+                    List<ResolvedEntity> structured = wrapper == null ? null : wrapper.items();
+                    if (structured != null) {
+                        if (!structured.isEmpty()) {
+                            log.info("EntityAgent: '{}' → {} entities (structured)", question, structured.size());
+                            return new ArrayList<>(structured);
+                        }
+                        // 模型明确返回 []：视为无实体，避免重复调用 LLM
+                        log.info("EntityAgent: no entity identified for '{}' (structured)", question);
+                        return new ArrayList<>();
+                    }
+                } catch (Exception e) {
+                    log.warn("EntityAgent structured call failed ({}), falling back to text parse: {}",
+                            e.getClass().getSimpleName(), e.getMessage());
+                }
+            }
+
+            // 回退：旧版竖线文本解析
+            String prompt = ENTITY_PROMPT.formatted(modContext, conversationContext, hintsSection, question);
             String response = llm.rawAsk(prompt);
             if (response == null || response.isBlank() || response.trim().equals("UNKNOWN")) {
                 log.info("EntityAgent: no entity identified for '{}'", question);
@@ -141,6 +230,11 @@ public class EntityAgent {
         }
 
         return results;
+    }
+
+    /** 最近一次结构化调用的真实 Token 用量；回退路径或未配置 Key 时为 null。 */
+    public TokenUsage lastUsage() {
+        return lastUsage;
     }
 
     /** Build a list of all mods in the DB for LLM context */

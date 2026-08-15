@@ -14,6 +14,21 @@
         <configuration>
           <source>21</source>
           <target>21</target>
+          <parameters>true</parameters>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.1.0</version>
+        <configuration>
+          <mainClass>yagen.waitmydawn.kb.HeadlessRunner</mainClass>
+          <systemProperties>
+            <systemProperty>
+              <key>file.encoding</key>
+              <value>UTF-8</value>
+            </systemProperty>
+          </systemProperties>
         </configuration>
       </plugin>
       <plugin>
@@ -168,6 +183,8 @@
     <main.class>yagen.waitmydawn.kb.MaaKnowledgeBuilderApp</main.class>
     <java.version>21</java.version>
     <maven.compiler.source>21</maven.compiler.source>
+    <jackson.version>2.22.1</jackson.version>
+    <jackson.annotations.version>2.22</jackson.annotations.version>
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <javafx.version>21.0.11</javafx.version>

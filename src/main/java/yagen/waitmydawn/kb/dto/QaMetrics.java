@@ -60,6 +60,7 @@ public class QaMetrics {
     public int llmCallCount;               // LLM API 调用次数
     public int tokenEstimateInput;         // 估算输入 token
     public int tokenEstimateOutput;        // 估算输出 token
+    public int tokenTotalCount;            // 输入+输出 token 合计（有真实用量时优先）
     public int dbQueryCount;               // 数据库查询次数
 
     // ===== 元数据 =====
@@ -84,6 +85,7 @@ public class QaMetrics {
         llmCallCount++;
         tokenEstimateInput += estimatedInputTokens;
         tokenEstimateOutput += estimatedOutputTokens;
+        tokenTotalCount += estimatedInputTokens + estimatedOutputTokens;
     }
 
     /** Compute TTFT — first agent response time (classify + entity resolve) */

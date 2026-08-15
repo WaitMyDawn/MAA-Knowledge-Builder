@@ -2,76 +2,77 @@ package yagen.waitmydawn.kb.renderer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import yagen.waitmydawn.kb.config.AppConfig;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
-import java.util.List;
+import java.util.Map;
 
 /**
  * 熔炉/高炉/烟熏炉配方图渲染器。
+ *
+ * 已裁剪底板 (82x54), 有效位点:
+ *   input  (1,1)  - 被熔炼物品
+ *   fuel   (1,37)  - 燃料
+ *   output (61,19) - 产物
  */
 public class FurnaceRenderer {
 
-    private final TemplateManager templateManager;
-    private final AppConfig config;
     private final ObjectMapper mapper = new ObjectMapper();
+    private static final int SLOT_SIZE = 16;
+    private static final int IN_X = 1, IN_Y = 1;
+    private static final int FUEL_X = 1, FUEL_Y = 37;
+    private static final int OUT_X = 61, OUT_Y = 19;
 
-    public FurnaceRenderer(TemplateManager templateManager, AppConfig config) {
-        this.templateManager = templateManager;
-        this.config = config;
-    }
+    public FurnaceRenderer() {}
 
-    public BufferedImage render(String recipeJson, List<String> texturePaths) {
+    public BufferedImage render(String recipeJson, BufferedImage template,
+                                 Map<String, BufferedImage> textureMap) {
         try {
             JsonNode recipe = mapper.readTree(recipeJson);
             String inputItem = resolveItemId(recipe, "ingredient");
             if (inputItem.isEmpty()) inputItem = resolveItemId(recipe, "input");
-            JsonNode resultNode = recipe.path("result");
-            String resultItem = resultNode.path("id").asText(null);
-            if (resultItem == null) resultItem = resultNode.path("item").asText(null);
-            if (resultItem == null) resultItem = resultNode.asText("");
-            int cookingTime = recipe.path("cookingtime").asInt(recipe.path("cookingTime").asInt(200));
-            double experience = recipe.path("experience").asDouble(0.0);
+            String outputItem = resolveResultItem(recipe);
 
-            BufferedImage template = templateManager.getTemplate("furnace");
-            TemplateManager.SlotConfig sc = templateManager.getSlotConfig("furnace");
-
-            int width = template.getWidth();
-            int height = template.getHeight() + 50;
-            BufferedImage canvas = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+            int w = template.getWidth();
+            int h = template.getHeight();
+            BufferedImage canvas = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = canvas.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
             g.drawImage(template, 0, 0, null);
 
-            Point inputPos = sc.inputSlots.get("input");
-            if (inputPos != null) {
-                BufferedImage tex = findTexture(inputItem, texturePaths);
-                if (tex != null) {
-                    int half = sc.slotSize / 2;
-                    g.drawImage(ImageUtils.scale(tex, sc.slotSize, sc.slotSize),
-                            inputPos.x - half, inputPos.y - half, null);
-                }
+            // Draw input
+            if (!inputItem.isEmpty()) {
+                BufferedImage tex = lookupTexture(inputItem, textureMap);
+                if (tex == null) tex = ImageUtils.createPlaceholder(inputItem, Color.GRAY);
+                g.drawImage(ImageUtils.scale(tex, SLOT_SIZE, SLOT_SIZE), IN_X, IN_Y, null);
             }
 
-            if (sc.outputSlot != null) {
-                BufferedImage outTex = findTexture(resultItem, texturePaths);
-                if (outTex != null) {
-                    int half = sc.outputSize / 2;
-                    g.drawImage(ImageUtils.scale(outTex, sc.outputSize, sc.outputSize),
-                            sc.outputSlot.x - half, sc.outputSlot.y - half, null);
-                }
+            // Draw fuel (generic flame/coal indicator)
+            // We don't force a fuel texture — fuel is contextual
+
+            // Draw output
+            if (!outputItem.isEmpty()) {
+                BufferedImage tex = lookupTexture(outputItem, textureMap);
+                if (tex == null) tex = ImageUtils.createPlaceholder(outputItem, Color.ORANGE);
+                g.drawImage(ImageUtils.scale(tex, SLOT_SIZE, SLOT_SIZE), OUT_X, OUT_Y, null);
             }
 
-            String type = recipe.path("type").asText("smelting");
-            String label = (type.contains("blast") ? "Blast: " : type.contains("smok") ? "Smoker: " : "Furnace: ")
-                    + inputItem + " -> " + resultItem + " | " + (cookingTime / 20) + "s"
-                    + (experience > 0 ? " | XP: " + experience : "");
-            ImageUtils.drawFooter(canvas, label, template.getHeight());
             g.dispose();
-            return canvas;
+            return ImageUtils.scale(canvas, w * 2, h * 2);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private BufferedImage lookupTexture(String registryName, Map<String, BufferedImage> textureMap) {
+        if (registryName == null || registryName.isBlank()) return null;
+        if (textureMap.containsKey(registryName)) return textureMap.get(registryName);
+        String shortName = registryName.contains(":")
+                ? registryName.substring(registryName.indexOf(':') + 1) : registryName;
+        for (var e : textureMap.entrySet()) {
+            if (e.getKey().endsWith(":" + shortName)) return e.getValue();
+        }
+        return null;
     }
 
     private String resolveItemId(JsonNode recipe, String key) {
@@ -81,18 +82,22 @@ public class FurnaceRenderer {
             if (id != null) return id;
             return node.path("item").asText("");
         }
+        if (node.isArray() && !node.isEmpty()) {
+            JsonNode first = node.get(0);
+            String id = first.path("id").asText(null);
+            if (id != null) return id;
+            return first.path("item").asText("");
+        }
         return node.asText("");
     }
 
-    private BufferedImage findTexture(String itemName, List<String> texturePaths) {
-        if (itemName == null || itemName.isBlank()) return null;
-        String shortName = itemName.contains(":") ? itemName.substring(itemName.indexOf(':') + 1) : itemName;
-        for (String path : texturePaths) {
-            if (path.replace('\\', '/').toLowerCase().contains(shortName.toLowerCase())) {
-                BufferedImage img = ImageUtils.loadImage(path);
-                if (img != null) return img;
-            }
+    private String resolveResultItem(JsonNode recipe) {
+        JsonNode result = recipe.path("result");
+        if (result.isObject()) {
+            String id = result.path("id").asText(null);
+            if (id != null) return id;
+            return result.path("item").asText("");
         }
-        return ImageUtils.createPlaceholder(shortName, ImageUtils.getColorForItemType("default"));
+        return result.asText("");
     }
 }

@@ -1,5 +1,6 @@
 package yagen.waitmydawn.kb.service;
 
+import dev.langchain4j.model.output.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.agent.AnswerAgent;
@@ -52,6 +53,10 @@ public class QaPipeline {
 
     // Conversation history: last N Q&A pairs for context
     private static final int MAX_CONTEXT_PAIRS = 5;
+    /** 答案上下文最多携带的配方数（按相关性排序后取前 N） */
+    private static final int MAX_RECIPE_CONTEXT = 10;
+    /** 渲染成图片的配方上限，避免"过度发散"的图片刷屏 */
+    private static final int MAX_RECIPES_TO_RENDER = 4;
     private final List<QAPair> conversationHistory = new ArrayList<>();
     private int conversationTurn = 0;
 
@@ -101,7 +106,9 @@ public class QaPipeline {
         ClassifyAgent.Classification cls = classifyAgent.classify(question, convContext);
         m.classifyTimeMs = (System.nanoTime() - t1) / 1_000_000;
         m.classifyLlmMs = m.classifyTimeMs; // ClassifyAgent = pure LLM call
-        m.recordLlmCall(estimatePromptTokens(question) + 200, 20);
+        TokenUsage classifyUsage = classifyAgent.lastUsage();
+        if (classifyUsage != null) recordUsage(m, classifyUsage);
+        else m.recordLlmCall(estimatePromptTokens(question) + 200, 20);
 
         McmodCategory category = cls.category();
         result.questionType = ClassificationResult.toQuestionType(category);
@@ -124,16 +131,21 @@ public class QaPipeline {
         m.entityResolveTimeMs = (System.nanoTime() - t2) / 1_000_000;
         m.entityLlmMs = m.entityResolveTimeMs; // EntityAgent = pure LLM call
         m.entityCount = resolvedEntities.size();
-        m.recordLlmCall(estimatePromptTokens(question) + estimateModListTokens() + entityHints.size() * 10, 30);
+        TokenUsage entityUsage = entityAgent.lastUsage();
+        if (entityUsage != null) recordUsage(m, entityUsage);
+        else m.recordLlmCall(estimatePromptTokens(question) + estimateModListTokens() + entityHints.size() * 10, 30);
 
         // Agent 2.5: UrlAgent — match entity descriptions to subWebPage cn(en)->URL keys
         long t25 = System.nanoTime();
+        urlAgent.resetUsage();
         Map<String, String> subPageUrls = matchSubPagesByEntity(resolvedEntities);
         m.urlMatchTimeMs = (System.nanoTime() - t25) / 1_000_000;
         m.urlLlmMs = m.urlMatchTimeMs;
         m.subPageUrlCount = subPageUrls.size();
         // UrlAgent may call LLM — track it
-        if (m.urlMatchTimeMs > 50) {
+        TokenUsage urlUsage = urlAgent.lastUsage();
+        if (urlUsage != null) recordUsage(m, urlUsage);
+        else if (m.urlMatchTimeMs > 50) {
             m.recordLlmCall(resolvedEntities.size() * 20, 15);
         }
 
@@ -182,7 +194,8 @@ public class QaPipeline {
 
         // === Recipe search ===
         long t5 = System.nanoTime();
-        List<RecipeMatch> recipeResults = findRecipes(resolvedEntities);
+        List<ScoredRecipe> scoredRecipes = findScoredRecipes(resolvedEntities);
+        List<RecipeMatch> recipeResults = scoredRecipes.stream().map(ScoredRecipe::match).toList();
         if (recipeResults.isEmpty() && resolvedEntities.isEmpty()) {
             log.info("QA[Fallback] EntityAgent returned 0 entities, searching recipes by text");
             recipeResults = findRecipesByText(question);
@@ -192,6 +205,10 @@ public class QaPipeline {
                 m.recordLlmCall(50, 20);
                 m.recipeLlmMs = (System.nanoTime() - tLlm) / 1_000_000;
             }
+            scoredRecipes = recipeResults.stream()
+                    .map(rm -> new ScoredRecipe(rm, 60))
+                    .limit(MAX_RECIPE_CONTEXT)
+                    .toList();
         }
         m.recipeSearchTimeMs = (System.nanoTime() - t5) / 1_000_000;
         m.recipeResultCount = recipeResults.size();
@@ -203,12 +220,13 @@ public class QaPipeline {
         m.rerankTimeMs = 0;
         if (vectorResults.size() > 10 && llm != null) {
             long tr = System.nanoTime();
-            List<VectorStore.SearchResult> reranked = rerankWithLLM(question, vectorResults);
+            RerankResult rerank = rerankWithLLM(question, vectorResults);
             m.rerankLlmMs = (System.nanoTime() - tr) / 1_000_000;
             m.rerankTimeMs = m.rerankLlmMs;
-            m.recordLlmCall(vectorResults.size() * 100, 10);
-            if (reranked != null && reranked.size() < vectorResults.size()) {
-                vectorResults = reranked;
+            if (rerank.usage() != null) recordUsage(m, rerank.usage());
+            else m.recordLlmCall(vectorResults.size() * 100, 10);
+            if (rerank.results() != null && rerank.results().size() < vectorResults.size()) {
+                vectorResults = rerank.results();
             }
             m.addTrace("Rerank", m.rerankTimeMs, String.format("%d -> %d", m.vectorResultCount, vectorResults.size()));
         }
@@ -216,7 +234,9 @@ public class QaPipeline {
         result.recipeResults = recipeResults;
         result.vectorResults = vectorResults;
         result.incrementalInfo = incInfo;
-        result.recipesToRender = recipeResults;
+        boolean recipeIntent = result.questionType == ClassificationResult.QuestionType.RECIPE
+                || hasCraftingIntent(question);
+        result.recipesToRender = selectRecipesToRender(scoredRecipes, recipeIntent);
 
         // === Detect data tier (matching AnswerAgent's logic) ===
         boolean hasRecipes = !recipeResults.isEmpty();
@@ -249,21 +269,24 @@ public class QaPipeline {
         long tAnsLlm = System.nanoTime();
         result.answer = answerAgent.compose(ctx);
         m.answerLlmMs = (System.nanoTime() - tAnsLlm) / 1_000_000;
+        TokenUsage answerUsage = answerAgent.lastUsage();
+        if (answerUsage != null) recordUsage(m, answerUsage);
+        else m.recordLlmCall(estimateContextTokens(ctx), estimateAnswerTokens(result.answer));
 
         // If data is sparse (Tier C/D), supplement with LLM fallback
         m.fallbackUsed = false;
         if (!hasRelevantData && llm != null) {
             long tFb = System.nanoTime();
-            String fallback = answerWithFallback(question, category, resolvedEntities,
+            FallbackAnswer fallback = answerWithFallback(question, category, resolvedEntities,
                     vectorResults, recipeResults, convContext);
             m.fallbackLlmMs = (System.nanoTime() - tFb) / 1_000_000;
-            if (fallback != null) {
-                result.answer = fallback;
+            if (fallback.text() != null) {
+                result.answer = fallback.text();
                 m.fallbackUsed = true;
+                if (fallback.usage() != null) recordUsage(m, fallback.usage());
             }
         }
         m.answerGenTimeMs = (System.nanoTime() - t6) / 1_000_000;
-        m.recordLlmCall(estimateContextTokens(ctx), estimateAnswerTokens(result.answer));
         m.answerLength = result.answer != null ? result.answer.length() : 0;
 
         m.addTrace("AnswerGen", m.answerGenTimeMs, m.fallbackUsed ? "LLM fallback" : "RAG compose");
@@ -376,11 +399,11 @@ public class QaPipeline {
 
     // ==================== LLM fallback ====================
 
-    private String answerWithFallback(String question, McmodCategory category,
-                                      List<ResolvedEntity> entities,
-                                      List<VectorStore.SearchResult> vectorResults,
-                                      List<RecipeMatch> recipeResults,
-                                      String convContext) {
+    private FallbackAnswer answerWithFallback(String question, McmodCategory category,
+                                              List<ResolvedEntity> entities,
+                                              List<VectorStore.SearchResult> vectorResults,
+                                              List<RecipeMatch> recipeResults,
+                                              String convContext) {
         try {
             StringBuilder ctx = new StringBuilder();
             if (convContext != null && !convContext.isBlank()) {
@@ -436,36 +459,107 @@ public class QaPipeline {
                     "尝试更具体地描述你的问题，例如指定模组名称、使用英文物品名，或询问特定方面（如合成配方、驯服方法、掉落物等）。"
                     """, ctx.toString(), question);
 
-            String answer = llm.rawAsk(prompt);
-            return answer != null && !answer.isBlank() ? answer : null;
+            RagAgentService.LlmResult r = llm.askWithUsage(prompt);
+            String answer = r != null ? r.text() : null;
+            return new FallbackAnswer(answer != null && !answer.isBlank() ? answer : null,
+                    r != null ? r.tokenUsage() : null);
         } catch (Exception e) {
             log.warn("LLM fallback failed: {}", e.getMessage());
-            return null;
+            return new FallbackAnswer(null, null);
         }
     }
 
     // ==================== Recipe search ====================
 
-    private List<RecipeMatch> findRecipes(List<ResolvedEntity> entities) {
-        Set<String> foundOutputs = new LinkedHashSet<>();
-        List<RecipeMatch> matches = new ArrayList<>();
-
+    /**
+     * 按相关性查找配方并排序：
+     *   100 = 输出物与实体注册名完全一致
+     *    95 = 输出物等于 item 部分（无 mod 前缀）
+     *    80 = 输出物包含注册名 / 70 输出物包含 item 名
+     *    50 = recipe_data 提及 item 名（作为材料等）
+     *    20 = 仅 recipe_data 提及 modId（弱相关）
+     * 同一 output_item 只保留最高分，最后取前 MAX_RECIPE_CONTEXT 条。
+     */
+    private List<ScoredRecipe> findScoredRecipes(List<ResolvedEntity> entities) {
+        Map<String, ScoredRecipe> best = new LinkedHashMap<>();
         for (ResolvedEntity e : entities) {
-            searchRecipe("output_item LIKE ?", new String[]{"%" + e.registry() + "%"}, foundOutputs, matches);
+            collectScoredRecipes(e, "output_item LIKE ?", new String[]{"%" + e.registry() + "%"}, 80, best);
             if (e.registry().contains(":")) {
                 String itemPart = e.registry().substring(e.registry().indexOf(':') + 1);
-                searchRecipe("output_item LIKE ? OR recipe_data LIKE ?",
-                        new String[]{"%" + itemPart + "%", "%" + itemPart + "%"}, foundOutputs, matches);
+                collectScoredRecipes(e, "output_item LIKE ? OR recipe_data LIKE ?",
+                        new String[]{"%" + itemPart + "%", "%" + itemPart + "%"}, 50, best);
             }
         }
-
-        if (matches.isEmpty() && !entities.isEmpty()) {
+        if (best.isEmpty() && !entities.isEmpty()) {
             for (ResolvedEntity e : entities) {
-                searchRecipe("recipe_data LIKE ?",
-                        new String[]{"%" + e.modId() + "%"}, foundOutputs, matches);
+                collectScoredRecipes(e, "recipe_data LIKE ?",
+                        new String[]{"%" + e.modId() + "%"}, 20, best);
             }
         }
-        return matches;
+        return best.values().stream()
+                .sorted(Comparator.comparingInt(ScoredRecipe::score).reversed())
+                .limit(MAX_RECIPE_CONTEXT)
+                .toList();
+    }
+
+    private void collectScoredRecipes(ResolvedEntity entity, String where, String[] params,
+                                      int baseScore, Map<String, ScoredRecipe> best) {
+        String sql = "SELECT recipe_data, output_item, source_mod FROM rag_recipe WHERE " + where + " LIMIT 20";
+        try (Connection c = baseDb.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            for (int i = 0; i < params.length; i++) ps.setString(i + 1, params[i]);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String out = rs.getString("output_item");
+                    if (out == null || out.isBlank()) continue;
+                    int score = baseScore;
+                    if (out.equalsIgnoreCase(entity.registry())) {
+                        score = 100;
+                    } else if (entity.registry().contains(":")) {
+                        String itemPart = entity.registry().substring(entity.registry().indexOf(':') + 1);
+                        if (out.equalsIgnoreCase(itemPart)) score = 95;
+                    }
+                    RecipeMatch rm = new RecipeMatch(rs.getString("recipe_data"), out, rs.getString("source_mod"));
+                    ScoredRecipe prev = best.get(out);
+                    if (prev == null || score > prev.score()) {
+                        best.put(out, new ScoredRecipe(rm, score));
+                    }
+                }
+            }
+        } catch (Exception e) { log.warn("Recipe search failed", e); }
+    }
+
+    /**
+     * 决定哪些配方要渲染成图片：
+     *   - 非合成/制作意图的问题（如"龙有哪几种"）→ 不渲染
+     *   - 存在精确产物的配方时 → 只渲染产物本身（score &gt;= 100），排除"材料还能合成什么"的旁支
+     *   - 无精确产物但确属制作意图 → 渲染最高分的若干条
+     */
+    private List<RecipeMatch> selectRecipesToRender(List<ScoredRecipe> scoredRecipes, boolean recipeIntent) {
+        if (scoredRecipes == null || scoredRecipes.isEmpty() || !recipeIntent) return List.of();
+        boolean exactOutput = scoredRecipes.stream().anyMatch(s -> s.score() >= 100);
+        List<RecipeMatch> toRender = new ArrayList<>();
+        for (ScoredRecipe sr : scoredRecipes) {
+            if (exactOutput && sr.score() < 100) continue;
+            toRender.add(sr.match());
+            if (toRender.size() >= MAX_RECIPES_TO_RENDER) break;
+        }
+        return toRender;
+    }
+
+    /** 通过关键词判断问题是否属于"制作/合成/获取"类意图。 */
+    private static boolean hasCraftingIntent(String question) {
+        if (question == null) return false;
+        String q = question.toLowerCase();
+        String[] keywords = {
+                "怎么做", "如何做", "怎么合成", "如何合成", "合成配方", "合成方式", "合成方法",
+                "的配方", "怎么制作", "如何制作", "怎么获得", "如何获得", "获取方法",
+                "怎么搞", "怎么弄", "怎样做", "制作", "合成", "craft", "recipe", "make"
+        };
+        for (String kw : keywords) {
+            if (q.contains(kw)) return true;
+        }
+        return false;
     }
 
     private List<RecipeMatch> findRecipesByText(String question) {
@@ -550,8 +644,8 @@ public class QaPipeline {
 
     // ==================== LLM Reranker ====================
 
-    private List<VectorStore.SearchResult> rerankWithLLM(String question, List<VectorStore.SearchResult> candidates) {
-        if (llm == null) return candidates.subList(0, Math.min(8, candidates.size()));
+    private RerankResult rerankWithLLM(String question, List<VectorStore.SearchResult> candidates) {
+        if (llm == null) return new RerankResult(candidates.subList(0, Math.min(8, candidates.size())), null);
         try {
             StringBuilder ctx = new StringBuilder();
             ctx.append("Question: ").append(question).append("\n\n");
@@ -562,7 +656,8 @@ public class QaPipeline {
                 ctx.append("[").append(i).append("] ").append(preview.replace("\n", " ")).append("\n");
             }
             String prompt = ctx + "\nList ONLY the indices of DIRECTLY relevant items. Reply with numbers separated by commas (e.g. 2,5,7). If none: NONE";
-            String resp = llm.rawAsk(prompt);
+            RagAgentService.LlmResult r = llm.askWithUsage(prompt);
+            String resp = r != null ? r.text() : null;
             if (resp != null && !resp.trim().equalsIgnoreCase("NONE")) {
                 List<VectorStore.SearchResult> filtered = new ArrayList<>();
                 for (String part : resp.split("[,\\s]+")) {
@@ -576,11 +671,13 @@ public class QaPipeline {
                 }
                 if (filtered.size() >= 2 && filtered.size() < candidates.size()) {
                     log.info("Reranker: {} -> {} relevant", candidates.size(), filtered.size());
-                    return filtered;
+                    return new RerankResult(filtered, r != null ? r.tokenUsage() : null);
                 }
             }
+            return new RerankResult(candidates.subList(0, Math.min(8, candidates.size())),
+                    r != null ? r.tokenUsage() : null);
         } catch (Exception e) { log.debug("Rerank failed: {}", e.getMessage()); }
-        return candidates.subList(0, Math.min(8, candidates.size()));
+        return new RerankResult(candidates.subList(0, Math.min(8, candidates.size())), null);
     }
 
     // ==================== Helpers ====================
@@ -593,6 +690,7 @@ public class QaPipeline {
     public void clearHistory() {
         conversationHistory.clear();
         conversationTurn = 0;
+        answerAgent.clearMemory();
         QaMetrics.cumulative.reset();
     }
 
@@ -649,10 +747,21 @@ public class QaPipeline {
         return (int) (answer.length() * 0.4);
     }
 
+    /** 用真实 Token 用量记账（无用时不动），替换旧的纯估算路径。 */
+    private static void recordUsage(QaMetrics m, TokenUsage usage) {
+        if (m == null || usage == null) return;
+        int in = usage.inputTokenCount() == null ? 0 : usage.inputTokenCount();
+        int out = usage.outputTokenCount() == null ? 0 : usage.outputTokenCount();
+        m.recordLlmCall(in, out);
+    }
+
     // ==================== Data classes ====================
 
     public record RecipeMatch(String recipeJson, String outputItem, String sourceMod) {}
     private record QAPair(String question, String answer) {}
+    private record FallbackAnswer(String text, TokenUsage usage) {}
+    private record RerankResult(List<VectorStore.SearchResult> results, TokenUsage usage) {}
+    private record ScoredRecipe(RecipeMatch match, int score) {}
 
     public static class QaResult {
         public ClassificationResult.QuestionType questionType = ClassificationResult.QuestionType.GENERAL;

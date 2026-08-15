@@ -1,7 +1,5 @@
 package yagen.waitmydawn.kb.renderer;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.config.AppConfig;
@@ -10,161 +8,118 @@ import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 管理 GUI 底板模板和槽位坐标。优先用户提供的底板，否则 Java AWT 自动生成。
+ * 模板管理器 — 从原版 Minecraft GUI 纹理裁剪基底底板并缓存。
+ *
+ * 裁剪规则 (基于原版 Minecraft 1.21.1 的 gui/container 纹理):
+ *   crafting_table.png → crop (29,16)-(145,70) → 116×54
+ *   furnace.png        → crop (55,16)-(137,70) → 82×54
+ *   smithing.png       → crop (7,7)-(115,65)    → 108×58
+ *
+ * 首次使用时裁剪并保存到 {dataDir}/templates/, 之后直接复用。
  */
 public class TemplateManager {
 
     private static final Logger log = LoggerFactory.getLogger(TemplateManager.class);
-    private final AppConfig config;
-    private final ObjectMapper mapper = new ObjectMapper();
 
+    private final AppConfig config;
+    private final Path templatesDir;
+    private final Path texturesDir;
     private final Map<String, BufferedImage> templateCache = new HashMap<>();
-    private final Map<String, SlotConfig> slotConfigs = new HashMap<>();
+
+    // Crop regions in the vanilla GUI texture
+    private static final Map<String, Rectangle> CROP_REGIONS = Map.of(
+            "crafting_table", new Rectangle(29, 16, 116, 54),
+            "furnace",        new Rectangle(55, 16, 82, 54),
+            "smithing",       new Rectangle(7, 7, 108, 58)
+    );
 
     public TemplateManager(AppConfig config) {
         this.config = config;
-        loadSlotConfig();
+        this.templatesDir = config.getTemplatesDir();
+        this.texturesDir = config.getTexturesDir();
+        try { Files.createDirectories(templatesDir); } catch (Exception ignored) {}
     }
 
-    public static class SlotConfig {
-        public int width = 512, height = 340;
-        public int slotSize = 64;
-        public Map<String, Point> inputSlots = new HashMap<>();
-        public Point outputSlot;
-        public int outputSize = 64;
-    }
+    /**
+     * Get (or create) a cropped base template for a recipe type.
+     *
+     * @param type one of "crafting_table", "furnace", "smithing"
+     * @return cropped template image, or null if the vanilla texture is unavailable
+     */
+    public BufferedImage getOrCreateTemplate(String type) {
+        // Check cache
+        BufferedImage cached = templateCache.get(type);
+        if (cached != null) return cached;
 
-    private void loadSlotConfig() {
-        File slotsFile = config.getTemplatesDir().resolve("slots.json").toFile();
-        if (slotsFile.exists()) {
+        // Check if already cropped and saved
+        Path savedPath = templatesDir.resolve(type + "_template.png");
+        if (Files.exists(savedPath)) {
             try {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> raw = mapper.readValue(slotsFile, Map.class);
-                for (Map.Entry<String, Object> entry : raw.entrySet()) {
-                    JsonNode node = mapper.valueToTree(entry.getValue());
-                    SlotConfig sc = new SlotConfig();
-                    if (node.has("width")) sc.width = node.get("width").asInt();
-                    if (node.has("height")) sc.height = node.get("height").asInt();
-                    if (node.has("slotSize")) sc.slotSize = node.get("slotSize").asInt();
-                    if (node.has("slots")) {
-                        for (JsonNode slot : node.get("slots")) {
-                            String key = "slot_" + slot.path("col").asInt(0) + "_" + slot.path("row").asInt(0);
-                            sc.inputSlots.put(key, new Point(slot.get("cx").asInt(), slot.get("cy").asInt()));
-                        }
-                    }
-                    if (node.has("outputSlot")) {
-                        JsonNode out = node.get("outputSlot");
-                        sc.outputSlot = new Point(out.get("cx").asInt(), out.get("cy").asInt());
-                        if (out.has("size")) sc.outputSize = out.get("size").asInt();
-                    }
-                    slotConfigs.put(entry.getKey(), sc);
-                }
-                log.info("已加载 {} 个底板槽位配置", slotConfigs.size());
+                BufferedImage img = ImageIO.read(savedPath.toFile());
+                templateCache.put(type, img);
+                log.debug("Template loaded from cache: {}", savedPath);
+                return img;
             } catch (Exception e) {
-                log.warn("槽位配置解析失败: {}", e.getMessage());
+                log.warn("Failed to load cached template: {}", savedPath);
             }
         }
 
-        if (!slotConfigs.containsKey("crafting_table_3x3")) {
-            slotConfigs.put("crafting_table_3x3", buildDefaultCraftingConfig());
+        // Try to crop from vanilla GUI texture
+        // Path: {texturesDir}/minecraft/gui/container/{type}.png
+        Path vanillaPath = texturesDir.resolve("minecraft/gui/container/" + type + ".png");
+        if (!Files.exists(vanillaPath)) {
+            // Try alternate: the slug might be different
+            // Look for any gui/container/{type}.png under textures/
+            log.warn("Vanilla GUI texture not found: {}", vanillaPath);
+            return null;
         }
-        if (!slotConfigs.containsKey("furnace")) {
-            slotConfigs.put("furnace", buildDefaultFurnaceConfig());
-        }
-        if (!slotConfigs.containsKey("smithing_table")) {
-            slotConfigs.put("smithing_table", buildDefaultSmithingConfig());
-        }
-    }
 
-    public BufferedImage getTemplate(String name) {
-        return templateCache.computeIfAbsent(name, k -> {
-            // 1) User template
-            File userTpl = config.getTemplatesDir().resolve(name + ".png").toFile();
-            if (userTpl.exists()) {
-                try { return ImageIO.read(userTpl); } catch (Exception ignored) {}
-            }
-            // 2) Vanilla GUI texture extracted from MC jar
-            File vanillaTpl = config.getTexturesDir().resolve("mods/vanilla/gui_container_" + name.replace("crafting_table_3x3", "crafting_table") + ".png").toFile();
-            if (name.equals("crafting_table_3x3")) {
-                vanillaTpl = config.getTexturesDir().resolve("mods/vanilla/gui_container_crafting_table.png").toFile();
-            } else if (name.equals("furnace")) {
-                vanillaTpl = config.getTexturesDir().resolve("mods/vanilla/gui_container_furnace.png").toFile();
-            } else if (name.equals("smithing_table")) {
-                vanillaTpl = config.getTexturesDir().resolve("mods/vanilla/gui_container_smithing.png").toFile();
-            }
-            if (vanillaTpl.exists()) {
-                try { return ImageIO.read(vanillaTpl); } catch (Exception ignored) {}
-            }
-            // 3) Auto-generate
-            return generateDefaultTemplate(name);
-        });
-    }
-
-    public SlotConfig getSlotConfig(String name) {
-        return slotConfigs.getOrDefault(name, new SlotConfig());
-    }
-
-    private BufferedImage generateDefaultTemplate(String name) {
-        SlotConfig sc = getSlotConfig(name);
-        BufferedImage canvas = new BufferedImage(sc.width, sc.height, BufferedImage.TYPE_INT_ARGB);
-        Graphics2D g = canvas.createGraphics();
-        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        g.setColor(new Color(45, 45, 45, 240));
-        g.fillRoundRect(0, 0, sc.width, sc.height, 12, 12);
-        g.setColor(new Color(80, 80, 80));
-        g.setStroke(new BasicStroke(3));
-        g.drawRoundRect(2, 2, sc.width - 4, sc.height - 4, 12, 12);
-        g.setColor(new Color(139, 139, 139, 80));
-        for (Point p : sc.inputSlots.values()) {
-            int half = sc.slotSize / 2;
-            g.fillRect(p.x - half, p.y - half, sc.slotSize, sc.slotSize);
-            g.setColor(new Color(90, 90, 90));
-            g.drawRect(p.x - half, p.y - half, sc.slotSize, sc.slotSize);
-            g.setColor(new Color(139, 139, 139, 80));
+        BufferedImage vanilla;
+        try {
+            vanilla = ImageIO.read(vanillaPath.toFile());
+        } catch (Exception e) {
+            log.warn("Failed to read vanilla GUI texture: {}", vanillaPath);
+            return null;
         }
-        if (sc.outputSlot != null) {
-            int half = sc.outputSize / 2;
-            g.setColor(new Color(252, 211, 77, 100));
-            g.fillRect(sc.outputSlot.x - half, sc.outputSlot.y - half, sc.outputSize, sc.outputSize);
-            g.setColor(new Color(252, 211, 77));
-            g.drawRect(sc.outputSlot.x - half, sc.outputSlot.y - half, sc.outputSize, sc.outputSize);
+
+        Rectangle crop = CROP_REGIONS.get(type);
+        if (crop == null) {
+            log.warn("No crop region defined for template type: {}", type);
+            return null;
         }
+
+        // Ensure crop is within bounds
+        int x = Math.max(0, crop.x);
+        int y = Math.max(0, crop.y);
+        int w = Math.min(crop.width, vanilla.getWidth() - x);
+        int h = Math.min(crop.height, vanilla.getHeight() - y);
+
+        BufferedImage cropped = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = cropped.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        g.drawImage(vanilla, 0, 0, w, h, x, y, x + w, y + h, null);
         g.dispose();
-        return canvas;
+
+        // Save for reuse
+        try {
+            ImageIO.write(cropped, "PNG", savedPath.toFile());
+            log.info("Template cropped and saved: {} ({}x{})", savedPath, w, h);
+        } catch (Exception e) {
+            log.warn("Failed to save cropped template: {}", savedPath);
+        }
+
+        templateCache.put(type, cropped);
+        return cropped;
     }
 
-    private SlotConfig buildDefaultCraftingConfig() {
-        SlotConfig sc = new SlotConfig();
-        sc.width = 512; sc.height = 340; sc.slotSize = 64; sc.outputSize = 64;
-        int gsx = 80, gsy = 55;
-        for (int row = 0; row < 3; row++)
-            for (int col = 0; col < 3; col++)
-                sc.inputSlots.put("slot_" + col + "_" + row,
-                        new Point(gsx + col * 70 + 32, gsy + row * 70 + 32));
-        sc.outputSlot = new Point(400, 152);
-        return sc;
-    }
-
-    private SlotConfig buildDefaultFurnaceConfig() {
-        SlotConfig sc = new SlotConfig();
-        sc.width = 400; sc.height = 320; sc.slotSize = 64; sc.outputSize = 64;
-        sc.inputSlots.put("input", new Point(120, 120));
-        sc.inputSlots.put("fuel", new Point(120, 210));
-        sc.outputSlot = new Point(320, 155);
-        return sc;
-    }
-
-    private SlotConfig buildDefaultSmithingConfig() {
-        SlotConfig sc = new SlotConfig();
-        sc.width = 400; sc.height = 300; sc.slotSize = 48; sc.outputSize = 64;
-        sc.inputSlots.put("template", new Point(60, 100));
-        sc.inputSlots.put("base", new Point(60, 175));
-        sc.inputSlots.put("addition", new Point(155, 175));
-        sc.outputSlot = new Point(330, 140);
-        return sc;
+    /** Clear in-memory cache (disk cache remains) */
+    public void clearCache() {
+        templateCache.clear();
     }
 }

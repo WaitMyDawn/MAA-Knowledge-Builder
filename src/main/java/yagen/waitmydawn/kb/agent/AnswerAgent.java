@@ -2,6 +2,13 @@ package yagen.waitmydawn.kb.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.output.TokenUsage;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.Result;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.service.RagAgentService;
@@ -27,10 +34,8 @@ public class AnswerAgent {
     private static final Logger log = LoggerFactory.getLogger(AnswerAgent.class);
     private static final ObjectMapper mapper = new ObjectMapper();
 
-    private static final String ANSWER_PROMPT = """
+    private static final String ANSWER_SYSTEM_PROMPT = """
             You are an expert Minecraft knowledge assistant. Answer the user's question using the provided retrieval data.
-
-            %s
 
             [Rules]
             1. Answer in Chinese. Be thorough but concise.
@@ -52,15 +57,36 @@ public class AnswerAgent {
               > ⚠️ 本地知识库未包含相关数据，以下回答基于 AI 通用知识，可能不完全准确。
               建议构建知识库以获得准确的模组特定信息。
               Then suggest: "尝试更具体地描述问题，例如提及模组名称或物品英文名。"
-
-            [User Question]
-            %s
             """;
 
+    /** AiServices 答案合成接口：自由文本 Markdown 输出 + 真实 Token 用量。 */
+    public interface AnswerComposer {
+        @SystemMessage(ANSWER_SYSTEM_PROMPT)
+        @UserMessage("{{it}}")
+        Result<String> compose(String prompt);
+    }
+
     private final RagAgentService llm;
+    private final AnswerComposer composer;
+    private final MessageWindowChatMemory chatMemory;
+    private volatile TokenUsage lastUsage;
 
     public AnswerAgent(RagAgentService llm) {
         this.llm = llm;
+        this.chatMemory = MessageWindowChatMemory.withMaxMessages(20);
+        ChatModel model = llm.getChatModel();
+        AnswerComposer c = null;
+        if (model != null) {
+            try {
+                c = AiServices.builder(AnswerComposer.class)
+                        .chatModel(model)
+                        .chatMemory(chatMemory)
+                        .build();
+            } catch (Exception e) {
+                log.warn("AiServices init failed, answer compose falls back to offline mode: {}", e.getMessage());
+            }
+        }
+        this.composer = c;
     }
 
     /** Compose a final answer from all retrieval results. */
@@ -132,15 +158,30 @@ public class AnswerAgent {
             context.append("=== [Incremental Fetch] ===\n").append(ctx.incrementalInfo()).append("\n\n");
         }
 
-        String prompt = ANSWER_PROMPT.formatted(context.toString(), ctx.question());
+        String prompt = "[Retrieval Context]\n" + context + "\n\n[User Question]\n" + ctx.question();
 
         try {
-            String answer = llm.rawAsk(prompt);
-            if (answer != null && !answer.isBlank()) return answer;
+            if (composer != null) {
+                Result<String> result = composer.compose(prompt);
+                lastUsage = result.tokenUsage();
+                String answer = result.content();
+                if (answer != null && !answer.isBlank()) return answer;
+            }
         } catch (Exception e) {
             log.error("AnswerAgent LLM call failed", e);
         }
         return composeFallback(ctx);
+    }
+
+    /** 清空多轮对话记忆（切换会话/清空历史时调用）。 */
+    public void clearMemory() {
+        chatMemory.clear();
+        lastUsage = null;
+    }
+
+    /** 最近一次合成的真实 Token 用量；离线/回退路径时为 null。 */
+    public TokenUsage lastUsage() {
+        return lastUsage;
     }
 
     private String composeFallback(AnswerContext ctx) {

@@ -1,5 +1,11 @@
 package yagen.waitmydawn.kb.agent;
 
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.output.TokenUsage;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.Result;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
@@ -23,6 +29,19 @@ public class UrlAgent {
 
     private static final Logger log = LoggerFactory.getLogger(UrlAgent.class);
 
+    private static final String MATCH_SYSTEM_PROMPT = """
+            You are matching a user's entity description to the most likely MC百科 item page.
+
+            [Rules]
+            1. Pick the item(s) that BEST match the entity description.
+               Consider: Chinese name, English name, partial matches, synonyms.
+               E.g. "秘银矿" matches "秘银矿石(Mithril Ore)".
+               "火龙" matches "火龙(Fire Dragon)".
+            2. Reply with ONLY a JSON array, no extra text. Copy the matched keys EXACTLY from the candidate list:
+               ["秘银矿石(Mithril Ore)","火龙(Fire Dragon)"]
+            3. If nothing matches, reply: []
+            """;
+
     private static final String MATCH_PROMPT = """
             You are matching a user's entity description to the most likely MC百科 item page.
 
@@ -42,12 +61,34 @@ public class UrlAgent {
             4. NO extra text, NO explanations.
             """;
 
+    /** AiServices 结构化匹配接口：LLM 直接返回 JSON 数组（包一层 record 以保证反序列化稳定）。 */
+    public interface UrlMatcher {
+        @SystemMessage(MATCH_SYSTEM_PROMPT)
+        @UserMessage("{{it}}")
+        Result<UrlMatches> match(String prompt);
+    }
+
+    /** 匹配到的候选键列表。 */
+    public record UrlMatches(List<String> keys) {}
+
     private final RagAgentService llm;
     private final DatabaseBuilder db;
+    private final UrlMatcher matcher;
+    private volatile TokenUsage lastUsage;
 
     public UrlAgent(RagAgentService llm, DatabaseBuilder db) {
         this.llm = llm;
         this.db = db;
+        ChatModel model = llm.getChatModel();
+        UrlMatcher m = null;
+        if (model != null) {
+            try {
+                m = AiServices.builder(UrlMatcher.class).chatModel(model).build();
+            } catch (Exception e) {
+                log.warn("AiServices init failed, url match falls back to text parsing: {}", e.getMessage());
+            }
+        }
+        this.matcher = m;
     }
 
     /**
@@ -78,9 +119,42 @@ public class UrlAgent {
 
         // Send to LLM for matching — one call with all entities
         String entitiesStr = String.join(", ", entityDescriptions);
-        String prompt = MATCH_PROMPT.formatted(entitiesStr, modId, candidateList.toString());
-
         try {
+            // 优先使用结构化输出（AiServices）
+            if (matcher != null) {
+                try {
+                    // 结构化路径的用户消息只提供上下文，输出格式完全交给 @SystemMessage
+                    String structuredPrompt = "[Entity to find]\n" + entitiesStr
+                            + "\n\n[Candidate items for mod: " + modId + "]\n"
+                            + candidateList;
+                    Result<UrlMatches> result = matcher.match(structuredPrompt);
+                    lastUsage = accumulateUsage(lastUsage, result.tokenUsage());
+                    UrlMatches matches = result.content();
+                    if (matches != null && matches.keys() != null && !matches.keys().isEmpty()) {
+                        for (String key : matches.keys()) {
+                            String url = allSubPages.get(key);
+                            if (url == null) url = fuzzyMatch(key, allSubPages);
+                            if (url != null) {
+                                results.put(key, url);
+                                log.info("UrlAgent: '{}' → {} → {}", entitiesStr, key, url);
+                            }
+                        }
+                        return results;
+                    }
+                    // 模型明确返回 []：无匹配，避免重复调用 LLM
+                    if (matches != null) {
+                        log.info("UrlAgent: no match for '{}' in mod {} (structured)", entitiesStr, modId);
+                        return results;
+                    }
+                } catch (Exception e) {
+                    log.warn("UrlAgent structured call failed ({}), falling back to text parse: {}",
+                            e.getClass().getSimpleName(), e.getMessage());
+                    log.debug("UrlAgent structured failure detail", e);
+                }
+            }
+
+            // 回退：旧版逐行文本解析
+            String prompt = MATCH_PROMPT.formatted(entitiesStr, modId, candidateList.toString());
             String response = llm.rawAsk(prompt);
             if (response == null || response.isBlank() || response.trim().equals("NONE")) {
                 log.info("UrlAgent: no match for '{}' in mod {}", entitiesStr, modId);
@@ -108,6 +182,26 @@ public class UrlAgent {
         }
 
         return results;
+    }
+
+    /** 最近一次匹配调用的真实 Token 用量；回退路径或未配置 Key 时为 null。 */
+    public TokenUsage lastUsage() {
+        return lastUsage;
+    }
+
+    /** 清空累计用量（QaPipeline 在每个问题处理开始时调用）。 */
+    public void resetUsage() {
+        lastUsage = null;
+    }
+
+    private static TokenUsage accumulateUsage(TokenUsage existing, TokenUsage next) {
+        if (next == null) return existing;
+        if (existing == null) return next;
+        try {
+            return existing.add(next);
+        } catch (Exception e) {
+            return next;
+        }
     }
 
     /** Get all subWebPage keys→URLs for a given modId from rag_web_cache */

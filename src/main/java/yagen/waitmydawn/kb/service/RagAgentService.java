@@ -1,12 +1,12 @@
 package yagen.waitmydawn.kb.service;
 
-import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.openai.OpenAiChatModel;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.output.Response;
+import dev.langchain4j.model.output.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.config.AppConfig;
@@ -23,7 +23,7 @@ public class RagAgentService {
     private static final Logger log = LoggerFactory.getLogger(RagAgentService.class);
 
     private final AppConfig config;
-    private ChatLanguageModel chatModel;
+    private volatile ChatModel chatModel;
 
     private static final String SYSTEM_PROMPT = """
             You are an expert Minecraft knowledge assistant.
@@ -51,33 +51,75 @@ public class RagAgentService {
 
     /** Ask LLM a raw question, return text. For helper callers. */
     public String rawAsk(String prompt) {
-        ChatLanguageModel model = getModel();
+        ChatModel model = getModel();
         if (model == null) return null;
-        try { return model.generate(prompt); } catch (Exception e) { return null; }
+        try {
+            return model.chat(ChatRequest.builder()
+                            .messages(UserMessage.from(prompt))
+                            .build())
+                    .aiMessage().text();
+        } catch (Exception e) {
+            log.debug("rawAsk failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Ask LLM and return text together with real token usage / finish reason.
+     * 供 QaMetrics 使用真实 Token 数据替换估算值。
+     */
+    public LlmResult askWithUsage(String prompt) {
+        ChatModel model = getModel();
+        if (model == null) return null;
+        try {
+            ChatResponse response = model.chat(ChatRequest.builder()
+                    .messages(UserMessage.from(prompt))
+                    .build());
+            return new LlmResult(response.aiMessage().text(), response.tokenUsage(),
+                    response.finishReason() != null ? response.finishReason().name() : null);
+        } catch (Exception e) {
+            log.debug("askWithUsage failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 暴露底层 ChatModel，供 AiServices 构建结构化 Agent 使用。
+     * 未配置 API Key 时返回 null，调用方应走离线回退逻辑。
+     */
+    public ChatModel getChatModel() {
+        return getModel();
     }
 
     public RagAgentService(AppConfig config) {
         this.config = config;
     }
 
-    private ChatLanguageModel getModel() {
-        if (chatModel == null) {
-            String apiKey = config.getApiKey();
-            if (apiKey == null || apiKey.isBlank()) {
-                log.warn("API key not set, the agent will return a default response");
-                return null;
+    private ChatModel getModel() {
+        ChatModel model = chatModel;
+        if (model == null) {
+            synchronized (this) {
+                model = chatModel;
+                if (model == null) {
+                    String apiKey = config.getApiKey();
+                    if (apiKey == null || apiKey.isBlank()) {
+                        log.warn("API key not set, the agent will return a default response");
+                        return null;
+                    }
+                    model = OpenAiChatModel.builder()
+                            .baseUrl("https://api.deepseek.com/v1")
+                            .apiKey(apiKey)
+                            .modelName("deepseek-chat")
+                            .timeout(Duration.ofSeconds(60))
+                            .maxTokens(2048)
+                            .temperature(0.3)
+                            .build();
+                    chatModel = model;
+                    log.info("RAG Agent has been initialized (DeepSeek)");
+                }
             }
-            chatModel = OpenAiChatModel.builder()
-                    .baseUrl("https://api.deepseek.com/v1")
-                    .apiKey(apiKey)
-                    .modelName("deepseek-chat")
-                    .timeout(Duration.ofSeconds(60))
-                    .maxTokens(2048)
-                    .temperature(0.3)
-                    .build();
-            log.info("RAG Agent has been initialized (DeepSeek)");
         }
-        return chatModel;
+        return model;
     }
 
     /**
@@ -85,7 +127,7 @@ public class RagAgentService {
      */
     public String composeAnswer(String userQuestion, ClassificationResult classification,
                                  RetrievalResult retrieval) {
-        ChatLanguageModel model = getModel();
+        ChatModel model = getModel();
         if (model == null) {
             return generateFallbackAnswer(userQuestion, classification, retrieval);
         }
@@ -94,23 +136,27 @@ public class RagAgentService {
         String context = buildContext(classification, retrieval);
 
         try {
-            Response<AiMessage> response = model.generate(
-                    SystemMessage.from(SYSTEM_PROMPT),
-                    UserMessage.from("""
-                            [Retrieval Data]
-                            Question Type: %s
-                            %s
+            ChatResponse response = model.chat(ChatRequest.builder()
+                    .messages(
+                            SystemMessage.from(SYSTEM_PROMPT),
+                            UserMessage.from("""
+                                    [Retrieval Data]
+                                    Question Type: %s
+                                    %s
 
-                            [User Question]
-                            %s
-                            """.formatted(classification.getQuestionType(), context, userQuestion))
-            );
-            return response.content().text();
+                                    [User Question]
+                                    %s
+                                    """.formatted(classification.getQuestionType(), context, userQuestion)))
+                    .build());
+            return response.aiMessage().text();
         } catch (Exception e) {
             log.error("LLM call failed", e);
             return generateFallbackAnswer(userQuestion, classification, retrieval);
         }
     }
+
+    /** 一次 LLM 调用的结果：文本 + 真实 Token 用量 + 结束原因。 */
+    public record LlmResult(String text, TokenUsage tokenUsage, String finishReason) {}
 
     /** 无 API Key 或 LLM 调用失败时的回退回答 */
     private String generateFallbackAnswer(String question, ClassificationResult cls, RetrievalResult retrieval) {

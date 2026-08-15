@@ -17,6 +17,8 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <javafx.version>21.0.11</javafx.version>
+        <jackson.version>2.22.1</jackson.version>
+        <jackson.annotations.version>2.22</jackson.annotations.version>
         <main.class>yagen.waitmydawn.kb.MaaKnowledgeBuilderApp</main.class>
     </properties>
 
@@ -43,8 +45,18 @@
         <!-- Jackson (JSON 解析) -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>${jackson.annotations.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.17.1</version>
+            <version>${jackson.version}</version>
         </dependency>
 
         <!-- Jsoup (HTML 解析 - 可选网站爬取) -->
@@ -58,12 +70,12 @@
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-open-ai</artifactId>
-            <version>0.29.1</version>
+            <version>1.18.1</version>
         </dependency>
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j</artifactId>
-            <version>0.29.1</version>
+            <version>1.18.1</version>
         </dependency>
 
         <!-- TOML 解析 (neoforge.mods.toml) -->
@@ -77,7 +89,7 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-            <version>2.0.9</version>
+            <version>2.0.18</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>
@@ -117,6 +129,7 @@
                 <configuration>
                     <source>21</source>
                     <target>21</target>
+                    <parameters>true</parameters>
                 </configuration>
             </plugin>
 

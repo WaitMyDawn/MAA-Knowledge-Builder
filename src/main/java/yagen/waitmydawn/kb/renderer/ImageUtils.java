@@ -23,8 +23,8 @@ public final class ImageUtils {
         if (src == null) return null;
         BufferedImage scaled = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = scaled.createGraphics();
-        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
         g.drawImage(src, 0, 0, w, h, null);
         g.dispose();
         return scaled;

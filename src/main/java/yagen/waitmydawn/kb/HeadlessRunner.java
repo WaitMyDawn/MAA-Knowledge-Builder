@@ -47,10 +47,10 @@ public class HeadlessRunner {
 
         // Parse CLI args
         // # 完整流水线: clean + build + test
-        //./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --clean --build D:/Minecraft/mods --test"
+        // ./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --clean --build D:/Minecraft/mods --test"
         //
-        //# 仅测试（使用已有数据库）
-        //./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --test"
+        // # 仅测试（使用已有数据库）
+        // ./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --test"
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--data-dir" -> dataDir = args[++i];

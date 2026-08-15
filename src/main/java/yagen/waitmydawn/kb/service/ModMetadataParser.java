@@ -27,29 +27,8 @@ public class ModMetadataParser {
     private static final Logger log = LoggerFactory.getLogger(ModMetadataParser.class);
     private static final ObjectMapper mapper = new ObjectMapper();
 
-    // NeoForge/Forge major.minor → MC version
-    private static final Map<String, String> NEOFORGE_MC_MAP = new LinkedHashMap<>();
-    private static final Map<String, String> FORGE_MC_MAP = new LinkedHashMap<>();
-
-    static {
-        // 按前缀长度降序排列，确保最长匹配
-        NEOFORGE_MC_MAP.put("21.1", "1.21.1");
-        NEOFORGE_MC_MAP.put("21.0", "1.21");
-        NEOFORGE_MC_MAP.put("20.4", "1.20.4");
-        NEOFORGE_MC_MAP.put("20.2", "1.20.2");
-        NEOFORGE_MC_MAP.put("20.1", "1.20.1");
-        NEOFORGE_MC_MAP.put("20.0", "1.20");
-
-        FORGE_MC_MAP.put("49.0", "1.20.4");
-        FORGE_MC_MAP.put("48.0", "1.20.1");
-        FORGE_MC_MAP.put("47.0", "1.20");
-        FORGE_MC_MAP.put("41.0", "1.19");
-        FORGE_MC_MAP.put("40.0", "1.18");
-    }
 
     // versionRange pattern: [21.1.230,)  or [21.1,)  or (20.4,21.1]
-    private static final Pattern VERSION_RANGE_PATTERN =
-            Pattern.compile("[\\[(](\\d+(?:\\.\\d+)*)(?:\\.\\d+)?[,;]\\s*[^\\])]*[\\])]");
     private static final Pattern VERSION_RANGE_P =
             Pattern.compile("\\d+\\.\\d+(\\.\\d+)?");
 
@@ -169,21 +148,6 @@ public class ModMetadataParser {
             List<com.electronwill.nightconfig.core.Config> deps = toml.get("dependencies." + entry.getModId());
             if (deps != null) allDeps.addAll(deps);
         }
-
-//        // 遍历 dependencies 下的所有键 (使用 night-config API, 不能转 Map)
-//        Object depsObj = toml.getRaw("dependencies");
-//        if (depsObj instanceof com.electronwill.nightconfig.core.UnmodifiableConfig depsConfig) {
-//            for (com.electronwill.nightconfig.core.UnmodifiableConfig.Entry e : depsConfig.entrySet()) {
-//                Object val = e.getValue();
-//                if (val instanceof List) {
-//                    for (Object item : (List<?>) val) {
-//                        if (item instanceof com.electronwill.nightconfig.core.Config cfg) {
-//                            allDeps.add(cfg);
-//                        }
-//                    }
-//                }
-//            }
-//        }
 
         // 通过依赖关系获得MC版本
         for (com.electronwill.nightconfig.core.Config dep : allDeps) {

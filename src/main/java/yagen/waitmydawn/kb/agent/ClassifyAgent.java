@@ -1,5 +1,11 @@
 package yagen.waitmydawn.kb.agent;
 
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.output.TokenUsage;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.Result;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.service.RagAgentService;
@@ -14,6 +20,31 @@ import yagen.waitmydawn.kb.service.WikiScraperService.McmodCategory;
 public class ClassifyAgent {
 
     private static final Logger log = LoggerFactory.getLogger(ClassifyAgent.class);
+
+    private static final String CLASSIFY_SYSTEM_PROMPT = """
+            You are a Minecraft mod knowledge classifier. Classify the user's question into exactly ONE McmodCategory.
+
+            Reply with ONLY a JSON object, no extra text, in this exact shape:
+            {"category":"ENTITY","confidence":0.9}
+
+            category MUST be one of (name = id):
+              ITEM=1 (item, block, tool, weapon, armor)
+              BIOME=2 (biome)
+              DIM=3 (dimension/world)
+              ENTITY=4 (creature, monster, animal, boss)
+              ENCHANT=5 (enchantment)
+              EFFECT=6 (status effect, buff, debuff)
+              MUL_BLOCK=7 (multi-block structure)
+              STRUCTURE=8 (naturally generated structure)
+              HOTKEYS=9 (key bindings, hotkeys)
+              GAME_SETTINGS=10 (game settings, configuration)
+              SPELL=229 (spell/magic)
+
+            Rules:
+            1. If unsure or the question is about general mechanics, reply {"category":"GENERAL","confidence":0}
+            2. Use the [Previous Conversation] section only to resolve pronouns and follow-ups.
+            3. category must be the exact enum name from the list above (or GENERAL).
+            """;
 
     private static final String CLASSIFY_PROMPT = """
             You are a Minecraft mod knowledge classifier. Classify the user's question into exactly ONE of the following categories:
@@ -38,10 +69,32 @@ public class ClassifyAgent {
             Question: %s
             Category number:""";
 
+    /** AiServices 结构化分类接口：LLM 直接返回 JSON，由框架反序列化为中间 record。 */
+    public interface Classifier {
+        @SystemMessage(CLASSIFY_SYSTEM_PROMPT)
+        @UserMessage("{{it}}")
+        Result<StructuredClassification> classify(String prompt);
+    }
+
+    /** 结构化返回的中间形态：category 用字符串以便容纳 GENERAL/未知值，避免枚举反序列化失败。 */
+    public record StructuredClassification(String category, float confidence) {}
+
     private final RagAgentService llm;
+    private final Classifier classifier;
+    private volatile TokenUsage lastUsage;
 
     public ClassifyAgent(RagAgentService llm) {
         this.llm = llm;
+        ChatModel model = llm.getChatModel();
+        Classifier c = null;
+        if (model != null) {
+            try {
+                c = AiServices.builder(Classifier.class).chatModel(model).build();
+            } catch (Exception e) {
+                log.warn("AiServices init failed, classify falls back to text parsing: {}", e.getMessage());
+            }
+        }
+        this.classifier = c;
     }
 
     /**
@@ -68,9 +121,34 @@ public class ClassifyAgent {
             catList.append(String.format("  %d = %s\n", cat.getId(), cat.getName()));
         }
 
-        String prompt = CLASSIFY_PROMPT.formatted(catList.toString(), fullQuestion);
-
         try {
+            // 优先使用结构化输出（AiServices）
+            if (classifier != null) {
+                try {
+                    // 结构化路径的用户消息只提供上下文，输出格式完全交给 @SystemMessage
+                    String structuredPrompt = "[Categories]\n" + catList
+                            + "\n[Question]\n" + fullQuestion;
+                    Result<StructuredClassification> result = classifier.classify(structuredPrompt);
+                    lastUsage = result.tokenUsage();
+                    StructuredClassification structured = result.content();
+                    if (structured != null) {
+                        McmodCategory cat = parseCategory(structured.category());
+                        Classification cls = new Classification(cat, structured.confidence(),
+                                cat == null ? "general or unknown category" : null);
+                        if (cat != null) {
+                            log.info("ClassifyAgent: '{}' → {} ({})", question,
+                                    cat.name(), cat.getName());
+                        }
+                        return cls;
+                    }
+                } catch (Exception e) {
+                    log.warn("ClassifyAgent structured call failed, falling back to text parse: {}",
+                            e.getMessage());
+                }
+            }
+
+            // 回退：旧版文本解析（DeepSeek 不支持 json_schema 等场景）
+            String prompt = CLASSIFY_PROMPT.formatted(catList.toString(), fullQuestion);
             String response = llm.rawAsk(prompt);
             if (response == null || response.isBlank()) {
                 return new Classification(null, 0, "no response");
@@ -94,6 +172,30 @@ public class ClassifyAgent {
             log.warn("ClassifyAgent failed: {}", e.getMessage());
             return new Classification(null, 0, "error: " + e.getMessage());
         }
+    }
+
+    /** 将 LLM 返回的分类名映射为枚举；GENERAL/未知值返回 null。 */
+    private static McmodCategory parseCategory(String name) {
+        if (name == null || name.isBlank()) return null;
+        String cleaned = name.trim().toUpperCase();
+        if ("GENERAL".equals(cleaned) || "UNSURE".equals(cleaned) || "NONE".equals(cleaned)) {
+            return null;
+        }
+        try {
+            return McmodCategory.valueOf(cleaned);
+        } catch (IllegalArgumentException e) {
+            // 兼容模型返回中文名或编号
+            for (McmodCategory cat : McmodCategory.values()) {
+                if (cat.getName().equals(name.trim())) return cat;
+                if (String.valueOf(cat.getId()).equals(name.trim())) return cat;
+            }
+            return null;
+        }
+    }
+
+    /** 最近一次结构化调用的真实 Token 用量；回退路径或未配置 Key 时为 null。 */
+    public TokenUsage lastUsage() {
+        return lastUsage;
     }
 
     /** Detect if the question is a follow-up that needs conversation context */

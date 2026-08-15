@@ -2,7 +2,6 @@ package yagen.waitmydawn.kb.renderer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import yagen.waitmydawn.kb.config.AppConfig;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
@@ -10,95 +9,111 @@ import java.util.*;
 import java.util.List;
 
 /**
- * 工作台 3x3 合成图渲染器。底板 + 纹理叠加。
+ * 工作台 3x3 合成图渲染器。
+ *
+ * 使用已裁剪的底板模板 (116x54)，有效位点 (左上角原点):
+ *   输入槽位: 3x3 网格, slot 0 起点 (1,1), 每格 18x18 间隔
+ *   输出槽位: 起点 (95,19), 24x24 -> 16x16 范围
  */
 public class CraftingRenderer {
 
-    private final TemplateManager templateManager;
-    private final AppConfig config;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public CraftingRenderer(TemplateManager templateManager, AppConfig config) {
-        this.templateManager = templateManager;
-        this.config = config;
-    }
+    // Slot positions relative to cropped template (1,1 is slot 0 top-left)
+    private static final int SLOT_W = 18;
+    private static final int SLOT_H = 18;
+    private static final int SLOT_SIZE = 16;
+    private static final int OUT_X = 95, OUT_Y = 19;
 
-    public BufferedImage render(String recipeJson, List<String> texturePaths) {
+    public CraftingRenderer() {}
+
+    /**
+     * Render a crafting recipe onto the cropped template.
+     *
+     * @param recipeJson   raw recipe JSON
+     * @param template     cropped crafting_table template (116x54 expected)
+     * @param textureMap   registryName -> BufferedImage for ingredients
+     * @return rendered image (2x scaled), or null on failure
+     */
+    public BufferedImage render(String recipeJson, BufferedImage template,
+                                 Map<String, BufferedImage> textureMap) {
         try {
             JsonNode recipe = mapper.readTree(recipeJson);
-            String type = recipe.path("type").asText("minecraft:crafting_shaped");
-            boolean isShapeless = type.contains("shapeless");
+            boolean isShapeless = recipe.path("type").asText("").contains("shapeless");
 
-            Map<String, String> keyMap = parseKey(recipe);
+            Map<Character, String> keyMap = parseKey(recipe);
             List<String> pattern = parsePattern(recipe, isShapeless);
-            JsonNode resultNode = recipe.path("result");
-            String outputItem = resultNode.path("id").asText(null);
-            if (outputItem == null) outputItem = resultNode.path("item").asText(null);
-            if (outputItem == null) outputItem = resultNode.asText("unknown");
-            int outputCount = resultNode.path("count").asInt(1);
+            String outputItem = extractOutputItem(recipe);
 
-            BufferedImage template = templateManager.getTemplate("crafting_table_3x3");
-            TemplateManager.SlotConfig sc = templateManager.getSlotConfig("crafting_table_3x3");
-
-            int width = template.getWidth();
-            int height = template.getHeight() + 50;
-            BufferedImage canvas = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+            int w = template.getWidth();
+            int h = template.getHeight();
+            BufferedImage canvas = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = canvas.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
             g.drawImage(template, 0, 0, null);
 
+            // Draw input slots
             for (int row = 0; row < 3; row++) {
                 for (int col = 0; col < 3; col++) {
-                    Point pos = sc.inputSlots.get("slot_" + col + "_" + row);
-                    if (pos == null) continue;
                     char ch = row < pattern.size() && col < pattern.get(row).length()
                             ? pattern.get(row).charAt(col) : ' ';
                     if (ch == ' ') continue;
-                    String itemName = keyMap.getOrDefault(String.valueOf(ch), "");
-                    BufferedImage tex = findTexture(itemName, texturePaths);
-                    if (tex != null) {
-                        int half = sc.slotSize / 2;
-                        g.drawImage(ImageUtils.scale(tex, sc.slotSize, sc.slotSize),
-                                pos.x - half, pos.y - half, null);
-                    }
+                    String item = keyMap.getOrDefault(ch, "");
+                    if (item.isEmpty()) continue;
+                    BufferedImage tex = lookupTexture(item, textureMap);
+                    if (tex == null) tex = ImageUtils.createPlaceholder(item, Color.GRAY);
+                    int sx = 1 + col * SLOT_W;
+                    int sy = 1 + row * SLOT_H;
+                    g.drawImage(ImageUtils.scale(tex, SLOT_SIZE, SLOT_SIZE), sx, sy, null);
                 }
             }
 
-            if (sc.outputSlot != null) {
-                BufferedImage outTex = findTexture(outputItem, texturePaths);
-                if (outTex != null) {
-                    int half = sc.outputSize / 2;
-                    g.drawImage(ImageUtils.scale(outTex, sc.outputSize, sc.outputSize),
-                            sc.outputSlot.x - half, sc.outputSlot.y - half, null);
-                }
+            // Draw output
+            if (outputItem != null && !outputItem.isEmpty()) {
+                BufferedImage outTex = lookupTexture(outputItem, textureMap);
+                if (outTex == null) outTex = ImageUtils.createPlaceholder(outputItem, Color.ORANGE);
+                g.drawImage(ImageUtils.scale(outTex, SLOT_SIZE, SLOT_SIZE), OUT_X, OUT_Y, null);
             }
 
-            String label = outputItem + (outputCount > 1 ? " x" + outputCount : "");
-            ImageUtils.drawFooter(canvas, "Crafting: " + label, template.getHeight());
             g.dispose();
-            return canvas;
+
+            // Scale 2x
+            return ImageUtils.scale(canvas, w * 2, h * 2);
         } catch (Exception e) {
             return null;
         }
     }
 
+    private BufferedImage lookupTexture(String registryName, Map<String, BufferedImage> textureMap) {
+        if (registryName == null || registryName.isBlank()) return null;
+        // Exact match first
+        if (textureMap.containsKey(registryName)) return textureMap.get(registryName);
+        // Try short name
+        String shortName = registryName.contains(":")
+                ? registryName.substring(registryName.indexOf(':') + 1) : registryName;
+        for (var e : textureMap.entrySet()) {
+            if (e.getKey().endsWith(":" + shortName)) return e.getValue();
+        }
+        return null;
+    }
+
     @SuppressWarnings("unchecked")
-    private Map<String, String> parseKey(JsonNode recipe) {
-        Map<String, String> map = new HashMap<>();
+    private Map<Character, String> parseKey(JsonNode recipe) {
+        Map<Character, String> map = new LinkedHashMap<>();
         try {
             Map<String, Object> rm = mapper.convertValue(recipe, Map.class);
             Object ko = rm.get("key");
             if (ko instanceof Map) {
                 Map<String, Object> km = (Map<String, Object>) ko;
                 for (Map.Entry<String, Object> e : km.entrySet()) {
+                    if (e.getKey().isEmpty()) continue;
                     String item = "";
-                    if (e.getValue() instanceof Map) {
-                        Map<String, Object> vm = (Map<String, Object>) e.getValue();
-                        // MC 1.21+ uses "id", 1.20- uses "item"
+                    if (e.getValue() instanceof Map vm) {
                         item = (String) vm.getOrDefault("id", "");
                         if (item == null || item.isBlank()) item = (String) vm.getOrDefault("item", "");
                         if (item == null || item.isBlank()) item = (String) vm.getOrDefault("tag", "");
                     }
-                    if (item != null && !item.isBlank()) map.put(e.getKey(), item);
+                    if (item != null && !item.isBlank()) map.put(e.getKey().charAt(0), item);
                 }
             }
         } catch (Exception ignored) {}
@@ -116,23 +131,19 @@ public class CraftingRenderer {
             JsonNode ings = recipe.path("ingredients");
             if (ings.isArray()) {
                 StringBuilder sb = new StringBuilder();
-                int idx = 0;
-                for (int i = 0; i < ings.size(); i++) sb.append((char) ('A' + idx++));
+                for (int i = 0; i < Math.min(ings.size(), 9); i++) sb.append((char) ('A' + i));
                 return List.of(sb.toString(), "", "");
             }
         }
         return List.of("   ", "   ", "   ");
     }
 
-    private BufferedImage findTexture(String itemName, List<String> texturePaths) {
-        if (itemName == null || itemName.isBlank()) return null;
-        String shortName = itemName.contains(":") ? itemName.substring(itemName.indexOf(':') + 1) : itemName;
-        for (String path : texturePaths) {
-            if (path.replace('\\', '/').toLowerCase().contains(shortName.toLowerCase())) {
-                BufferedImage img = ImageUtils.loadImage(path);
-                if (img != null) return img;
-            }
-        }
-        return ImageUtils.createPlaceholder(shortName, ImageUtils.getColorForItemType("default"));
+    private String extractOutputItem(JsonNode recipe) {
+        JsonNode result = recipe.path("result");
+        String id = result.path("id").asText(null);
+        if (id != null) return id;
+        id = result.path("item").asText(null);
+        if (id != null) return id;
+        return result.asText(null);
     }
 }
