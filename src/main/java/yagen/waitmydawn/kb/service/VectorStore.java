@@ -136,6 +136,82 @@ public class VectorStore {
         return results.subList(0, Math.min(topK, results.size()));
     }
 
+    /**
+     * 实体别名向量检索：在 chunk_type = 'entity_alias' 的中英对照块中查找匹配主体。
+     * 别名块的 source_path 保存了对应的网页 URL，因此检索结果可直接驱动增量抓取。
+     */
+    public List<AliasResult> searchAliases(float[] queryVec, int topK, double minScore) {
+        return searchAliases(queryVec, topK, minScore, null);
+    }
+
+    public List<AliasResult> searchAliases(float[] queryVec, int topK, double minScore,
+                                           String modIdFilter) {
+        List<AliasResult> results = new ArrayList<>();
+        String sql = "SELECT chunk_text, mod_id, mod_name, source_path, embedding "
+                + "FROM rag_vectors WHERE chunk_type = 'entity_alias'";
+        if (modIdFilter != null && !modIdFilter.isBlank()) sql += " AND mod_id = ?";
+
+        try (Connection conn = db.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            if (modIdFilter != null && !modIdFilter.isBlank()) ps.setString(1, modIdFilter);
+            while (rs.next()) {
+                byte[] blob = rs.getBytes("embedding");
+                if (blob == null) continue;
+                float[] vec = deserialize(blob);
+                double sim = cosine(queryVec, vec);
+                if (sim < minScore) continue;
+                results.add(new AliasResult(
+                        rs.getString("chunk_text"),
+                        rs.getString("mod_id"),
+                        rs.getString("mod_name"),
+                        rs.getString("source_path"),
+                        sim));
+            }
+        } catch (SQLException e) {
+            log.error("Alias vector search failed", e);
+        }
+
+        results.sort((a, b) -> Double.compare(b.score, a.score));
+        return results.subList(0, Math.min(topK, results.size()));
+    }
+
+    /**
+     * 向量阈值过高导致漏召回时的确定性兜底：直接按中文/英文字面包含关系查找别名。
+     * 适合“贱叫怪”这种中文短词，即使本地 MiniLM 对中文相似度打分偏低也能命中。
+     */
+    public List<AliasResult> searchAliasesByText(String text, int topK) {
+        return searchAliasesByText(text, topK, null);
+    }
+
+    public List<AliasResult> searchAliasesByText(String text, int topK, String modIdFilter) {
+        if (text == null || text.isBlank()) return List.of();
+        List<AliasResult> results = new ArrayList<>();
+        String sql = "SELECT chunk_text, mod_id, mod_name, source_path FROM rag_vectors "
+                + "WHERE chunk_type = 'entity_alias' "
+                + "AND LOWER(CAST(chunk_text AS VARCHAR)) LIKE LOWER(?)";
+        if (modIdFilter != null && !modIdFilter.isBlank()) sql += " AND mod_id = ?";
+        sql += " ORDER BY chunk_text";
+        try (Connection conn = db.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, "%" + text + "%");
+            if (modIdFilter != null && !modIdFilter.isBlank()) ps.setString(2, modIdFilter);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next() && results.size() < topK) {
+                    results.add(new AliasResult(
+                            rs.getString("chunk_text"),
+                            rs.getString("mod_id"),
+                            rs.getString("mod_name"),
+                            rs.getString("source_path"),
+                            1.0));
+                }
+            }
+        } catch (SQLException e) {
+            log.error("Alias text search failed", e);
+        }
+        return results;
+    }
+
     /** 获取向量总数 */
     public int count() {
         try (Connection conn = db.getConnection();
@@ -247,4 +323,7 @@ public class VectorStore {
     }
 
     public record SearchResult(String chunkId, String chunkText, String modId, String modName, String type, double score) {}
+
+    /** 中英对照别名块的检索结果：label 对应 source_path 保存的网页 URL。 */
+    public record AliasResult(String label, String modId, String modName, String url, double score) {}
 }

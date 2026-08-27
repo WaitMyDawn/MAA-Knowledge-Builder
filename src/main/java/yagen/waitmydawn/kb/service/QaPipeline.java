@@ -48,7 +48,6 @@ public class QaPipeline {
     private final EmbeddingService embedder;
     private final DatabaseBuilder baseDb;
     private final MultiDBManager dbManager;
-    private final IncrementalKnowledgeService incremental;
     private final MetricsHistoryService metricsHistory;
 
     // Conversation history: last N Q&A pairs for context
@@ -74,7 +73,6 @@ public class QaPipeline {
         this.embedder = embedder;
         this.baseDb = baseDb;
         this.dbManager = dbManager;
-        this.incremental = new IncrementalKnowledgeService(baseDb);
         this.metricsHistory = new MetricsHistoryService(
                 baseDb.getJdbcUrl().contains("file:")
                     ? java.nio.file.Path.of(baseDb.getJdbcUrl()
@@ -95,7 +93,7 @@ public class QaPipeline {
         m.questionHash = sha256hex(question);
         m.sessionId = dbManager.getCurrentSessionId();
 
-        incremental.resetCache();
+        urlAgent.reset();
         QaResult result = new QaResult();
 
         // Build conversation context string
@@ -120,77 +118,82 @@ public class QaPipeline {
         log.info("QA[Classify] '{}' -> {} (conf={}) [{}ms]",
                 question, category != null ? category.name() : "GENERAL", cls.confidence(), m.classifyTimeMs);
 
-        // === Agent 2: Resolve entities with entity registry hints ===
+        // === Agent 2: 实体别名向量检索 + 子问题拆分 ===
         long t2 = System.nanoTime();
-        List<String> entityHints = List.of();
-        if (category == McmodCategory.ENTITY) {
-            entityHints = gatherEntityHints(result);
-        }
-
-        List<ResolvedEntity> resolvedEntities = entityAgent.resolve(question, convContext, entityHints);
+        EntityAgent.EntityResolutionResult entityResolution = entityAgent.resolveEntities(question, convContext);
         m.entityResolveTimeMs = (System.nanoTime() - t2) / 1_000_000;
-        m.entityLlmMs = m.entityResolveTimeMs; // EntityAgent = pure LLM call
-        m.entityCount = resolvedEntities.size();
+        m.entityLlmMs = m.entityResolveTimeMs;
         TokenUsage entityUsage = entityAgent.lastUsage();
         if (entityUsage != null) recordUsage(m, entityUsage);
-        else m.recordLlmCall(estimatePromptTokens(question) + estimateModListTokens() + entityHints.size() * 10, 30);
+        else m.recordLlmCall(estimatePromptTokens(question) + estimateModListTokens(), 20);
 
-        // Agent 2.5: UrlAgent — match entity descriptions to subWebPage cn(en)->URL keys
+        List<ResolvedEntity> resolvedEntities = new ArrayList<>(entityResolution.inferredEntities());
+        log.info("QA[Registries] initial inferred registries: {}",
+                resolvedEntities.stream().map(ResolvedEntity::registry).toList());
+        Map<String, String> subPageUrls = new LinkedHashMap<>();
+        for (EntityAgent.AliasHit hit : entityResolution.aliasHits()) {
+            subPageUrls.putIfAbsent(hit.label(), hit.url());
+        }
+        m.subPageUrlCount = subPageUrls.size();
+
+        // === Agent 2.5: UrlAgent 抓取网页 + 提取注册名 + 构建增量库 + 按子问题检索 ===
         long t25 = System.nanoTime();
         urlAgent.resetUsage();
-        Map<String, String> subPageUrls = matchSubPagesByEntity(resolvedEntities);
+        IncrementalDB incDb = dbManager.getCurrentIncDB();
+        if (incDb != null) urlAgent.setIncrementalDB(incDb);
+        UrlAgent.UrlFetchResult fetchResult = urlAgent.fetchAndRetrieve(
+                entityResolution.aliasHits(), entityResolution.wikiTopics(), entityResolution.subQueries());
         m.urlMatchTimeMs = (System.nanoTime() - t25) / 1_000_000;
         m.urlLlmMs = m.urlMatchTimeMs;
-        m.subPageUrlCount = subPageUrls.size();
-        // UrlAgent may call LLM — track it
-        TokenUsage urlUsage = urlAgent.lastUsage();
-        if (urlUsage != null) recordUsage(m, urlUsage);
-        else if (m.urlMatchTimeMs > 50) {
-            m.recordLlmCall(resolvedEntities.size() * 20, 15);
+
+        Set<String> seenRegistries = new LinkedHashSet<>();
+        for (ResolvedEntity e : resolvedEntities) seenRegistries.add(e.registry());
+        for (UrlAgent.SubQueryResult sub : fetchResult.subQueryResults()) {
+            for (String reg : sub.registries()) {
+                if (reg != null && reg.matches("[a-z_][a-z0-9_]*:[a-z_][a-z0-9_]*")
+                        && seenRegistries.add(reg)) {
+                    String modId = reg.substring(0, reg.indexOf(':'));
+                    resolvedEntities.add(new ResolvedEntity(reg, modId, 0.8f, "extracted from page"));
+                }
+            }
         }
+        m.entityCount = resolvedEntities.size();
+        log.info("QA[Registries] final registry list ({}): {}",
+                resolvedEntities.size(),
+                resolvedEntities.stream().map(ResolvedEntity::registry).toList());
 
         m.addTrace("EntityResolve", m.entityResolveTimeMs + m.urlMatchTimeMs,
-                String.format("%d entities, %d URLs", m.entityCount, m.subPageUrlCount));
+                String.format("%d entities, %d URLs, %d sub-queries", m.entityCount, m.subPageUrlCount,
+                        entityResolution.subQueries().size()));
 
-        log.info("QA[Entity] {} entities ({} hints), {} sub-page URLs [{}ms]",
-                resolvedEntities.size(), entityHints.size(), subPageUrls.size(), m.entityResolveTimeMs);
+        log.info("QA[Entity] {} entities, {} alias URLs, {} wiki topics [entity={}ms url={}ms]",
+                resolvedEntities.size(), subPageUrls.size(), entityResolution.wikiTopics().size(),
+                m.entityResolveTimeMs, m.urlMatchTimeMs);
 
         result.resolvedEntities = resolvedEntities;
         result.subPageUrls = subPageUrls;
 
-        // === Incremental fetch ===
-        long t3 = System.nanoTime();
-        String incInfo = null;
-        if (!subPageUrls.isEmpty()) {
-            IncrementalDB incDb = dbManager.getCurrentIncDB();
-            if (incDb != null) {
-                incremental.setCurrentDB(incDb);
-                incInfo = incremental.acquireFromSubPages(subPageUrls, embedder);
-                if (incInfo != null) {
-                    log.info("QA[Incremental] {}", incInfo);
-                    // Count acquired chunks from the info string
-                    m.incrementalChunksAcquired = countChunksFromInfo(incInfo);
-                }
-            }
+        // === Incremental fetch（已由 UrlAgent 完成）===
+        String incInfo = fetchResult.incrementalInfo();
+        if (incInfo != null) {
+            log.info("QA[Incremental] {}", incInfo);
+            m.incrementalChunksAcquired = countChunksFromInfo(incInfo);
         }
-        m.incrementalFetchTimeMs = (System.nanoTime() - t3) / 1_000_000;
-        m.addTrace("IncrementalFetch", m.incrementalFetchTimeMs,
-                String.format("%d URLs, %d chunks", subPageUrls.size(), m.incrementalChunksAcquired));
+        m.incrementalFetchTimeMs = m.urlMatchTimeMs;
 
-        // === Vector semantic search ===
+        // === Vector semantic search（合并 UrlAgent 按子问题检索的结果）===
         long t4 = System.nanoTime();
-        List<VectorStore.SearchResult> vectorResults = List.of();
-        List<DatabaseBuilder> activeDbs = dbManager.getActiveDatabases();
-        if (!activeDbs.isEmpty()) {
-            float[] qVec = embedder.embed(question);
-            vectorResults = VectorStore.searchAcross(activeDbs, qVec, 20);
-        }
+        List<VectorStore.SearchResult> vectorResults = fetchResult.subQueryResults().stream()
+                .flatMap(sub -> sub.chunks().stream())
+                .sorted(Comparator.comparingDouble(VectorStore.SearchResult::score).reversed())
+                .limit(20)
+                .toList();
         m.vectorSearchTimeMs = (System.nanoTime() - t4) / 1_000_000;
         m.vectorResultCount = vectorResults.size();
         m.computeVectorRelevance(vectorResults, 0.2);
-        m.dbQueryCount += activeDbs.size();
+        m.dbQueryCount += 2;
         m.addTrace("VectorSearch", m.vectorSearchTimeMs,
-                String.format("%d results (%d DBs), maxScore=%.3f", m.vectorResultCount, activeDbs.size(), m.vectorMaxScore));
+                String.format("%d results, maxScore=%.3f", m.vectorResultCount, m.vectorMaxScore));
 
         // === Recipe search ===
         long t5 = System.nanoTime();
@@ -264,7 +267,7 @@ public class QaPipeline {
 
         AnswerContext ctx = new AnswerContext(
                 question, category, resolvedEntities, answerRecipeMatches,
-                vectorResults, incInfo);
+                vectorResults, incInfo, fetchResult.subQueryResults());
 
         long tAnsLlm = System.nanoTime();
         result.answer = answerAgent.compose(ctx);
@@ -682,7 +685,7 @@ public class QaPipeline {
 
     // ==================== Helpers ====================
 
-    public void setIncrementalDB(IncrementalDB db) { incremental.setCurrentDB(db); }
+    public void setIncrementalDB(IncrementalDB db) { urlAgent.setIncrementalDB(db); }
 
     public int getConversationTurn() { return conversationTurn; }
 

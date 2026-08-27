@@ -89,23 +89,23 @@ public class DatabaseBuilder {
                 )
                 """);
 
-            // rag_item — 物品
-            stmt.execute("""
-                CREATE TABLE IF NOT EXISTS rag_item (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    registry_name VARCHAR(255) NOT NULL,
-                    display_name VARCHAR(255) NOT NULL,
-                    mod_source VARCHAR(100) DEFAULT 'minecraft',
-                    item_type VARCHAR(50),
-                    max_stack INTEGER DEFAULT 64,
-                    durability INTEGER,
-                    versions VARCHAR(1000),
-                    texture_path VARCHAR(500),
-                    icon_url VARCHAR(1000),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """);
+//            // rag_item — 物品
+//            stmt.execute("""
+//                CREATE TABLE IF NOT EXISTS rag_item (
+//                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+//                    registry_name VARCHAR(255) NOT NULL,
+//                    display_name VARCHAR(255) NOT NULL,
+//                    mod_source VARCHAR(100) DEFAULT 'minecraft',
+//                    item_type VARCHAR(50),
+//                    max_stack INTEGER DEFAULT 64,
+//                    durability INTEGER,
+//                    versions VARCHAR(1000),
+//                    texture_path VARCHAR(500),
+//                    icon_url VARCHAR(1000),
+//                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+//                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+//                )
+//                """);
 
             // rag_recipe — 配方
             stmt.execute("""
@@ -172,16 +172,6 @@ public class DatabaseBuilder {
                 )
                 """);
 
-            // rag_version_map — MC 版本映射
-            stmt.execute("""
-                CREATE TABLE IF NOT EXISTS rag_version_map (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                    loader VARCHAR(50) NOT NULL,
-                    loader_version_prefix VARCHAR(50) NOT NULL,
-                    mc_version VARCHAR(50) NOT NULL
-                )
-                """);
-
             // rag_entity_registry — 从 textures/entity/ 提取的实体注册名
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS rag_entity_registry (
@@ -207,45 +197,13 @@ public class DatabaseBuilder {
                 )
                 """);
 
-            // 插入默认版本映射
-            initVersionMap(conn);
+//            // 插入默认版本映射
+//            initVersionMap(conn);
 
             log.info("Database initialized: {}", jdbcUrl);
         } catch (SQLException e) {
             log.error("Database init failed: {}", e.getMessage(), e);
             throw new RuntimeException("Database init failed", e);
-        }
-    }
-
-    /** 插入 NeoForge/Forge → MC 版本映射 */
-    private void initVersionMap(Connection conn) throws SQLException {
-        // 先检查是否已有数据
-        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM rag_version_map");
-             ResultSet rs = ps.executeQuery()) {
-            if (rs.next() && rs.getInt(1) > 0) return;
-        }
-
-        String sql = "INSERT INTO rag_version_map (loader, loader_version_prefix, mc_version) VALUES (?, ?, ?)";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            // NeoForge
-            insertMapping(ps, "neoforge", "21.1", "1.21.1");
-            insertMapping(ps, "neoforge", "21.0", "1.21");
-            insertMapping(ps, "neoforge", "20.4", "1.20.4");
-            insertMapping(ps, "neoforge", "20.2", "1.20.2");
-            insertMapping(ps, "neoforge", "20.1", "1.20.1");
-            // Forge
-            insertMapping(ps, "forge", "49.0", "1.20.4");
-            insertMapping(ps, "forge", "48.0", "1.20.1");
-            insertMapping(ps, "forge", "47.0", "1.20");
-            insertMapping(ps, "forge", "41.0", "1.19");
-            insertMapping(ps, "forge", "40.0", "1.18");
-            // Fabric
-            insertMapping(ps, "fabric", "0.15", "1.20.4");
-            insertMapping(ps, "fabric", "0.14", "1.20.1");
-            insertMapping(ps, "fabric", "0.12", "1.19");
-
-            ps.executeBatch();
-            log.info("Version mappings inserted");
         }
     }
 

@@ -6,6 +6,12 @@
         </encoder>
     </appender>
 
+    <!-- 调试 Agent 提示词：打开四个 Agent 的 DEBUG，输出完整 prompt -->
+    <logger name="yagen.waitmydawn.kb.agent.ClassifyAgent" level="DEBUG" />
+    <logger name="yagen.waitmydawn.kb.agent.EntityAgent" level="DEBUG" />
+    <logger name="yagen.waitmydawn.kb.agent.UrlAgent" level="DEBUG" />
+    <logger name="yagen.waitmydawn.kb.agent.AnswerAgent" level="DEBUG" />
+
     <root level="INFO">
         <appender-ref ref="STDOUT" />
     </root>

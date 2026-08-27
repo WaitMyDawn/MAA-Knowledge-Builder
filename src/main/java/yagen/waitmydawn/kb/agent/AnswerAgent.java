@@ -57,6 +57,12 @@ public class AnswerAgent {
               > ⚠️ 本地知识库未包含相关数据，以下回答基于 AI 通用知识，可能不完全准确。
               建议构建知识库以获得准确的模组特定信息。
               Then suggest: "尝试更具体地描述问题，例如提及模组名称或物品英文名。"
+
+            [Sub-question grouping]
+            If the retrieval context contains [Sub-question: ...] sections, the user's original
+            question was split into multiple sub-questions. Answer each sub-question separately
+            and clearly, using the content associated with that sub-question. Do NOT mix
+            knowledge from different sub-questions together.
             """;
 
     /** AiServices 答案合成接口：自由文本 Markdown 输出 + 真实 Token 用量。 */
@@ -139,7 +145,28 @@ public class AnswerAgent {
         }
 
         // Always include ALL vector results (lower threshold to 0.1)
-        if (hasAnyVectors) {
+        if (ctx.subQueryResults() != null && !ctx.subQueryResults().isEmpty()) {
+            context.append("=== [Sub-question Retrieval Results] ===\n");
+            for (UrlAgent.SubQueryResult sub : ctx.subQueryResults()) {
+                context.append("\n[Sub-question: ").append(sub.subQuery()).append("]\n");
+                if (sub.registries() != null && !sub.registries().isEmpty()) {
+                    context.append("Registries: ");
+                    for (String reg : sub.registries()) context.append("`").append(reg).append("` ");
+                    context.append("\n");
+                }
+                if (sub.chunks() != null && !sub.chunks().isEmpty()) {
+                    int included = 0;
+                    for (var sr : sub.chunks()) {
+                        if (sr.score() <= 0.1 || included >= 6) continue;
+                        String snippet = sr.chunkText();
+                        if (snippet.length() > 1000) snippet = snippet.substring(0, 1000);
+                        context.append(String.format("[%s/%s score=%.3f]\n%s\n\n",
+                                sr.modName(), sr.type(), sr.score(), snippet));
+                        included++;
+                    }
+                }
+            }
+        } else if (hasAnyVectors) {
             context.append("=== [Knowledge Base Context] ===\n");
             int included = 0;
             for (var sr : ctx.vectorResults()) {
@@ -159,12 +186,15 @@ public class AnswerAgent {
         }
 
         String prompt = "[Retrieval Context]\n" + context + "\n\n[User Question]\n" + ctx.question();
+        log.debug("AnswerAgent prompt ({} chars):\n{}", prompt.length(), prompt);
 
         try {
             if (composer != null) {
                 Result<String> result = composer.compose(prompt);
                 lastUsage = result.tokenUsage();
                 String answer = result.content();
+                log.info("AnswerAgent: generated {} chars answer",
+                        answer == null ? 0 : answer.length());
                 if (answer != null && !answer.isBlank()) return answer;
             }
         } catch (Exception e) {
@@ -277,6 +307,7 @@ public class AnswerAgent {
             List<EntityAgent.ResolvedEntity> resolvedEntities,
             List<RecipeMatch> recipeMatches,
             List<VectorStore.SearchResult> vectorResults,
-            String incrementalInfo
+            String incrementalInfo,
+            List<UrlAgent.SubQueryResult> subQueryResults
     ) {}
 }

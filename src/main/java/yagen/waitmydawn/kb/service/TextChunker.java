@@ -11,10 +11,23 @@ import java.util.*;
  */
 public class TextChunker {
 
-    private static final int MAX_CHUNK = 1000;
-    private static final int MIN_CHUNK = 500;
-    private static final int OVERLAP = 50;
+    private static final int TARGET_CHUNK = 500;
+    private static final int MIN_TEXT_LEN = 20;
     private static final ObjectMapper mapper = new ObjectMapper();
+
+    /** lang 文件黑名单前缀：纯 UI / 技术性 key 不进入知识库。 */
+    private static final Set<String> LANG_BLACKLIST = Set.of(
+            "accessibility.", "addServer.", "addresourcepack.", "argument.",
+            "attribute.", "biome.", "block.", "chat.", "commands.", "config.",
+            "connect.", "controls.", "createWorld.", "dataPack.", "debug.",
+            "disconnect.", "editGamerule.", "filled_map.", "flat_world_preset.",
+            "gameMode.", "generator.", "gpu_warnlist.", "gui.", "inventory.",
+            "itemGroup.", "jigsaw_block.", "key.", "lanServer.", "language.",
+            "mco.", "menu.", "merchant.", "mirror.", "mount.", "multiplayer.",
+            "narrator.", "options.", "pack.", "painting.", "particle.",
+            "selectServer.", "selectWorld.", "sleep.", "soundCategory.",
+            "spectatorMenu.", "subtitles.", "team.", "telemetry.", "title.",
+            "tutorial.", "vibration.", "world.");
 
     /** 单个文本块 */
     public record TextChunk(String id, String text, String modId, String modName, String type, String sourcePath) {}
@@ -27,15 +40,12 @@ public class TextChunker {
         try {
             JsonNode root = mapper.readTree(json);
             StringBuilder desc = new StringBuilder();
-            desc.append("Mod: ").append(modName != null ? modName : modId).append("\n\n");
-            desc.append("Items in ").append(modId).append(":\n");
-
-            int count = 0;
             Iterator<String> fields = root.fieldNames();
             while (fields.hasNext()) {
                 String key = fields.next();
                 String val = root.path(key).asText("");
                 if (val.isBlank() || val.equals(key)) continue;
+                if (isLangBlacklisted(key)) continue;
 
                 String itemName = key;
                 if (itemName.startsWith("item.") || itemName.startsWith("block.")) {
@@ -44,25 +54,21 @@ public class TextChunker {
                 if (itemName.startsWith(modId + ".")) {
                     itemName = itemName.substring(modId.length() + 1);
                 }
-
-                desc.append("  - ").append(itemName).append(": ").append(val).append("\n");
-                count++;
-
-                // Split into chunks when hitting limit
-                if (desc.length() >= MAX_CHUNK) {
-                    chunks.add(new TextChunk(modId + "/lang/" + chunks.size(),
-                            desc.toString(), modId, modName,
-                            "lang_items", sourcePath));
-                    desc.setLength(Math.max(0, desc.length() - OVERLAP));
-                }
+                desc.append(itemName).append(": ").append(val).append("\n");
             }
-            if (desc.length() > 100 && count > 0) {
-                chunks.add(new TextChunk(modId + "/lang/" + chunks.size(),
-                        desc.toString(), modId, modName,
-                        "lang_items", sourcePath));
+            if (desc.length() > 0) {
+                chunks.addAll(split(desc.toString(), modId, modName, "lang_items", sourcePath));
             }
         } catch (Exception ignored) {}
         return chunks;
+    }
+
+    private static boolean isLangBlacklisted(String key) {
+        String lower = key.toLowerCase();
+        for (String prefix : LANG_BLACKLIST) {
+            if (lower.startsWith(prefix)) return true;
+        }
+        return false;
     }
 
     /**
@@ -72,6 +78,15 @@ public class TextChunker {
         List<TextChunk> chunks = new ArrayList<>();
         if (text == null || text.isBlank()) return chunks;
         chunks.addAll(split(text, modId, modName, "description", "mods.toml"));
+        return chunks;
+    }
+
+    /** 网页正文分块：metadata 使用真实 modId/modName/sourcePath。 */
+    public List<TextChunk> fromWebPage(String text, String modId, String modName,
+                                        String source, String sourcePath) {
+        List<TextChunk> chunks = new ArrayList<>();
+        if (text == null || text.isBlank()) return chunks;
+        chunks.addAll(split(text, modId, modName, source, sourcePath));
         return chunks;
     }
 
@@ -127,49 +142,46 @@ public class TextChunker {
     }
 
     /**
-     * 通用文本分块: 按句号/换行在 500-1000 字符处截断, 50 字符重叠。
+     * 通用文本分块：按段落填入，块目标长度约 500 字符。
+     * 若当前块尚未达到目标长度，则即使下一段会超过目标也整段补入，避免截断。
      */
     private List<TextChunk> split(String text, String modId, String modName, String type, String source) {
         List<TextChunk> chunks = new ArrayList<>();
         if (text == null || text.isBlank()) return chunks;
 
-        // 短文本直接作为一整块, 避免重叠循环
-        if (text.length() <= MAX_CHUNK) {
+        if (text.length() <= TARGET_CHUNK) {
             String t = text.trim();
-            if (t.length() > 20) {
+            if (t.length() > MIN_TEXT_LEN) {
                 chunks.add(new TextChunk(modId + "/" + type + "/0",
                         t, modId, modName != null ? modName : modId, type, source));
             }
             return chunks;
         }
 
-        int start = 0;
-        int idx = 0;
-        int prevStart = -1;
-        while (start < text.length()) {
-            // 防止死循环 — 确保每次迭代 start 都在前进
-            if (start == prevStart) break;
-            prevStart = start;
+        String[] paragraphs = text.split("\\n\\s*\\n");
+        if (paragraphs.length <= 1) paragraphs = text.split("\\n");
 
-            int end = Math.min(start + MAX_CHUNK, text.length());
-            if (end < text.length()) {
-                // 在句号/换行处截断
-                for (int i = end; i > start + MIN_CHUNK; i--) {
-                    char c = text.charAt(i - 1);
-                    if (c == '.' || c == '\n' || c == '。' || c == '！' || c == '？') {
-                        end = i; break;
-                    }
-                }
+        List<String> blocks = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (String raw : paragraphs) {
+            String paragraph = raw.trim();
+            if (paragraph.isEmpty()) continue;
+            if (current.length() > 0
+                    && current.length() + paragraph.length() + 1 > TARGET_CHUNK
+                    && current.length() >= TARGET_CHUNK) {
+                blocks.add(current.toString());
+                current.setLength(0);
             }
-            String chunkText = text.substring(start, end).trim();
-            if (!chunkText.isEmpty()) {
-                chunks.add(new TextChunk(modId + "/" + type + "/" + idx,
-                        chunkText, modId, modName != null ? modName : modId, type, source));
-                idx++;
-            }
-            int next = end - OVERLAP;
-            // 确保前进: 如果 next 不超过 start, 直接跳到 end
-            start = (next > start) ? next : end;
+            if (current.length() > 0) current.append("\n");
+            current.append(paragraph);
+        }
+        if (current.length() > 0) blocks.add(current.toString());
+
+        for (int i = 0; i < blocks.size(); i++) {
+            String block = blocks.get(i).trim();
+            if (block.length() <= MIN_TEXT_LEN) continue;
+            chunks.add(new TextChunk(modId + "/" + type + "/" + i,
+                    block, modId, modName != null ? modName : modId, type, source));
         }
         return chunks;
     }

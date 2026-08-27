@@ -195,6 +195,30 @@ public class KnowledgeBuilder {
                 // 持久化网页 (含 subWebPage 映射), 供 Q&A 阶段增量抓取
                 db.saveWebPages(modEntry.getModId(), pages);
 
+                // 把 "中文名(英文名)" → URL 的映射建成 entity_alias 向量块。
+                // 检索时以中文/英文主体问题命中别名块，从而直接拿到真实网页 URL。
+                Map<String, String> aliasMap = pages.stream()
+                        .map(WikiScraperService.WebPage::subWebPage)
+                        .filter(m -> m != null && !m.isEmpty())
+                        .findFirst()
+                        .orElse(Map.of());
+                List<TextChunker.TextChunk> aliasChunks = new ArrayList<>();
+                for (var entry : aliasMap.entrySet()) {
+                    String label = entry.getKey().trim();
+                    String id = "alias/" + modEntry.getModId() + "/"
+                            + label.replaceAll("[^\\p{L}\\p{N}]+", "_");
+                    aliasChunks.add(new TextChunker.TextChunk(
+                            id, label, modEntry.getModId(),
+                            modEntry.getDisplayName() != null
+                                    ? modEntry.getDisplayName() : modEntry.getModId(),
+                            "entity_alias", entry.getValue()));
+                }
+                if (!aliasChunks.isEmpty()) {
+                    vectorStore.storeBatch(aliasChunks, embedder);
+                    result.embeddings += aliasChunks.size();
+                    log.info("mcmod: {} alias chunks for {}", aliasChunks.size(), modEntry.getModId());
+                }
+
                 List<TextChunker.TextChunk> modChunks = new ArrayList<>();
                 for (var p : pages) modChunks.addAll(chunker.fromDescription(p.content(), modEntry.getModId(),
                         modEntry.getDisplayName() != null ? modEntry.getDisplayName() : modEntry.getModId()));

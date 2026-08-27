@@ -106,8 +106,8 @@ public class MaaKnowledgeBuilderApp extends Application {
             embedder.initModel(savedModel);
             // Create agents
             classifyAgent = new ClassifyAgent(ragAgent);
-            entityAgent = new EntityAgent(ragAgent, db);
-            UrlAgent urlAgent = new UrlAgent(ragAgent, db);
+            entityAgent = new EntityAgent(ragAgent, db, embedder, vectorStore);
+            UrlAgent urlAgent = new UrlAgent(ragAgent, db, embedder);
             answerAgent = new AnswerAgent(ragAgent);
             // Multi-DB manager
             dbManager = new MultiDBManager(config.getDataDir(), db);
@@ -459,8 +459,8 @@ public class MaaKnowledgeBuilderApp extends Application {
                     }));
             vectorStore = knowledgeBuilder.getVectorStore();
             // Refresh agents after build (new mods + subWebPages in DB)
-            entityAgent = new EntityAgent(ragAgent, db);
-            UrlAgent newUrlAgent = new UrlAgent(ragAgent, db);
+            entityAgent = new EntityAgent(ragAgent, db, embedder, vectorStore);
+            UrlAgent newUrlAgent = new UrlAgent(ragAgent, db, embedder);
             qaPipeline = new QaPipeline(classifyAgent, entityAgent, newUrlAgent,
                     answerAgent, ragAgent, vectorStore, embedder, db, dbManager);
             metricsHistoryService = qaPipeline.getMetricsHistory();

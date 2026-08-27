@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -84,6 +85,58 @@ public class WikiScraperService {
     public WebPage fetchMcWiki(String pageName) {
         String url = "https://zh.minecraft.wiki/w/" + pageName.replace(' ', '_');
         return fetchPage(url, "mcwiki");
+    }
+
+    /**
+     * 优先直接访问 https://zh.minecraft.wiki/w/{topic}，失败时再走站内搜索。
+     * MediaWiki 自带重定向能力，例如 /w/龙 通常会被重定向到 /w/末影龙。
+     */
+    public FetchedPage fetchMcWikiWithFallback(String topic) {
+        String directUrl = "https://zh.minecraft.wiki/w/" + topic.trim().replace(' ', '_');
+        log.info("MC Wiki: trying direct URL {}", directUrl);
+        FetchedPage direct = fetchPageWithRegistries(directUrl, "mcwiki");
+        if (direct != null && direct.page() != null
+                && direct.page().content() != null
+                && direct.page().content().length() > 80) {
+            log.info("MC Wiki: direct fetch OK for {}", directUrl);
+            return direct;
+        }
+        log.warn("MC Wiki: direct fetch failed or empty for {}", directUrl);
+
+        String searchedUrl = searchMcWikiUrl(topic);
+        if (searchedUrl != null) {
+            log.info("MC Wiki: trying search result URL {}", searchedUrl);
+            FetchedPage searched = fetchPageWithRegistries(searchedUrl, "mcwiki");
+            if (searched != null && searched.page() != null
+                    && searched.page().content() != null
+                    && searched.page().content().length() > 80) {
+                log.info("MC Wiki: search result fetch OK for {}", searchedUrl);
+                return searched;
+            }
+            log.warn("MC Wiki: search result fetch failed or empty for {}", searchedUrl);
+        }
+        return null;
+    }
+
+    /** 通过 MC Wiki 站内搜索定位最可能的页面 URL。 */
+    public String searchMcWikiUrl(String topic) {
+        try {
+            String searchUrl = "https://zh.minecraft.wiki/index.php?search="
+                    + URLEncoder.encode(topic, StandardCharsets.UTF_8);
+            log.info("MC Wiki: searching URL {}", searchUrl);
+            Document doc = Jsoup.connect(searchUrl).userAgent(UA).timeout(12000).get();
+            for (Element a : doc.select("a[href^=\"/w/\"]")) {
+                String href = a.attr("href");
+                if (href.contains("Special:") || href.contains("Talk:")) continue;
+                String resultUrl = "https://zh.minecraft.wiki" + href;
+                log.info("MC Wiki: first search hit {}", resultUrl);
+                return resultUrl;
+            }
+            log.warn("MC Wiki: no search result found for {}", topic);
+        } catch (Exception e) {
+            log.warn("MC Wiki search failed for {}: {}", topic, e.getMessage());
+        }
+        return null;
     }
 
     /**
@@ -280,6 +333,128 @@ public class WikiScraperService {
     }
 
     /**
+     * 抓取网页原始 HTML，在提取正文的同时解析注册名。
+     * MC百科从 data-command="/summon xxx:xxx ..." 中提取，
+     * MC Wiki 从 <code>...minecraft.xxx...</code> 中提取。
+     */
+    public FetchedPage fetchPageWithRegistries(String url, String source) {
+        try {
+            Document doc = Jsoup.connect(url)
+                    .userAgent(UA)
+                    .header("Accept", ACCEPT)
+                    .header("Accept-Language", ACCEPT_LANG)
+                    .header("Accept-Encoding", ACCEPT_ENC)
+                    .timeout(12000)
+                    .followRedirects(true)
+                    .get();
+            String html = doc.outerHtml();
+            List<String> registries = "mcmod".equals(source)
+                    ? extractMcmodRegistries(html)
+                    : extractMcWikiRegistries(html);
+            return new FetchedPage(toWebPage(doc, url, source), registries);
+        } catch (Exception e) {
+            log.warn("Fetch with registries failed {}: {}", url, e.getMessage());
+            return null;
+        }
+    }
+
+    /** 从 MC百科网页提取 /summon 等 data-command 中的注册名。 */
+    public List<String> extractMcmodRegistries(String html) {
+        Set<String> result = new LinkedHashSet<>();
+        if (html == null) return List.of();
+        Matcher commandMatcher = Pattern.compile("data-command=\"([^\"]+)\"").matcher(html);
+        Pattern registryPattern = Pattern.compile("([a-z_][a-z0-9_]*:[a-z_][a-z0-9_]*)");
+        while (commandMatcher.find()) {
+            String command = commandMatcher.group(1);
+            Matcher regMatcher = registryPattern.matcher(command);
+            while (regMatcher.find()) result.add(regMatcher.group(1));
+        }
+        return new ArrayList<>(result);
+    }
+
+    /** 从 MC Wiki 网页提取 <code>block.minecraft.oak_fence_gate</code> 类注册名。 */
+    public List<String> extractMcWikiRegistries(String html) {
+        Set<String> result = new LinkedHashSet<>();
+        if (html == null) return List.of();
+        Matcher codeMatcher = Pattern.compile("<code[^>]*>(.*?)</code>",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL).matcher(html);
+        while (codeMatcher.find()) {
+            String text = codeMatcher.group(1).replaceAll("<[^>]+>", "").trim();
+            int idx = text.toLowerCase().indexOf(".minecraft.");
+            if (idx < 0) continue;
+            String after = text.substring(idx + ".minecraft.".length());
+            String name = after.split("\\.")[0].trim();
+            if (name.matches("[a-z_][a-z0-9_]*")) {
+                result.add("minecraft:" + name);
+            }
+        }
+        return new ArrayList<>(result);
+    }
+
+    /** 把 Jsoup Document 转换为统一的 WebPage 文本结构，按站点清洗导航/页脚等噪音。 */
+    private WebPage toWebPage(Document doc, String url, String source) {
+        String title = doc.title();
+        StringBuilder content = new StringBuilder();
+
+        if ("mcmod".equals(source)) {
+            Element nameEl = doc.selectFirst(".itemname .name h5, .itemname .name");
+            if (nameEl != null) title = nameEl.text().trim();
+            content.append("名称：").append(title).append("\n");
+
+            Elements infoRows = doc.select(".item-info-table tr");
+            for (Element tr : infoRows) {
+                Elements tds = tr.select("td");
+                if (tds.size() < 2) continue;
+                String k = tds.get(0).text().trim();
+                String v = tds.get(1).text().trim();
+                if (!k.isEmpty() && !v.isEmpty()) content.append(k).append("：").append(v).append("\n");
+            }
+
+            Element main = doc.selectFirst(".item-content.common-text");
+            if (main != null) {
+                for (Element e : main.select("p, .common-text-title, h2, h3, h4")) {
+                    String text = e.text().trim();
+                    if (text.isEmpty()) continue;
+                    if (e.hasClass("common-text-title")) content.append("\n## ").append(text).append("\n");
+                    else content.append(text).append("\n");
+                }
+            }
+        } else {
+            content.append("标题：").append(title).append("\n");
+            Element main = doc.selectFirst("#mw-content-text, .mw-parser-output");
+            if (main != null) {
+                Element clone = main.clone();
+                clone.select("style, script, .mw-editsection, .toc, .infobox, "
+                        + ".msgbox, .hatnote, .navbox, .printfooter, .catlinks").remove();
+                for (Element e : clone.select("p, h2, h3, h4, li:not(:has(p))")) {
+                    String text = e.text().trim();
+                    if (text.isEmpty()) continue;
+                    if (e.tagName().startsWith("h")) content.append("\n## ").append(text).append("\n");
+                    else content.append(text).append("\n");
+                }
+            }
+        }
+
+        if (content.length() <= 20) {
+            content.append(doc.body().text());
+        }
+        return new WebPage(title, url, cleanAndDedupe(content.toString()), source, new LinkedHashMap<>());
+    }
+
+    /** 去重、去空行和明显非内容行。 */
+    private String cleanAndDedupe(String text) {
+        Set<String> seen = new LinkedHashSet<>();
+        StringBuilder result = new StringBuilder();
+        for (String line : text.split("\\n")) {
+            String clean = line.trim();
+            if (clean.isEmpty() || clean.length() < 2) continue;
+            if (clean.matches("[\\p{Punct}\\s]+")) continue;
+            if (seen.add(clean)) result.append(clean).append("\n");
+        }
+        return result.toString().trim();
+    }
+
+    /**
      * Fetch a category page with retry, browser headers, cookies, and exponential backoff.
      */
     private CategoryFetchResult fetchCategoryWithRetry(String url, int maxRetries,
@@ -352,21 +527,7 @@ public class WikiScraperService {
             if (!newCookies.isEmpty()) cookies.putAll(newCookies);
 
             Document doc = conn.parse();
-            StringBuilder content = new StringBuilder();
-            content.append("Source: ").append(doc.title()).append("\nURL: ").append(url).append("\n\n");
-
-            Elements paras = doc.select("p, li, h2, h3, h4, td, .mw-parser-output > *");
-            for (Element e : paras) {
-                String text = e.text().trim();
-                if (text.isEmpty()) continue;
-                String tag = e.tagName();
-                if (tag.startsWith("h")) content.append("\n## ").append(text).append("\n\n");
-                else content.append(text).append("\n");
-            }
-            if (content.length() == ("Source: " + doc.title() + "\nURL: " + url + "\n\n").length()) {
-                content.append(doc.body().text());
-            }
-            return new WebPage(doc.title(), url, content.toString(), source, new LinkedHashMap<>());
+            return toWebPage(doc, url, source);
         } catch (Exception e) {
             log.debug("Fetch failed {}: {}", url, e.getMessage());
         }
@@ -427,24 +588,7 @@ public class WikiScraperService {
     private WebPage fetchPage(String url, String source) {
         try {
             Document doc = Jsoup.connect(url).userAgent(UA).timeout(12000).get();
-            StringBuilder content = new StringBuilder();
-            content.append("Source: ").append(doc.title()).append("\nURL: ").append(url).append("\n\n");
-
-            Elements paras = doc.select("p, li, h2, h3, h4, td, .mw-parser-output > *");
-            for (Element e : paras) {
-                String text = e.text().trim();
-                if (text.isEmpty()) continue;
-                String tag = e.tagName();
-                if (tag.startsWith("h")) content.append("\n## ").append(text).append("\n\n");
-                else content.append(text).append("\n");
-            }
-
-            // 如果结构化提取完全没有内容，回退到 body 全文
-            if (content.length() == ("Source: " + doc.title() + "\nURL: " + url + "\n\n").length()) {
-                content.append(doc.body().text());
-            }
-
-            return new WebPage(doc.title(), url, content.toString(), source, new LinkedHashMap<>());
+            return toWebPage(doc, url, source);
         } catch (Exception e) {
             log.debug("Fetch failed {}: {}", url, e.getMessage());
         }
@@ -466,4 +610,7 @@ public class WikiScraperService {
     public record WebPage(String title, String url, String content, String source,
                           Map<String, String> subWebPage) {
     }
+
+    /** 网页正文 + 从原始 HTML 提取的注册名清单。 */
+    public record FetchedPage(WebPage page, List<String> registries) {}
 }

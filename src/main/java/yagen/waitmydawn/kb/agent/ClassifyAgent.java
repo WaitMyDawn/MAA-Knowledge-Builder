@@ -128,6 +128,8 @@ public class ClassifyAgent {
                     // 结构化路径的用户消息只提供上下文，输出格式完全交给 @SystemMessage
                     String structuredPrompt = "[Categories]\n" + catList
                             + "\n[Question]\n" + fullQuestion;
+                    log.debug("ClassifyAgent structured prompt ({} chars):\n{}",
+                            structuredPrompt.length(), structuredPrompt);
                     Result<StructuredClassification> result = classifier.classify(structuredPrompt);
                     lastUsage = result.tokenUsage();
                     StructuredClassification structured = result.content();
@@ -149,6 +151,7 @@ public class ClassifyAgent {
 
             // 回退：旧版文本解析（DeepSeek 不支持 json_schema 等场景）
             String prompt = CLASSIFY_PROMPT.formatted(catList.toString(), fullQuestion);
+            log.debug("ClassifyAgent fallback prompt ({} chars):\n{}", prompt.length(), prompt);
             String response = llm.rawAsk(prompt);
             if (response == null || response.isBlank()) {
                 return new Classification(null, 0, "no response");

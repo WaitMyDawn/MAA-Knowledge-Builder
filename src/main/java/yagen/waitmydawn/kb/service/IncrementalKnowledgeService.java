@@ -82,6 +82,34 @@ public class IncrementalKnowledgeService {
     }
 
     /**
+     * 将已经抓取好的网页正文分块并写入当前增量库。
+     * 供 UrlAgent 在获取页面并提取注册名后复用同一套增量知识流程。
+     */
+    public List<TextChunker.TextChunk> acquireFetchedPage(String topic, String url, String content,
+                                                           String source, String modId, String modName,
+                                                           EmbeddingService embedder) {
+        if (currentDb == null) {
+            log.warn("No incremental DB set — cannot store fetched page");
+            return List.of();
+        }
+        if (content == null || content.isBlank()) return List.of();
+        if (fetchedCache.contains(url)) return List.of();
+        fetchedCache.add(url);
+
+        try {
+            List<TextChunker.TextChunk> chunks = chunker.fromWebPage(
+                    content, modId, modName, source, url);
+            if (chunks.isEmpty()) return List.of();
+            currentDb.getVectorStore().storeBatch(chunks, embedder);
+            log.info("Incremental: acquired {} → {} chunks from {}", topic, chunks.size(), url);
+            return chunks;
+        } catch (Exception e) {
+            log.warn("Incremental acquire failed for {}: {}", url, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
      * Legacy: fetch from MC Wiki (for vanilla Minecraft questions).
      */
     public String acquireFromWiki(String question, RagAgentService llm,

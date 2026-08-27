@@ -9,7 +9,14 @@ import dev.langchain4j.service.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
+import yagen.waitmydawn.kb.model.ModEntry;
+import yagen.waitmydawn.kb.service.EmbeddingService;
+import yagen.waitmydawn.kb.service.IncrementalDB;
+import yagen.waitmydawn.kb.service.IncrementalKnowledgeService;
 import yagen.waitmydawn.kb.service.RagAgentService;
+import yagen.waitmydawn.kb.service.TextChunker;
+import yagen.waitmydawn.kb.service.VectorStore;
+import yagen.waitmydawn.kb.service.WikiScraperService;
 
 import java.util.*;
 
@@ -71,14 +78,30 @@ public class UrlAgent {
     /** 匹配到的候选键列表。 */
     public record UrlMatches(List<String> keys) {}
 
+    /** 单个子问题的检索结果：对应主体、相关文本块、从网页提取的注册名。 */
+    public record SubQueryResult(String subQuery,
+                                 List<VectorStore.SearchResult> chunks,
+                                 List<String> registries) {}
+
+    /** UrlAgent 抓取+检索的总体结果。 */
+    public record UrlFetchResult(List<SubQueryResult> subQueryResults, String incrementalInfo) {}
+
     private final RagAgentService llm;
     private final DatabaseBuilder db;
+    private final EmbeddingService embedder;
+    private final WikiScraperService scraper = new WikiScraperService();
+    private final IncrementalKnowledgeService incremental;
     private final UrlMatcher matcher;
     private volatile TokenUsage lastUsage;
+    private IncrementalDB currentIncDb;
+    private final Set<String> visitedUrls = new HashSet<>();
+    private final Set<String> visitedWikiTopics = new HashSet<>();
 
-    public UrlAgent(RagAgentService llm, DatabaseBuilder db) {
+    public UrlAgent(RagAgentService llm, DatabaseBuilder db, EmbeddingService embedder) {
         this.llm = llm;
         this.db = db;
+        this.embedder = embedder;
+        this.incremental = new IncrementalKnowledgeService(db);
         ChatModel model = llm.getChatModel();
         UrlMatcher m = null;
         if (model != null) {
@@ -89,6 +112,135 @@ public class UrlAgent {
             }
         }
         this.matcher = m;
+    }
+
+    /** 每个问题处理开始时重置访问去重与累计用量。 */
+    public void reset() {
+        lastUsage = null;
+        visitedUrls.clear();
+        visitedWikiTopics.clear();
+        incremental.resetCache();
+    }
+
+    /** 设置当前会话的增量库。 */
+    public void setIncrementalDB(IncrementalDB db) {
+        this.currentIncDb = db;
+        incremental.setCurrentDB(db);
+    }
+
+    /**
+     * 新工作流：根据 EntityAgent 命中的别名 URL 和 MC Wiki 主题抓取网页，
+     * 提取注册名、构建增量库，并按子问题做向量检索，返回分组结果。
+     */
+    public UrlFetchResult fetchAndRetrieve(List<EntityAgent.AliasHit> aliasHits,
+                                            List<String> wikiTopics,
+                                            List<String> subQueries) {
+        Map<String, List<String>> registriesBySubQuery = new LinkedHashMap<>();
+        Map<String, List<VectorStore.SearchResult>> pageChunksBySubQuery = new LinkedHashMap<>();
+        List<String> acquired = new ArrayList<>();
+
+        for (EntityAgent.AliasHit hit : aliasHits) {
+            if (hit.url() == null || hit.url().isBlank() || visitedUrls.contains(hit.url())) continue;
+            visitedUrls.add(hit.url());
+            log.info("UrlAgent: fetching alias '{}' from {}", hit.label(), hit.url());
+            WikiScraperService.FetchedPage fetched = scraper.fetchPageWithRegistries(hit.url(), "mcmod");
+            if (fetched == null || fetched.page() == null) {
+                log.info("UrlAgent: alias '{}' fetch failed or empty", hit.label());
+                continue;
+            }
+            log.info("UrlAgent: alias '{}' -> {} registries {}", hit.label(),
+                    fetched.registries().size(), fetched.registries());
+            String modName = resolveModName(hit.modId());
+            List<TextChunker.TextChunk> stored = incremental.acquireFetchedPage(
+                    hit.label(), hit.url(), fetched.page().content(), "mcmod",
+                    hit.modId(), modName, embedder);
+            if (!stored.isEmpty()) {
+                acquired.add(hit.label() + " (" + stored.size() + " chunks)");
+                pageChunksBySubQuery.computeIfAbsent(hit.subQuery(), k -> new ArrayList<>())
+                        .addAll(toSearchResults(stored));
+            }
+            registriesBySubQuery.computeIfAbsent(hit.subQuery(), k -> new ArrayList<>())
+                    .addAll(fetched.registries());
+        }
+
+        for (String topic : wikiTopics) {
+            if (topic == null || topic.isBlank() || visitedWikiTopics.contains(topic)) continue;
+            visitedWikiTopics.add(topic);
+            log.info("UrlAgent: fetching MC Wiki topic '{}'", topic);
+            WikiScraperService.FetchedPage fetched = scraper.fetchMcWikiWithFallback(topic);
+            if (fetched == null || fetched.page() == null) {
+                log.info("UrlAgent: wiki topic '{}' fetch failed or empty", topic);
+                continue;
+            }
+            log.info("UrlAgent: wiki topic '{}' -> {} registries {}", topic,
+                    fetched.registries().size(), fetched.registries());
+            List<TextChunker.TextChunk> stored = incremental.acquireFetchedPage(
+                    topic, fetched.page().url(), fetched.page().content(), "mcwiki",
+                    "minecraft", "Minecraft", embedder);
+            if (!stored.isEmpty()) {
+                acquired.add(topic + " (" + stored.size() + " chunks)");
+                pageChunksBySubQuery.computeIfAbsent(topic, k -> new ArrayList<>())
+                        .addAll(toSearchResults(stored));
+            }
+            registriesBySubQuery.computeIfAbsent(topic, k -> new ArrayList<>())
+                    .addAll(fetched.registries());
+        }
+
+        List<DatabaseBuilder> activeDbs = new ArrayList<>();
+        if (db != null) activeDbs.add(db);
+        if (currentIncDb != null && currentIncDb.getDb() != null) activeDbs.add(currentIncDb.getDb());
+
+        List<SubQueryResult> results = new ArrayList<>();
+        for (String subQuery : subQueries) {
+            List<VectorStore.SearchResult> chunks = pageChunksBySubQuery.get(subQuery);
+            if (chunks == null || chunks.isEmpty()) {
+                // 路径 3：没有抓到真实网页时才做通用向量检索
+                float[] queryVec = embedder.embed(subQuery);
+                chunks = VectorStore.searchAcross(activeDbs, queryVec, 8);
+                log.info("UrlAgent: sub-query '{}' has no page content, fallback to vector search -> {} chunks",
+                        subQuery, chunks.size());
+            } else {
+                chunks = chunks.stream().limit(8).toList();
+            }
+            List<String> regs = dedupe(registriesBySubQuery.get(subQuery));
+            log.info("UrlAgent: sub-query '{}' -> {} chunks, registries={}", subQuery, chunks.size(), regs);
+            for (VectorStore.SearchResult chunk : chunks) {
+                String preview = chunk.chunkText();
+                if (preview != null && preview.length() > 300) preview = preview.substring(0, 300);
+                log.debug("UrlAgent chunk[{}] score={:.3f}: {}", chunk.modName(), chunk.score(), preview);
+            }
+            results.add(new SubQueryResult(subQuery, chunks, regs));
+        }
+
+        String incInfo = acquired.isEmpty() ? null : "Acquired: " + String.join(", ", acquired);
+        return new UrlFetchResult(results, incInfo);
+    }
+
+    /** 把刚抓取并写入增量库的 chunk 转成可直接交给 AnswerAgent 的检索结果。 */
+    private static List<VectorStore.SearchResult> toSearchResults(List<TextChunker.TextChunk> chunks) {
+        List<VectorStore.SearchResult> results = new ArrayList<>();
+        for (TextChunker.TextChunk c : chunks) {
+            results.add(new VectorStore.SearchResult(
+                    c.id(), c.text(), c.modId(), c.modName(), c.type(), 1.0));
+        }
+        return results;
+    }
+
+    private static List<String> dedupe(List<String> values) {
+        if (values == null) return List.of();
+        Set<String> seen = new LinkedHashSet<>(values);
+        return new ArrayList<>(seen);
+    }
+
+    /** 从基础库查询模组显示名，查不到就用 modId。 */
+    private String resolveModName(String modId) {
+        try {
+            ModEntry entry = db.findModEntry(modId);
+            if (entry != null && entry.getDisplayName() != null && !entry.getDisplayName().isBlank()) {
+                return entry.getDisplayName();
+            }
+        } catch (Exception ignored) {}
+        return modId;
     }
 
     /**
@@ -127,6 +279,8 @@ public class UrlAgent {
                     String structuredPrompt = "[Entity to find]\n" + entitiesStr
                             + "\n\n[Candidate items for mod: " + modId + "]\n"
                             + candidateList;
+                    log.debug("UrlAgent structured prompt ({} chars):\n{}",
+                            structuredPrompt.length(), structuredPrompt);
                     Result<UrlMatches> result = matcher.match(structuredPrompt);
                     lastUsage = accumulateUsage(lastUsage, result.tokenUsage());
                     UrlMatches matches = result.content();
@@ -155,6 +309,7 @@ public class UrlAgent {
 
             // 回退：旧版逐行文本解析
             String prompt = MATCH_PROMPT.formatted(entitiesStr, modId, candidateList.toString());
+            log.debug("UrlAgent fallback prompt ({} chars):\n{}", prompt.length(), prompt);
             String response = llm.rawAsk(prompt);
             if (response == null || response.isBlank() || response.trim().equals("NONE")) {
                 log.info("UrlAgent: no match for '{}' in mod {}", entitiesStr, modId);

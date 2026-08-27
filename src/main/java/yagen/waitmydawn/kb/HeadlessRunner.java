@@ -1,5 +1,7 @@
 package yagen.waitmydawn.kb;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.agent.AnswerAgent;
@@ -39,11 +41,14 @@ public class HeadlessRunner {
         String dataDir = null;
         String modsFolder = null;
         String testFile = "test-questions.json";
+        String webTestFile = "test-web.json";
+        String webTestDir = null;
         String apiKey = null;
         boolean doScan = false;
         boolean doBuild = false;
         boolean doClean = false;
         boolean doTest = false;
+        boolean doWebTest = false;
 
         // Parse CLI args
         // # 完整流水线: clean + build + test
@@ -58,9 +63,19 @@ public class HeadlessRunner {
                 case "--build" -> { doBuild = true; doScan = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) modsFolder = args[++i]; }
                 case "--clean" -> doClean = true;
                 case "--test" -> { doTest = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) testFile = args[++i]; }
+                case "--testweb" -> { doWebTest = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) webTestDir = args[++i]; }
                 case "--api-key" -> apiKey = args[++i];
                 case "--help", "-h" -> { printUsage(); return; }
             }
+        }
+
+        if (doWebTest) {
+            if (webTestDir == null) {
+                System.err.println("ERROR: --testweb <target-dir> is required");
+                return;
+            }
+            runWebTest(Path.of(webTestDir).toAbsolutePath(), webTestFile);
+            return;
         }
 
         if (dataDir == null) {
@@ -177,8 +192,8 @@ public class HeadlessRunner {
             }
 
             ClassifyAgent classifyAgent = new ClassifyAgent(llm);
-            EntityAgent entityAgent = new EntityAgent(llm, db);
-            UrlAgent urlAgent = new UrlAgent(llm, db);
+            EntityAgent entityAgent = new EntityAgent(llm, db, embedder, vectorStore);
+            UrlAgent urlAgent = new UrlAgent(llm, db, embedder);
             AnswerAgent answerAgent = new AnswerAgent(llm);
             MultiDBManager dbManager = new MultiDBManager(dataPath, db);
             dbManager.scan();
@@ -217,6 +232,64 @@ public class HeadlessRunner {
         System.out.println("══════════════════════════════════════════");
     }
 
+    /** 仅测试网页抓取 → 正文清洗 → 分块 → 向量入库流程。 */
+    private static void runWebTest(Path targetDir, String webTestFile) throws Exception {
+        Files.createDirectories(targetDir);
+        System.out.println("\n[WebTest] Target DB dir: " + targetDir);
+        System.out.println("[WebTest] Test file: " + webTestFile);
+
+        AppConfig config = AppConfig.getInstance();
+        EmbeddingService embedder = new EmbeddingService(config);
+
+        DatabaseBuilder db = new DatabaseBuilder(null) {
+            @Override
+            public String getJdbcUrl() {
+                return "jdbc:h2:file:" + targetDir.resolve("rag_data").toString().replace('\\', '/')
+                        + ";DATABASE_TO_LOWER=TRUE";
+            }
+        };
+        db.initDatabase();
+        VectorStore vectorStore = new VectorStore(db, embedder.getDimension());
+
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode root = mapper.readTree(Path.of(webTestFile).toFile());
+        JsonNode urls = root.path("urls");
+        if (!urls.isArray()) {
+            System.err.println("ERROR: " + webTestFile + " must contain an 'urls' array");
+            return;
+        }
+
+        WikiScraperService scraper = new WikiScraperService();
+        TextChunker chunker = new TextChunker();
+
+        for (JsonNode item : urls) {
+            String url = item.path("url").asText(null);
+            if (url == null || url.isBlank()) continue;
+            String modId = item.path("modId").asText("unknown");
+            String modName = item.path("modName").asText(modId);
+            String source = url.contains("minecraft.wiki") ? "mcwiki" : "mcmod";
+
+            System.out.println("\n=== [" + source + "] " + url);
+            WikiScraperService.FetchedPage fetched = scraper.fetchPageWithRegistries(url, source);
+            if (fetched == null || fetched.page() == null) {
+                System.out.println("  fetch failed or empty");
+                continue;
+            }
+            System.out.println("  registries: " + fetched.registries());
+
+            List<TextChunker.TextChunk> chunks = chunker.fromWebPage(
+                    fetched.page().content(), modId, modName, source, url);
+            vectorStore.storeBatch(chunks, embedder);
+            System.out.println("  chunks: " + chunks.size());
+            for (TextChunker.TextChunk c : chunks) {
+                System.out.println("  --- [" + c.modId() + "/" + c.modName() + "/"
+                        + c.type() + "] " + c.sourcePath());
+                System.out.println(c.text());
+            }
+        }
+        System.out.println("\n[WebTest] vectors in DB: " + vectorStore.count());
+    }
+
     private static void cleanDirectory(Path dir) {
         try {
             if (Files.exists(dir)) {
@@ -243,6 +316,7 @@ public class HeadlessRunner {
               --build <mods-folder> Build knowledge base (implies --scan)
               --clean               Delete generated/, logs/, sessions/
               --test [file]         Run automated tests (default: test-questions.json)
+              --testweb <target-dir> Test web fetch/chunk/vector pipeline (default: test-web.json)
               --api-key <key>       Set DeepSeek API key
 
             Examples:
@@ -251,6 +325,9 @@ public class HeadlessRunner {
 
               # Just test with existing database
               java ... HeadlessRunner --data-dir D:/data --test my-questions.json
+
+              # Test web page processing into a separate vector DB
+              java ... HeadlessRunner --testweb D:/web-test
             """);
     }
 }
