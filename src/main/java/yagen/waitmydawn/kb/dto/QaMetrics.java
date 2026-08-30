@@ -48,7 +48,7 @@ public class QaMetrics {
     public int incrementalChunksAcquired;  // 增量获取的文本块数
     public boolean fallbackUsed;           // 是否使用了 LLM fallback
     public String classifyCategory;        // 分类结果
-    public float classifyConfidence;       // 分类置信度
+    public String classifySource;          // 分类来源: llm / last / offline
     public String dataTier;                // 数据层级: A/B/C/D
     public int answerLength;               // 回答字符数
     public boolean entityResolved;         // 是否成功解析出实体
@@ -128,7 +128,7 @@ public class QaMetrics {
         return String.format(
                 "Metrics[total=%dms ttft=%dms | cls=%dms ent=%dms url=%dms inc=%dms vec=%dms rec=%dms rrk=%dms ans=%dms | "
                         + "tier=%s hit=%s ent=%d(%s) urls=%d vec=%d(rel=%d max=%.3f avg=%.3f) rec=%d incChk=%d | "
-                        + "llm=%d tokIn=%d tokOut=%d fallback=%s cat=%s(%.2f) ansLen=%d ctxUse=%.0f%%]",
+                        + "llm=%d tokIn=%d tokOut=%d fallback=%s cat=%s(src=%s) ansLen=%d ctxUse=%.0f%%]",
                 totalTimeMs, ttftMs,
                 classifyTimeMs, entityResolveTimeMs, urlMatchTimeMs, incrementalFetchTimeMs,
                 vectorSearchTimeMs, recipeSearchTimeMs, rerankTimeMs, answerGenTimeMs,
@@ -136,7 +136,7 @@ public class QaMetrics {
                 subPageUrlCount, vectorResultCount, vectorRelevantCount, vectorMaxScore, vectorAvgScore,
                 recipeResultCount, incrementalChunksAcquired,
                 llmCallCount, tokenEstimateInput, tokenEstimateOutput,
-                fallbackUsed, classifyCategory, classifyConfidence,
+                fallbackUsed, classifyCategory, classifySource,
                 answerLength, contextUtilization * 100);
     }
 
@@ -147,12 +147,12 @@ public class QaMetrics {
                 + "dataTier,hit,entityCount,entityResolved,subPageUrls,vecCount,vecRel,vecMaxScore,vecAvgScore,"
                 + "recipeCount,incChunks,contextUsed,contextUtil,"
                 + "llmCalls,tokIn,tokOut,dbQueries,fallback,"
-                + "category,confidence,answerLen,questionHash";
+                + "category,source,answerLen,questionHash";
     }
 
     /** Format as CSV row */
     public String toCsvRow() {
-        return String.format("%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d,%s,%d,%d,%d,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%d,%d,%s,%s,%.2f,%d,%s",
+        return String.format("%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d,%s,%d,%d,%d,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%d,%d,%s,%s,%s,%d,%s",
                 timestamp, sessionId, conversationTurn,
                 totalTimeMs, ttftMs, classifyTimeMs, entityResolveTimeMs, urlMatchTimeMs,
                 incrementalFetchTimeMs, vectorSearchTimeMs, recipeSearchTimeMs, rerankTimeMs, answerGenTimeMs,
@@ -161,7 +161,7 @@ public class QaMetrics {
                 subPageUrlCount, vectorResultCount, vectorRelevantCount, vectorMaxScore, vectorAvgScore,
                 recipeResultCount, incrementalChunksAcquired, contextChunksUsed, contextUtilization,
                 llmCallCount, tokenEstimateInput, tokenEstimateOutput, dbQueryCount, fallbackUsed,
-                classifyCategory, classifyConfidence, answerLength, questionHash);
+                classifyCategory, classifySource, answerLength, questionHash);
     }
 
     /** Format as human-readable summary for UI */
@@ -193,7 +193,7 @@ public class QaMetrics {
         // Quality
         sb.append("┌── Quality ───────────────────────────────────────┐\n");
         sb.append(String.format("│ Data Tier:    %-5s  Hit: %s\n", dataTier, retrievalHit ? "YES" : "NO"));
-        sb.append(String.format("│ Category:     %-15s  conf=%.2f\n", classifyCategory, classifyConfidence));
+        sb.append(String.format("│ Category:     %-15s  src=%-6s\n", classifyCategory, classifySource));
         sb.append(String.format("│ Entities:     %-5d  Resolved: %s\n", entityCount, entityResolved ? "YES" : "no"));
         sb.append(String.format("│ SubPage URLs: %-5d  Inc Chunks: %d\n", subPageUrlCount, incrementalChunksAcquired));
         sb.append(String.format("│ Recipes:      %-5d\n", recipeResultCount));

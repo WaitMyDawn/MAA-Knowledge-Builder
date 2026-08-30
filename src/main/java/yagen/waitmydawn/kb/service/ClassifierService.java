@@ -1,7 +1,7 @@
 package yagen.waitmydawn.kb.service;
 
 import yagen.waitmydawn.kb.dto.ClassificationResult;
-import yagen.waitmydawn.kb.dto.ClassificationResult.QuestionType;
+import yagen.waitmydawn.kb.dto.QuestionType;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -53,11 +53,11 @@ public class ClassifierService {
 
         // 判断类型
         if (multiScore > recipeScore && multiScore > mechScore && multiScore > 0) {
-            result.setQuestionType(QuestionType.MULTIBLOCK);
+            result.setQuestionType(QuestionType.STRUCTURE);
         } else if (recipeScore > mechScore && recipeScore > 0) {
-            result.setQuestionType(QuestionType.RECIPE);
+            result.setQuestionType(QuestionType.ITEM);
         } else if (mechScore > 0) {
-            result.setQuestionType(QuestionType.MECHANICS);
+            result.setQuestionType(QuestionType.MECHANISM);
         } else {
             result.setQuestionType(QuestionType.GENERAL);
         }

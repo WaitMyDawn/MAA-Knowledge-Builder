@@ -11,9 +11,9 @@ import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import yagen.waitmydawn.kb.dto.QuestionType;
 import yagen.waitmydawn.kb.service.RagAgentService;
 import yagen.waitmydawn.kb.service.VectorStore;
-import yagen.waitmydawn.kb.service.WikiScraperService.McmodCategory;
 
 import java.util.List;
 
@@ -303,7 +303,7 @@ public class AnswerAgent {
     /** Context object bundling all information for answer composition */
     public record AnswerContext(
             String question,
-            McmodCategory category,
+            QuestionType category,
             List<EntityAgent.ResolvedEntity> resolvedEntities,
             List<RecipeMatch> recipeMatches,
             List<VectorStore.SearchResult> vectorResults,

@@ -322,7 +322,7 @@ public class MetricsHistoryService {
         map.put("dbQueryCount", m.dbQueryCount);
         map.put("fallbackUsed", m.fallbackUsed);
         map.put("classifyCategory", m.classifyCategory);
-        map.put("classifyConfidence", m.classifyConfidence);
+        map.put("classifySource", m.classifySource);
         map.put("answerLength", m.answerLength);
         map.put("questionHash", m.questionHash);
         return map;
@@ -369,7 +369,7 @@ public class MetricsHistoryService {
         m.dbQueryCount = i(map, "dbQueryCount");
         m.fallbackUsed = b(map, "fallbackUsed");
         m.classifyCategory = str(map, "classifyCategory");
-        m.classifyConfidence = (float) d(map, "classifyConfidence");
+        m.classifySource = str(map, "classifySource");
         m.answerLength = i(map, "answerLength");
         m.questionHash = str(map, "questionHash");
         return m;

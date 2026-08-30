@@ -10,10 +10,9 @@ import yagen.waitmydawn.kb.agent.ClassifyAgent;
 import yagen.waitmydawn.kb.agent.EntityAgent;
 import yagen.waitmydawn.kb.agent.EntityAgent.ResolvedEntity;
 import yagen.waitmydawn.kb.agent.UrlAgent;
-import yagen.waitmydawn.kb.dto.ClassificationResult;
 import yagen.waitmydawn.kb.dto.QaMetrics;
+import yagen.waitmydawn.kb.dto.QuestionType;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
-import yagen.waitmydawn.kb.service.WikiScraperService.McmodCategory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -26,7 +25,7 @@ import java.util.*;
 /**
  * Agentic RAG QA Pipeline with comprehensive metrics collection.
  *
- *   Agent 1 — ClassifyAgent: LLM classifies question -> McmodCategory
+ *   Agent 1 — ClassifyAgent: LLM classifies question -> QuestionType
  *   Agent 2 — EntityAgent:   LLM resolves entity registry names
  *   Agent 2.5 — UrlAgent:    LLM matches entities to sub-page URLs
  *   Incremental fetch:       Acquires MC百科 sub-pages into session DB
@@ -101,22 +100,21 @@ public class QaPipeline {
 
         // === Agent 1: Classify (with conversation context) ===
         long t1 = System.nanoTime();
-        ClassifyAgent.Classification cls = classifyAgent.classify(question, convContext);
+        ClassifyAgent.Classification cls = classifyAgent.classify(question);
         m.classifyTimeMs = (System.nanoTime() - t1) / 1_000_000;
         m.classifyLlmMs = m.classifyTimeMs; // ClassifyAgent = pure LLM call
         TokenUsage classifyUsage = classifyAgent.lastUsage();
         if (classifyUsage != null) recordUsage(m, classifyUsage);
         else m.recordLlmCall(estimatePromptTokens(question) + 200, 20);
 
-        McmodCategory category = cls.category();
-        result.questionType = ClassificationResult.toQuestionType(category);
-        result.mcmodCategory = category;
-        m.classifyCategory = category != null ? category.getName() : "GENERAL";
-        m.classifyConfidence = cls.confidence();
+        QuestionType intent = cls.intent();
+        result.questionType = intent;
+        m.classifyCategory = intent != null ? intent.getName() : "GENERAL";
+        m.classifySource = cls.source();
         m.addTrace("Classify", m.classifyTimeMs, m.classifyCategory);
 
-        log.info("QA[Classify] '{}' -> {} (conf={}) [{}ms]",
-                question, category != null ? category.name() : "GENERAL", cls.confidence(), m.classifyTimeMs);
+        log.info("QA[Classify] '{}' -> {} (src={}) [{}ms]",
+                question, intent != null ? intent.name() : "GENERAL", cls.source(), m.classifyTimeMs);
 
         // === Agent 2: 实体别名向量检索 + 子问题拆分 ===
         long t2 = System.nanoTime();
@@ -237,8 +235,7 @@ public class QaPipeline {
         result.recipeResults = recipeResults;
         result.vectorResults = vectorResults;
         result.incrementalInfo = incInfo;
-        boolean recipeIntent = result.questionType == ClassificationResult.QuestionType.RECIPE
-                || hasCraftingIntent(question);
+        boolean recipeIntent = hasCraftingIntent(question);
         result.recipesToRender = selectRecipesToRender(scoredRecipes, recipeIntent);
 
         // === Detect data tier (matching AnswerAgent's logic) ===
@@ -266,7 +263,7 @@ public class QaPipeline {
                 || vectorResults.stream().anyMatch(v -> v.score() > 0.2);
 
         AnswerContext ctx = new AnswerContext(
-                question, category, resolvedEntities, answerRecipeMatches,
+                question, intent, resolvedEntities, answerRecipeMatches,
                 vectorResults, incInfo, fetchResult.subQueryResults());
 
         long tAnsLlm = System.nanoTime();
@@ -280,7 +277,7 @@ public class QaPipeline {
         m.fallbackUsed = false;
         if (!hasRelevantData && llm != null) {
             long tFb = System.nanoTime();
-            FallbackAnswer fallback = answerWithFallback(question, category, resolvedEntities,
+            FallbackAnswer fallback = answerWithFallback(question, intent, resolvedEntities,
                     vectorResults, recipeResults, convContext);
             m.fallbackLlmMs = (System.nanoTime() - tFb) / 1_000_000;
             if (fallback.text() != null) {
@@ -402,7 +399,7 @@ public class QaPipeline {
 
     // ==================== LLM fallback ====================
 
-    private FallbackAnswer answerWithFallback(String question, McmodCategory category,
+    private FallbackAnswer answerWithFallback(String question, QuestionType intent,
                                               List<ResolvedEntity> entities,
                                               List<VectorStore.SearchResult> vectorResults,
                                               List<RecipeMatch> recipeResults,
@@ -413,7 +410,7 @@ public class QaPipeline {
                 ctx.append("[Conversation]\n").append(convContext).append("\n\n");
             }
 
-            String catStr = category != null ? category.getName() : "通用";
+            String catStr = intent != null ? intent.getName() : "通用";
             ctx.append("Category: ").append(catStr).append("\n");
 
             if (!entities.isEmpty()) {
@@ -693,6 +690,7 @@ public class QaPipeline {
     public void clearHistory() {
         conversationHistory.clear();
         conversationTurn = 0;
+        classifyAgent.reset();
         answerAgent.clearMemory();
         QaMetrics.cumulative.reset();
     }
@@ -767,8 +765,7 @@ public class QaPipeline {
     private record ScoredRecipe(RecipeMatch match, int score) {}
 
     public static class QaResult {
-        public ClassificationResult.QuestionType questionType = ClassificationResult.QuestionType.GENERAL;
-        public McmodCategory mcmodCategory;
+        public QuestionType questionType = QuestionType.GENERAL;
         public List<ResolvedEntity> resolvedEntities = new ArrayList<>();
         public Map<String, String> subPageUrls = new LinkedHashMap<>();
         public List<RecipeMatch> recipeResults = new ArrayList<>();
