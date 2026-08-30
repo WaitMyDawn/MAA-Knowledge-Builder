@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
@@ -120,8 +122,8 @@ public class IncrementalKnowledgeService {
             String prompt = """
                 Given the Minecraft question below, identify the key topic(s) and generate Chinese Minecraft Wiki URLs.
                 Reply in format: TOPIC_NAME|URL
-                Use https://zh.minecraft.wiki/w/ for URLs.
-                Example: "How to craft a beacon?" → 信标|https://zh.minecraft.wiki/w/信标
+                Use https://wiki.biligame.com/mc/ for URLs (中文 Minecraft Wiki 镜像).
+                Example: "How to craft a beacon?" → 信标|https://wiki.biligame.com/mc/信标
                 Only include valid wiki page URLs. One per line.
                 Question: %s
                 """.formatted(question);
@@ -136,11 +138,12 @@ public class IncrementalKnowledgeService {
                 String topic = parts[0].trim();
                 String url = parts[1].trim();
 
-                if (!url.startsWith("https://zh.minecraft.wiki/w/")) continue;
+                if (!url.startsWith("https://wiki.biligame.com/mc/")) continue;
                 if (fetchedCache.contains(url)) continue;
                 fetchedCache.add(url);
 
-                String pageName = url.substring(url.lastIndexOf('/') + 1);
+                String pageName = URLDecoder.decode(
+                        url.substring(url.lastIndexOf('/') + 1), StandardCharsets.UTF_8);
                 WikiScraperService.WebPage page = scraper.fetchMcWiki(pageName);
                 if (page == null) continue;
 

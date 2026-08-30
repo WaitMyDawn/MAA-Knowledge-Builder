@@ -267,7 +267,8 @@ public class HeadlessRunner {
             if (url == null || url.isBlank()) continue;
             String modId = item.path("modId").asText("unknown");
             String modName = item.path("modName").asText(modId);
-            String source = url.contains("minecraft.wiki") ? "mcwiki" : "mcmod";
+            String source = (url.contains("minecraft.wiki") || url.contains("wiki.biligame.com/mc"))
+                    ? "mcwiki" : "mcmod";
 
             System.out.println("\n=== [" + source + "] " + url);
             WikiScraperService.FetchedPage fetched = scraper.fetchPageWithRegistries(url, source);

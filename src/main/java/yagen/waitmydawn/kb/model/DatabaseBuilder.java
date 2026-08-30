@@ -89,24 +89,6 @@ public class DatabaseBuilder {
                 )
                 """);
 
-//            // rag_item — 物品
-//            stmt.execute("""
-//                CREATE TABLE IF NOT EXISTS rag_item (
-//                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-//                    registry_name VARCHAR(255) NOT NULL,
-//                    display_name VARCHAR(255) NOT NULL,
-//                    mod_source VARCHAR(100) DEFAULT 'minecraft',
-//                    item_type VARCHAR(50),
-//                    max_stack INTEGER DEFAULT 64,
-//                    durability INTEGER,
-//                    versions VARCHAR(1000),
-//                    texture_path VARCHAR(500),
-//                    icon_url VARCHAR(1000),
-//                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-//                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-//                )
-//                """);
-
             // rag_recipe — 配方
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS rag_recipe (

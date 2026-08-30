@@ -1,169 +1,156 @@
 # MAA Knowledge Builder
 
-**Agentic RAG 图文混合知识问答系统 — Minecraft 模组知识库构建与智能问答**
+**本地优先的 Minecraft 模组知识库构建与 Agentic RAG 图文问答工具**
 
 [![Java](https://img.shields.io/badge/Java-21-blue)](https://openjdk.org/projects/jdk/21/)
 [![JavaFX](https://img.shields.io/badge/JavaFX-21.0.11-orange)](https://openjfx.io/)
-[![License](https://img.shields.io/badge/License-All%20Rights%20Reserved-red)](LICENSE)
+[![License](https://img.shields.io/badge/License-All%20Rights%20Reserved-red)](LICENSE.md)
+
+MAA Knowledge Builder 是一款 Java 21 桌面应用：从你本地的 Minecraft 模组 JAR 构建**离线知识库**，用中文自然语言提问，AI 自动查配方、翻 Wiki、生成合成图。
 
 ---
 
 ## 目录
 
-- [简介](#简介)
-- [功能特性](#功能特性)
-- [快速开始](#快速开始)
-- [使用指南](#使用指南)
-- [架构概览](#架构概览)
-- [技术栈](#技术栈)
-- [模型与数据来源](#模型与数据来源)
-- [合法性与合规声明](#合法性与合规声明)
-- [构建与打包](#构建与打包)
-- [项目结构](#项目结构)
-- [许可证](#许可证)
+- [项目简介](#1-项目简介)
+- [项目状态](#2-项目状态)
+- [功能特性](#3-功能特性)
+- [快速开始](#4-快速开始)
+- [详细用法](#5-详细用法)
+- [架构与数据流](#6-架构与数据流)
+- [配置说明](#7-配置说明)
+- [命令行与数据格式](#8-命令行与数据格式)
+- [项目结构](#9-项目结构)
+- [数据来源与合规](#10-数据来源与合规)
+- [常见问题 FAQ](#11-常见问题-faq)
+- [贡献指南](#12-贡献指南)
+- [许可证](#13-许可证)
+- [致谢与相关项目](#14-致谢与相关项目)
 
 ---
 
-## 简介
+## 1. 项目简介
 
-MAA Knowledge Builder 是一款 **Java 21 桌面应用**，面向 Minecraft 模组玩家与整合包作者，提供：
+面向 Minecraft 模组玩家与整合包作者，提供：
 
-- **离线知识库构建**：从本地 JAR 文件（Minecraft 本体 + NeoForge/Forge/Fabric 模组）自动提取纹理、配方、多语言文本，构建向量知识库
-- **Agentic RAG 智能问答**：四 Agent 协作管道（ClassifyAgent → EntityAgent → UrlAgent → AnswerAgent），支持中文自然语言提问，自动推断物品注册名，LLM 匹配 MC 百科子网页，按需增量抓取知识
-- **图文渲染**：根据配方 JSON 动态生成合成图、熔炉图、锻造图
-- **训练种子**：导出/导入 `.maa-seed.json` 文件，在 MAA 社区分享知识库构建方案
+- **离线知识库构建**：扫描本地 JAR（Minecraft 本体 + NeoForge/Forge/Fabric 模组），自动提取纹理、配方、多语言文本并向量化，全程本地完成
+- **Agentic RAG 中文问答**：四 Agent 协作管道（分类 → 实体解析 → URL 匹配 → 答案合成），自动推断物品注册名、按需增量抓取网页知识
+- **图文混合渲染**：根据配方 JSON 动态生成合成图、熔炉图、锻造图、多方块图，以 Markdown 内联图片展示
+- **种子分享**：导出/导入 `.maa-seed.json`，跨机器复现同一套知识库构建方案
 
-## 功能特性
+## 2. 项目状态
 
-### 知识库构建
-- 解析 `neoforge.mods.toml` / `mods.toml` / `fabric.mod.json` 自动识别模组元数据
-- 从 `assets/{modid}/textures/` 提取所有纹理 PNG
-- 从 `assets/{modid}/textures/entity/` 扫描实体注册名
-- 从 `data/{modid}/recipe/` 提取所有配方 JSON
-- 从 `assets/{modid}/lang/zh_cn.json` 提取中英文物品名映射
-- 通过 **Modrinth API v2** 精确绑定模组 slug（版本号精确匹配）
-- 从 **中文 Minecraft Wiki**（zh.minecraft.wiki）抓取 16 个基础页面
-- 从 **MC 百科**（mcmod.cn）按模组分类深度抓取，构建 `subWebPage` 映射
+当前处于**持续开发阶段**，桌面版优先支持 Windows 10/11，以中文问答为主。
 
-### Agentic RAG 问答
-- **ClassifyAgent**：LLM 将问题分类到 11 个 MC 百科分类（物品/方块、生物/实体、多方块结构…）
-- **EntityAgent**：基于模组清单 + 实体注册名提示 → LLM 推断 `modid:item_name` 格式注册名
-- **UrlAgent**：将 EntityAgent 推断出的实体中文名 + modId → 从该 mod 的 `中文名(英文名)→URL` 映射中用 LLM 匹配最佳 MC 百科子网页
-- **AnswerAgent**：Tier A/B/C/D 四级数据分层策略，数据充足时精准引用，稀疏时补充 AI 知识并声明来源
-- **增量知识获取**：对话中按需从 MC 百科子网页抓取内容 → 向量化 → 存入增量数据库
-- **对话上下文记忆**：自动追踪最近对话，识别代词（"它们"、"这个"）和追问
+## 3. 功能特性
 
-### 可观测性
-- 每次问答全链路计时（分类/实体解析/增量抓取/向量检索/配方搜索/答案生成）
-- 性能/质量/成本指标实时显示（延迟、实体数、向量命中数、Token 估算）
-- 文件日志：`logs/yyyy-MM-dd-x.log`，完整记录操作与错误
+- **本地知识库构建（离线可用）**：JAR 元数据解析 → 纹理/实体/配方/语言包提取 → 384 维语义向量入库；Modrinth API 精确绑定模组 slug；中文 Minecraft Wiki 镜像与 MC 百科按需抓取
+- **Agentic RAG 中文问答**：ClassifyAgent → EntityAgent → UrlAgent → AnswerAgent 四步管道；别名向量库 + 离散等级匹配解决“冰火传说/龙”类中文实体识别；多轮对话上下文记忆
+- **图文混合渲染**：配方 JSON → 合成/熔炉/锻造/多方块图，只渲染与问题最相关的 Top-3 配方
+- **全链路可观测**：每次问答的延迟、实体数、向量命中数、真实 Token 用量全程记账，指标按日持久化，日志落盘 `logs/yyyy-MM-dd-x.log`
+- **种子导入/导出**：`.maa-seed.json` 记录模组 slug 与网页资源引用，可分享、可复现
 
-### 其他
-- 训练种子导入/导出（`.maa-seed.json`）
-- 多轮对话历史持久化
-- 增量数据库按会话独立管理，支持清理
-
----
-
-## 快速开始
+## 4. 快速开始
 
 ### 环境要求
 
 | 依赖 | 版本 |
 |------|------|
 | JDK | 21+ |
-| JavaFX SDK | 21.0.11 |
 | Maven | 3.8+（推荐使用内置 `mvnw`） |
-| 操作系统 | Windows 10/11（macOS/Linux 需调整脚本） |
+| 操作系统 | Windows 10/11（macOS/Linux 需自行调整脚本） |
+| JavaFX SDK | 仅打包需要（21.0.11） |
 
-### 获取 API Key（可选，但推荐）
+### 方式一：使用打包版本（推荐）
 
-1. 注册 [DeepSeek](https://platform.deepseek.com/) 账号
-2. 获取 API Key（`sk-xxxxxxxx`）
-3. 在软件 Settings 页面填入
+```bat
+set JAVAFX_SDK=D:\path\to\javafx-sdk-21.0.11
+.\package.bat
+```
 
-> 无 API Key 时，Q&A 使用离线模式显示原始检索结果。
+输出位于 `build\package\MAA-Knowledge-Builder\`，双击 `MAA-Knowledge-Builder.exe` 即可运行（自带捆绑 JRE）。
 
-### 运行开发模式
+### 方式二：源码运行
 
 ```bash
-# 克隆项目
 git clone https://github.com/WaitMyDawn/MAA-Knowledge-Builder.git
 cd MAA-Knowledge-Builder
 
-# 编译并运行
-./mvnw javafx:run
+.\mvnw javafx:run
 ```
 
-### 一键打包
+### 最简运行三步
 
-```bash
-# 确保已安装 JavaFX SDK 21.0.11
-# 默认路径: D:\javafx-sdk-21.0.11 或 C:\javafx-sdk-21.0.11
-# 或设置环境变量: set JAVAFX_SDK=D:\path\to\javafx-sdk-21.0.11
+1. 启动后选择数据目录（所有知识库数据存储于此，自动初始化 H2 数据库与 ONNX 嵌入模型）
+2. **Builder** 页选择模组文件夹 → `Scan JARs` → `Build Knowledge Base`
+3. 切到 **Q&A** 页提问
 
-package.bat
+## 5. 详细用法
+
+### 5.1 GUI 工作流
+
+| 页面 | 说明 |
+|------|------|
+| **Builder** | 选择模组文件夹 → Scan 解析 JAR 并绑定 Modrinth slug → Build 提取纹理/配方/语言包并构建向量库 |
+| **Q&A** | 中文提问；支持“介绍一下它们”这类代词追问；命中配方时自动渲染合成/熔炉/锻造图 |
+| **Seed** | 导出/导入 `.maa-seed.json` 训练种子 |
+| **Settings** | API Key、嵌入模型名、默认 MC 版本/加载器、用户名 |
+| **Metrics** | 查看每次问答的延迟、Token、命中数与历史指标 |
+
+**注意**：Build 是覆盖模式，会清空基础库重新构建，但不会影响 Q&A 阶段生成的会话增量库（`sessions/incremental/`）。
+
+### 5.2 命令行快速上手
+
+Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
+
+```powershell
+# 完整管道：清空 -> 构建 -> 回归测试
+./mvnw.cmd exec:java "-Dexec.args=--data-dir D:/MKB --clean --build D:/mods --test"
+
+# 仅用现有库跑问答测试
+./mvnw.cmd exec:java "-Dexec.args=--data-dir D:/MKB --test test-questions.json"
+
+# 网页抓取链路测试（抓取 -> 清洗 -> 分块 -> 入库）
+./mvnw.cmd exec:java "-Dexec.args=--testweb D:/web-test"
 ```
 
-打包输出位于 `build\package\MAA-Knowledge-Builder\`，双击 `MAA-Knowledge-Builder.exe` 运行。
+### 5.3 自动化测试
 
----
+- `--test`：读取 `test-questions.json`（多轮对话数组），逐轮走完整 QA 管道并输出 Tier/命中/TF 指标
+- `--testweb`：读取 `test-web.json`（URL 列表），独立建库验证“网页抓取 → 正文清洗 → 分块 → 向量化”全链路
 
-## 使用指南
+### 5.4 示例提问
 
-### 1. 首次启动
+- `龙有哪几种`
+- `指南针怎么做`
+- `冰火传说如何养龙`
+- `介绍一下它们`（基于对话上下文的追问）
+- `原版的信标怎么制作？`
 
-选择数据目录（所有知识库数据存储于此），软件自动初始化 H2 数据库和 ONNX 嵌入模型。
-
-### 2. 构建知识库
-
-```
-Builder Tab → Browse 选择模组文件夹 → Scan JARs → Build Knowledge Base
-```
-
-**注意**：Build 会清空上次构建的数据（覆盖模式），但不会影响 Q&A 阶段产生的增量数据库。
-
-### 3. 问答
-
-```
-QA Tab → 输入问题 → Ask
-```
-
-示例提问：
-- "龙有哪几种"
-- "指南针怎么做"
-- "冰火传说如何养龙"
-- "介绍一下它们"（基于对话上下文的追问）
-
----
-
-## 架构概览
+## 6. 架构与数据流
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    MAA Knowledge Builder                │
 ├─────────────────────────────────────────────────────────┤
-│  UI Layer (JavaFX)                                      │
-│  ├── Builder Tab  ── Q&A Tab  ── Seed Mgr  ── Settings │
+│  UI Layer (JavaFX): Builder / Q&A / Seed / Settings / Metrics │
 ├─────────────────────────────────────────────────────────┤
 │  Agent Layer (agent/)                                   │
-│  ├── ClassifyAgent   ── LLM 问题分类 (McmodCategory)    │
-│  ├── EntityAgent     ── LLM 注册名推断                  │
-│  ├── UrlAgent        ── LLM 子网页 URL 匹配             │
-│  └── AnswerAgent     ── LLM 分层答案合成 (Tier A/B/C/D)│
+│  ├── ClassifyAgent ── LLM 问题分类 (McmodCategory)      │
+│  ├── EntityAgent   ── 实体解析 + 别名多线路检索          │
+│  ├── UrlAgent      ── LLM 子网页 URL 匹配 + 增量抓取     │
+│  └── AnswerAgent   ── Tier A/B/C/D 分层答案合成          │
 ├─────────────────────────────────────────────────────────┤
 │  Service Layer (service/)                               │
-│  ├── QaPipeline          ── Agent 管道编排 + 指标采集   │
-│  ├── KnowledgeBuilder    ── 构建编排                    │
-│  ├── VectorStore         ── H2 向量库 + 多 DB 检索     │
-│  ├── EmbeddingService    ── ONNX 384-dim 嵌入           │
-│  ├── WikiScraperService  ── MC Wiki + MC百科抓取        │
-│  └── ModrinthBinder      ── Modrinth slug 绑定          │
+│  ├── QaPipeline / KnowledgeBuilder / VectorStore        │
+│  ├── EmbeddingService (ONNX 384-dim)                    │
+│  ├── WikiScraperService (Wiki 镜像 + MC百科, 限流/退避)  │
+│  └── RendererService / IncrementalKnowledgeService      │
 ├─────────────────────────────────────────────────────────┤
 │  Data Layer (model/)                                    │
-│  ├── DatabaseBuilder     ── H2 DDL/CRUD                 │
-│  ├── 基础库: rag_data.db                                │
-│  └── 增量库: sessions/incremental/rag_data_{sid}.db    │
+│  ├── DatabaseBuilder ── H2 DDL/CRUD                      │
+│  ├── 基础库: rag_data.mv.db                              │
+│  └── 增量库: sessions/incremental/rag_data_{sid}.mv.db  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -171,212 +158,210 @@ QA Tab → 输入问题 → Ask
 
 ```
 用户提问
-  → ClassifyAgent (分类)
-  → EntityAgent (推断实体注册名)
-  → UrlAgent (LLM 匹配子网页 URL)
-  → IncrementalKnowledgeService (按需抓取 MC百科子网页)
-  → VectorStore.searchAcross([base, inc], queryVec, 20) (双库检索)
-  → Recipe SQL 精确查询
-  → LLM Reranker (相关度重排)
-  → AnswerAgent (Tier 分层合成)
-  → Markdown + 图片 → UI 显示
+  → ClassifyAgent（分类）
+  → EntityAgent（实体注册名推断 + 别名向量/字面检索）
+  → UrlAgent（LLM 匹配 MC百科子网页 URL / Wiki 镜像主题）
+  → IncrementalKnowledgeService（按需抓取 → 分块 → 增量库）
+  → VectorStore.searchAcross(base, inc)（双库向量检索）
+  → Recipe SQL 精确查询 + 配方相关性评分
+  → LLM Reranker（相关度重排）
+  → AnswerAgent（Tier 分层合成 Markdown）
+  → RendererService（配方图渲染）→ UI 展示
 ```
 
----
+## 7. 配置说明
 
-## 技术栈
+### 7.1 全局设置文件
 
-| 层 | 技术 | 版本 | 用途 |
-|---|---|---|---|
-| **语言** | Java | 21 | Record/虚拟线程/Pattern Matching |
-| **UI** | JavaFX + ControlsFX | 21.0.11 / 11.2.1 | 桌面 GUI、Markdown 渲染 |
-| **AI Agent** | LangChain4j | 0.29.1 | DeepSeek API 封装（OpenAI 协议） |
-| **嵌入** | ONNX Runtime | 1.18.0 | all-MiniLM-L6-v2 384-dim 语义向量 |
-| **数据库** | H2 | 2.2.224 | 嵌入式向量库（BLOB + 余弦相似度） |
-| **爬虫** | Jsoup | 1.18.1 | HTML 解析与网页抓取 |
-| **JSON** | Jackson | 2.17.1 | 配方/种子/子网页映射 序列化 |
-| **TOML** | night-config | 3.6.6 | neoforge.mods.toml 解析 |
-| **日志** | SLF4J + Logback | 2.0.9 / 1.4.14 | 控制台 + 文件双输出 |
-| **构建** | Maven | 3.8+ | shade/assembly/javafx 多插件构建 |
-| **打包** | jpackage | JDK 21 | 原生 EXE + 捆绑 JRE |
+路径：`%USERPROFILE%/.maa_kb/settings.properties`
 
----
+| 键 | 默认值 | 说明 |
+|------|--------|------|
+| `dataDir` | 首次启动选择 | 数据目录（数据库、纹理、生成图、日志） |
+| `apiKey` | 空 | DeepSeek API Key |
+| `embeddingModelName` | `all-MiniLM-L6-v2` | 嵌入模型 |
+| `username` | `MAA_xxxxxx` | 会话标识（首次生成 UUID 前缀） |
+| `defaultMcVersion` | `1.21.1` | 默认 MC 版本 |
+| `defaultLoader` | `neoforge` | 默认模组加载器 |
 
-## 模型与数据来源
+### 7.2 爬虫安全参数（防限流 / 防 ban IP）
 
-### all-MiniLM-L6-v2（嵌入模型）
+通过 JVM 系统属性（`-D...`）或环境变量配置，所有抓取统一经过限速、退避与缓存机制：
 
-| 属性 | 详情 |
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-Dmaa.scraper.minIntervalMs` | `800` | 每域名最小请求间隔（毫秒），含随机抖动 |
+| `-Dmaa.scraper.maxRequestsPerHost` | `2000` | 单次运行每域名请求预算，超限自动停止该域请求 |
+| `-Dmaa.scraper.proxy=host:port` | 无 | HTTP 代理逃生通道（IP 被封时使用）；也可用环境变量 `MAA_SCRAPER_PROXY` |
+
+内置防护：403/429/5xx 指数退避 + 抖动并尊重 `Retry-After`；响应缓存（30 分钟 TTL）；反爬页识别（Cloudflare 质询/验证码特征命中即丢弃）；Cookie 会话复用；404 不重试。
+
+### 7.3 打包参数
+
+| 参数 | 说明 |
 |------|------|
-| **名称** | all-MiniLM-L6-v2 |
-| **来源** | [sentence-transformers / Hugging Face](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) |
-| **许可证** | **Apache License 2.0** |
-| **格式** | 预转换为 ONNX（Open Neural Network Exchange） |
-| **维度** | 384-dim |
-| **大小** | ~86 MB |
-| **用途** | 将中文/英文文本转换为语义向量，用于知识库的相似度检索 |
+| `JAVAFX_SDK` | JavaFX SDK 路径；未设置时依次探测 `D:\javafx-sdk-21.0.11`、`C:\javafx-sdk-21.0.11` |
 
-> 本项目对原始 PyTorch 模型进行了 ONNX 格式转换以支持 Java 运行时推理。转换过程仅涉及格式变更，不改变模型权重和架构。Apache 2.0 许可证允许修改和再分发。
+### 7.4 数据目录布局
 
-### DeepSeek API（大语言模型）
-
-| 属性 | 详情 |
-|------|------|
-| **提供商** | 深度求索（DeepSeek） |
-| **模型** | deepseek-chat |
-| **API 端点** | `https://api.deepseek.com/v1` |
-| **协议** | OpenAI 兼容 |
-| **用途** | ClassifyAgent / EntityAgent / AnswerAgent 的推理决策 |
-
-> 用户需自行注册 DeepSeek 账号并获取 API Key。API 调用费用由 DeepSeek 按其定价政策收取，与本项目无关。
-
-### Minecraft Wiki（知识来源）
-
-| 属性 | 详情 |
-|------|------|
-| **URL** | `https://zh.minecraft.wiki` |
-| **内容许可** | [CC BY-NC-SA 3.0](https://minecraft.wiki/w/Minecraft_Wiki:Copyrights) |
-| **用途** | Build 阶段抓取 16 个基础页面（合成、烧炼、附魔…）的文本内容用于知识库构建 |
-
-> 本软件仅限个人使用。用户构建的知识库存储在本地，不对外分发。
-
-### MC百科（知识来源）
-
-| 属性 | 详情 |
-|------|------|
-| **URL** | `https://www.mcmod.cn` |
-| **用途** | Build 阶段获取模组物品列表 + subWebPage 映射；Q&A 阶段按需从具体物品页面获取内容 |
-
-> 本软件仅在分类页面层级抓取 MC 百科（不访问单个物品子页面），访问频率受到内置延迟限制，遵循合理使用原则。
-
-### Modrinth API
-
-| 属性 | 详情 |
-|------|------|
-| **API** | `https://api.modrinth.com/v2` |
-| **用途** | Scan 阶段通过模组 ID + 版本号精确匹配 Modrinth slug |
-| **许可** | [Modrinth API 免费公开使用](https://docs.modrinth.com/) |
-
----
-
-## 合法性与合规声明
-
-### 知识产权
-
-1. **Minecraft** 是 Mojang Studios / Microsoft 的注册商标。本项目是独立开发的第三方工具，与 Mojang/Microsoft 无关联。
-2. **模组 JAR 文件**：本软件在用户本地计算机上解析用户已合法获取的模组 JAR 文件，仅提取纹理和配方元数据用于个人知识库构建。不修改、不重新分发原始模组文件。
-3. **MC 百科内容**：本软件抓取的 MC 百科网页内容仅缓存在用户本地知识库中供个人查询使用，不对外分发或商业利用。
-4. **训练种子（.maa-seed.json）**：种子文件仅包含模组标识符（slug/modId）和网页资源 URL 的引用，不包含任何版权内容（纹理、配方 JSON、数据库文件）。
-
-### 隐私
-
-- 所有数据（知识库、对话历史、纹理、日志）**完全存储于用户本地**，不上传至任何服务器。
-- API Key 加密存储于 `%USERPROFILE%/.maa_kb/settings.properties`。
-- LLM API 调用仅发送问题文本和检索到的文本片段，不包含文件路径或个人身份信息。
-
-### 使用限制
-
-- 本软件仅供个人学习和研究使用。
-- 请勿用于大规模商业爬取或违反目标网站服务条款的行为。
-- 使用者应遵守 MC 百科和 Minecraft Wiki 的 robots.txt 及服务条款。
-
----
-
-## 构建与打包
-
-### 开发编译
-
-```bash
-./mvnw compile
-./mvnw javafx:run
+```
+{dataDir}/
+├── rag_data.mv.db                    # 基础向量库（H2）
+├── textures/{modSlug}/...            # 提取的纹理
+├── templates/                        # 原版 GUI 模板（裁剪缓存）
+├── generated/{crafting|furnace|smithing}/*.png
+├── jars/                             # 模组 JAR（如启用复制）
+├── wiki/                             # Wiki 相关缓存
+├── sessions/
+│   ├── {sessionId}.json              # 会话历史
+│   └── incremental/rag_data_{sid}.mv.db  # 每会话独立增量库
+└── logs/yyyy-MM-dd-x.log             # 文件日志
 ```
 
-### 打包为可执行文件
+## 8. 命令行与数据格式
 
-```bash
-# Windows
-package.bat
+### 8.1 HeadlessRunner 命令
 
-# 输出
-build/package/MAA-Knowledge-Builder/
-├── MAA-Knowledge-Builder.exe
-├── app/
-│   ├── MAA-Knowledge-Builder-shaded.jar
-│   ├── javafx/          (JavaFX JARs + native DLLs)
-│   └── MAA-Knowledge-Builder.cfg
-└── runtime/              (Bundled JRE)
+```text
+Usage: HeadlessRunner --data-dir <path> [flags]
+
+Required:
+  --data-dir <path>     数据目录（数据库与资源）
+
+Operations:
+  --scan <mods-folder>  扫描 JAR 并绑定 Modrinth slug
+  --build <mods-folder> 构建知识库（隐含 --scan）
+  --clean               清理 generated/、logs/、sessions/
+  --test [file]         运行自动化问答测试（默认 test-questions.json）
+  --testweb <dir>       测试网页抓取/清洗/分块/入库链路（默认 test-web.json）
+  --api-key <key>       设置 DeepSeek API Key
 ```
 
-### Maven 配置要点
+### 8.2 `.maa-seed.json` 格式
 
-- `maven-shade-plugin`：生成 fat JAR（排除 JavaFX 依赖，避免与 jpackage 捆绑的 JavaFX 冲突）
-- `maven-dependency-plugin`：复制依赖到 `target/lib/`
-- `javafx-maven-plugin`：开发时 `mvn javafx:run`
+训练种子仅包含**引用**（模组标识符与网页 URL），不包含版权内容：
 
----
+```json
+{
+  "seedVersion": "1.0",
+  "name": "知识库名称",
+  "description": "描述",
+  "author": "作者",
+  "gameVersion": "1.21.1",
+  "loader": "neoforge",
+  "mods": [
+    {
+      "slug": "ice-and-fire",
+      "modId": "iceandfire",
+      "displayName": "冰火传说",
+      "modVersion": "2.1.13",
+      "mcVersion": "1.21.1",
+      "loader": "neoforge",
+      "source": "modrinth",
+      "modrinthUrl": "https://modrinth.com/mod/..."
+    }
+  ],
+  "webResources": [
+    {
+      "type": "mcmod_wiki",
+      "url": "https://www.mcmod.cn/class/123.html",
+      "description": "模组主页面"
+    }
+  ]
+}
+```
 
-## 项目结构
+`webResources[].type` 取值：`mcmod_wiki` / `mod_wiki` / `custom`。
+
+## 9. 项目结构
 
 ```
 src/main/java/yagen/waitmydawn/kb/
-├── agent/
-│   ├── ClassifyAgent.java          # Agent 1: LLM 问题分类
-│   ├── EntityAgent.java            # Agent 2: LLM 实体注册名推断
-│   └── AnswerAgent.java            # Agent 3: LLM 分层答案合成
+├── MaaKnowledgeBuilderApp.java     # JavaFX 主入口（5 个页面）
+├── HeadlessRunner.java             # CLI 入口（scan/build/test/testweb）
+├── agent/                          # 四个 Agent
+│   ├── ClassifyAgent.java          # LLM 问题分类
+│   ├── EntityAgent.java            # 实体解析 + 别名多线路检索
+│   ├── UrlAgent.java               # 子网页 URL 匹配 + 增量抓取
+│   └── AnswerAgent.java            # Tier 分层答案合成
 ├── config/
-│   ├── AppConfig.java              # 全局配置管理
-│   └── LogSetup.java               # 文件日志初始化
+│   ├── AppConfig.java              # 全局配置（settings.properties）
+│   └── LogSetup.java               # 文件日志
 ├── dto/
-│   ├── ClassificationResult.java   # 分类结果 DTO
-│   ├── QaMetrics.java              # 可观测性指标
-│   └── RetrievalResult.java        # 检索结果 DTO
-├── model/
-│   ├── DatabaseBuilder.java        # H2 数据库管理
-│   ├── ModEntry.java               # 模组元数据
-│   ├── TrainingSeed.java           # 训练种子
-│   └── ...                         # RagItem/RagRecipe/RagMultiblock/...
+│   ├── ClassificationResult.java
+│   ├── QaMetrics.java
+│   └── RetrievalResult.java
+├── model/                          # H2 表实体与种子
+│   ├── DatabaseBuilder.java / ModEntry.java / TrainingSeed.java
+│   ├── RagItem / RagRecipe / RagMultiblock / RagWikiEntry / RagTextureCache
+│   └── VanillaRecipeSeeder.java    # 原版配方预置
 ├── renderer/
-│   ├── CraftingRenderer.java       # 合成图渲染
-│   ├── FurnaceRenderer.java        # 熔炉图渲染
-│   ├── MultiblockRenderer.java     # 多方块图渲染
-│   └── ...                         # BlockRenderer/SmithingRenderer/...
+│   ├── CraftingRenderer / FurnaceRenderer / SmithingRenderer
+│   ├── BlockRenderer / MultiblockRenderer / ImageUtils
+│   └── TemplateManager.java        # 原版 GUI 模板管理
 ├── service/
-│   ├── QaPipeline.java             # Agent 管道编排
-│   ├── KnowledgeBuilder.java       # 知识库构建
-│   ├── VectorStore.java            # 向量存储 + 多 DB 搜索
-│   ├── EmbeddingService.java       # ONNX 嵌入 + 回退
-│   ├── WikiScraperService.java     # MC Wiki + MC百科抓取
-│   ├── ModrinthBinder.java         # Modrinth slug 绑定
-│   ├── EntityTextureScanner.java   # 实体纹理扫描
-│   ├── IncrementalDB.java          # 增量数据库
-│   ├── IncrementalKnowledgeService.java  # 增量知识获取
-│   ├── MultiDBManager.java         # 多 DB 管理
-│   ├── RagAgentService.java        # LLM 调用封装
-│   ├── TextChunker.java            # 文本分块
-│   ├── TextureExtractor.java       # 纹理提取
-│   ├── RecipeExtractor.java        # 配方提取
-│   ├── JarScannerService.java      # JAR 扫描
-│   ├── ModMetadataParser.java      # 元数据解析
-│   ├── ChatHistoryService.java     # 对话历史
-│   └── ...                         # EntityResolver/SeedExport/SeedImport/...
-├── ui/
-│   └── MarkdownRenderer.java       # Markdown → JavaFX TextFlow
-└── MaaKnowledgeBuilderApp.java     # 主入口
+│   ├── QaPipeline / KnowledgeBuilder / VectorStore
+│   ├── EmbeddingService + LocalEmbeddingModel + WordPieceTokenizer
+│   ├── WikiScraperService          # Wiki 镜像 + MC百科抓取（限流/退避/缓存）
+│   ├── IncrementalKnowledgeService + IncrementalDB + MultiDBManager
+│   ├── JarScannerService / ModMetadataParser / ModrinthBinder
+│   ├── TextureExtractor / EntityTextureScanner / RecipeExtractor / TextChunker
+│   ├── RagAgentService / RendererService
+│   ├── ChatHistoryService / MetricsHistoryService / AutoTestService
+│   ├── SeedExportService / SeedImportService
+│   └── 遗留: RetrieverService / RagDocumentService / EntityResolver / ClassifierService
+└── ui/
+    └── MarkdownRenderer.java       # Markdown → JavaFX TextFlow
 ```
 
----
+## 10. 数据来源与合规
 
-## 许可证
+### 数据来源
+
+| 来源 | 用途 | 许可/说明 |
+|------|------|-----------|
+| **all-MiniLM-L6-v2**（[Hugging Face](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)） | 中文/英文文本 → 384 维语义向量 | Apache License 2.0；项目内为 ONNX 格式（仅格式转换，权重不变） |
+| **DeepSeek API**（deepseek-chat） | 分类/实体/答案合成推理 | 用户自备 API Key，费用由 DeepSeek 收取 |
+| **中文 Minecraft Wiki 镜像**（`https://wiki.biligame.com/mc`） | Build 阶段抓取 16 个基础页面 | 内容 [CC BY-NC-SA 3.0](https://minecraft.wiki/w/Minecraft_Wiki:Copyrights)；官方站 zh.minecraft.wiki 被 Cloudflare 全站拦截，故改用同源镜像 |
+| **MC 百科**（`https://www.mcmod.cn`） | 模组物品列表 + 子网页映射；Q&A 按需抓取 | 仅在分类页层级抓取，不访问单个物品子页面，频率受内置限速约束 |
+| **Modrinth API v2** | Scan 阶段绑定模组 slug | [Modrinth API 免费公开使用](https://docs.modrinth.com/) |
+
+### 合规与隐私
+
+1. **Minecraft** 是 Mojang Studios / Microsoft 的注册商标。本项目是独立第三方工具，与 Mojang/Microsoft 无关联。
+2. **模组 JAR**：仅在用户本地解析已合法获取的 JAR，提取纹理/配方元数据用于个人知识库，不修改、不重新分发。
+3. **网页内容**：抓取的 MC 百科 / Wiki 镜像内容仅缓存在本地供个人查询，不对外分发或商业利用。
+4. **训练种子**：只含模组标识符与网页 URL 引用，不含任何版权内容。
+5. **隐私**：知识库、对话历史、纹理、日志全部存储在本地；API Key 加密存放于 `%USERPROFILE%/.maa_kb/settings.properties`；LLM 调用仅发送问题文本与检索片段，不包含文件路径或个人信息。
+6. **使用限制**：仅限个人学习与研究；请遵守目标网站 robots.txt 与服务条款，勿用于大规模商业爬取。
+
+## 11. 常见问题 FAQ
+
+**Q：为什么用 wiki.biligame.com/mc 而不是官方 zh.minecraft.wiki？**
+官方站被 Cloudflare 托管质询拦截，Java/Jsoup/.NET/curl 等非浏览器客户端一律 403（实测 MediaWiki API 与英文站同样被拦）。BWIKI 镜像内容同源、国内可直连，故全面改用镜像。
+
+**Q：Build 卡住或抓取失败怎么排查？**
+先看 `{dataDir}/logs/` 下当天的日志：限流退避、请求预算超限、反爬页识别都会有 WARN 记录。再检查网络连通性；必要时通过 `-Dmaa.scraper.proxy` 走代理。
+
+**Q：没有 DeepSeek API Key 能正常使用吗？**
+可以。问答会退化为离线检索结果展示（配方/向量命中内容），不调用 LLM。
+
+**Q：Build 会清掉我的数据吗？**
+Build 覆盖**基础库**，但 Q&A 阶段产生的**会话增量库**（`sessions/incremental/`）不受影响。
+
+**Q：数据都存在哪里？**
+全部在首次启动选择的数据目录内；全局设置（含 API Key）在 `%USERPROFILE%/.maa_kb/settings.properties`。
+
+**Q：支持 macOS / Linux 吗？**
+代码为跨平台 Java，但打包脚本与默认路径面向 Windows，其他平台需自行调整。
+
+## 12. 许可证
 
 ```
 Copyright (c) 2026 Yagen. All Rights Reserved.
 ```
 
-本项目代码保留所有权利。未经明确授权，禁止复制、修改、分发或商业使用。
-
-具体许可条款参见 [LICENSE](LICENSE.md)。
-
-> 注意：本项目包含的第三方组件各自适用其原始许可证。
+> 本项目包含的第三方组件各自适用其原始许可证。
 
 ### 第三方组件许可证摘要
 
@@ -392,6 +377,17 @@ Copyright (c) 2026 Yagen. All Rights Reserved.
 | SLF4J / Logback | MIT / EPL 1.0 |
 | night-config | LGPL 3.0 |
 | ControlsFX | BSD 3-Clause |
+
+## 13. 致谢与相关项目
+
+- **中文 Minecraft Wiki 镜像**（[wiki.biligame.com/mc](https://wiki.biligame.com/mc)）及其维护者
+- **[MC 百科](https://www.mcmod.cn)**：模组中文资料库
+- **[Modrinth](https://modrinth.com)**：模组元数据与 API
+- **[DeepSeek](https://platform.deepseek.com/)**：大语言模型推理
+- **[sentence-transformers / Hugging Face](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)**：嵌入模型
+- **[JavaFX / OpenJFX](https://openjfx.io/)**、**[ControlsFX](https://github.com/controlsfx/controlsfx)**：桌面 UI
+- **[LangChain4j](https://github.com/langchain4j/langchain4j)**：Agent / LLM 封装
+- **[Jsoup](https://jsoup.org/)**、**[H2 Database](https://www.h2database.com/)**、**[ONNX Runtime](https://onnxruntime.ai/)**、**[Jackson](https://github.com/FasterXML/jackson)**、**[Logback](https://logback.qos.ch/)**、**[night-config](https://github.com/TheElectronWill/night-config)**
 
 ---
 
