@@ -7,18 +7,18 @@ import java.util.*;
 
 /**
  * 文本分块器 — 从 JAR 提取的各类数据生成适合向量化的文本块。
- * 块大小: 500-1000 字符, 重叠 50 字符。
+ * 块大小最多 180 个 UTF-16 单元，重叠 20 个单元，避免短文本模型截断。
  */
 public class TextChunker {
 
-    private static final int TARGET_CHUNK = 500;
+    private static final int TARGET_CHUNK = 180;
     private static final int MIN_TEXT_LEN = 20;
     private static final ObjectMapper mapper = new ObjectMapper();
 
     /** lang 文件黑名单前缀：纯 UI / 技术性 key 不进入知识库。 */
     private static final Set<String> LANG_BLACKLIST = Set.of(
             "accessibility.", "addServer.", "addresourcepack.", "argument.",
-            "attribute.", "biome.", "block.", "chat.", "commands.", "config.",
+            "attribute.", "biome.", "chat.", "commands.", "config.",
             "connect.", "controls.", "createWorld.", "dataPack.", "debug.",
             "disconnect.", "editGamerule.", "filled_map.", "flat_world_preset.",
             "gameMode.", "generator.", "gpu_warnlist.", "gui.", "inventory.",
@@ -64,9 +64,9 @@ public class TextChunker {
     }
 
     private static boolean isLangBlacklisted(String key) {
-        String lower = key.toLowerCase();
+        String lower = key.toLowerCase(Locale.ROOT);
         for (String prefix : LANG_BLACKLIST) {
-            if (lower.startsWith(prefix)) return true;
+            if (lower.startsWith(prefix.toLowerCase(Locale.ROOT))) return true;
         }
         return false;
     }
@@ -86,8 +86,47 @@ public class TextChunker {
                                         String source, String sourcePath) {
         List<TextChunk> chunks = new ArrayList<>();
         if (text == null || text.isBlank()) return chunks;
-        chunks.addAll(split(text, modId, modName, source, sourcePath));
+        String title="", heading="";
+        StringBuilder section=new StringBuilder();
+        for(String line:text.split("\\R")) {
+            if(title.isEmpty() && (line.startsWith("标题：") || line.startsWith("名称："))) { title=line.trim(); continue; }
+            if(line.stripLeading().startsWith("## ")) {
+                chunks.addAll(webSection(section.toString(),title,heading,modId,modName,source,sourcePath));
+                section.setLength(0); heading=line.replaceFirst("^\\s*#+\\s*","").trim();
+            } else section.append(line).append('\n');
+        }
+        chunks.addAll(webSection(section.toString(),title,heading,modId,modName,source,sourcePath));
         return chunks;
+    }
+
+    private List<TextChunk> webSection(String body,String title,String heading,String modId,String modName,String type,String url) {
+        if(body.isBlank()) return List.of();
+        String prefix=(title.isEmpty()?"":shorten(title,40)+"\n")+(heading.isEmpty()?"":"章节："+shorten(heading,35)+"\n");
+        int budget=TARGET_CHUNK-prefix.length();
+        var result=new ArrayList<TextChunk>();
+        for(int start=0;start<body.length();) {
+            int end=Math.min(body.length(),start+budget);
+            if(end<body.length()) {
+                int newline=body.lastIndexOf('\n',end);
+                if(newline>start+budget/2) end=newline;
+                if(Character.isHighSurrogate(body.charAt(end-1))) end--;
+            }
+            String part=body.substring(start,end).trim();
+            if(!part.isEmpty()) {
+                String block=prefix+part;
+                result.add(new TextChunk(modId+"/"+type+"/"+fingerprint(url+"\n"+type+"\n"+block),block,modId,modName==null?modId:modName,type,url));
+            }
+            if(end==body.length()) break;
+            start=Math.max(start+1,end-20);
+            if(Character.isLowSurrogate(body.charAt(start))) start++;
+        }
+        return result;
+    }
+
+    private static String shorten(String text,int limit) {
+        if(text.length()<=limit) return text;
+        int end=Character.isHighSurrogate(text.charAt(limit-1))?limit-1:limit;
+        return text.substring(0,end);
     }
 
     /**
@@ -142,46 +181,31 @@ public class TextChunker {
     }
 
     /**
-     * 通用文本分块：按段落填入，块目标长度约 500 字符。
-     * 若当前块尚未达到目标长度，则即使下一段会超过目标也整段补入，避免截断。
+     * 通用文本分块：固定上限与重叠，来源及内容共同确定块身份。
      */
+    private static String fingerprint(String text) {
+        try {
+            return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
     private List<TextChunk> split(String text, String modId, String modName, String type, String source) {
         List<TextChunk> chunks = new ArrayList<>();
         if (text == null || text.isBlank()) return chunks;
 
-        if (text.length() <= TARGET_CHUNK) {
-            String t = text.trim();
-            if (t.length() > MIN_TEXT_LEN) {
-                chunks.add(new TextChunk(modId + "/" + type + "/0",
-                        t, modId, modName != null ? modName : modId, type, source));
+        for (int start = 0, index = 0; start < text.length(); index++) {
+            int end = Math.min(text.length(), start + TARGET_CHUNK);
+            if (end < text.length() && Character.isHighSurrogate(text.charAt(end - 1))) end--;
+            String block = text.substring(start, end).trim();
+            if (block.length() > MIN_TEXT_LEN) {
+                String identity = source + "\n" + type + "\n" + block;
+                chunks.add(new TextChunk(modId + "/" + type + "/" + fingerprint(identity), block,
+                        modId, modName != null ? modName : modId, type, source));
             }
-            return chunks;
-        }
-
-        String[] paragraphs = text.split("\\n\\s*\\n");
-        if (paragraphs.length <= 1) paragraphs = text.split("\\n");
-
-        List<String> blocks = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        for (String raw : paragraphs) {
-            String paragraph = raw.trim();
-            if (paragraph.isEmpty()) continue;
-            if (current.length() > 0
-                    && current.length() + paragraph.length() + 1 > TARGET_CHUNK
-                    && current.length() >= TARGET_CHUNK) {
-                blocks.add(current.toString());
-                current.setLength(0);
-            }
-            if (current.length() > 0) current.append("\n");
-            current.append(paragraph);
-        }
-        if (current.length() > 0) blocks.add(current.toString());
-
-        for (int i = 0; i < blocks.size(); i++) {
-            String block = blocks.get(i).trim();
-            if (block.length() <= MIN_TEXT_LEN) continue;
-            chunks.add(new TextChunk(modId + "/" + type + "/" + i,
-                    block, modId, modName != null ? modName : modId, type, source));
+            if (end == text.length()) break;
+            start = Math.max(start + 1, end - 20);
+            if (Character.isLowSurrogate(text.charAt(start))) start++;
         }
         return chunks;
     }

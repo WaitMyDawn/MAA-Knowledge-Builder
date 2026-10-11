@@ -14,7 +14,7 @@ import yagen.waitmydawn.kb.service.RagAgentService;
 /**
  * Agent 1 — ClassifyAgent: 判断问题属于哪一类问答意图。
  *
- * <p>输出 {@link QuestionType} 8 值意图 + source 标记：
+     * <p>输出 {@link QuestionType} 意图 + source 标记：
  * <ul>
  *   <li>llm     — LLM 直接推理</li>
  *   <li>last    — 问题过短/无法归类且像追问时，沿用上一次成功分类</li>
@@ -24,6 +24,8 @@ import yagen.waitmydawn.kb.service.RagAgentService;
 public class ClassifyAgent {
 
     private static final Logger log = LoggerFactory.getLogger(ClassifyAgent.class);
+    /** debug 日志中完整 prompt 的最大长度，超出截断，避免每问写数万字符日志。 */
+    private static final int MAX_PROMPT_LOG_CHARS = 1500;
 
     private static final String CLASSIFY_SYSTEM_PROMPT = """
             You are a Minecraft question intent classifier.
@@ -37,9 +39,12 @@ public class ClassifyAgent {
               DIM(维度)           - dimensions / worlds
               MECHANISM(游戏机制) - redstone, commands, machines, game mechanics
               PLAYING(游戏玩法)   - taming, breeding, survival tips, gameplay guides
+              ENUMERATE(枚举)     - list members of a class, examples, which creatures/items meet conditions
               GENERAL(其他)       - anything else, unclear, or too short to classify
 
             Rules:
+            0. Listing several members or asking which members satisfy a condition → ENUMERATE,
+               even when the condition concerns taming/riding. A specific entity's variants remain ENTITY/ITEM.
             1. Crafting / recipe / how-to-obtain questions → ITEM
             2. Redstone, commands, machines, mechanism principles → MECHANISM
             3. Taming, breeding, survival flow → PLAYING
@@ -52,7 +57,7 @@ public class ClassifyAgent {
 
     /** 文本回退：只要求返回枚举名，不再维护第二份分类清单。 */
     private static final String CLASSIFY_FALLBACK_PROMPT = """
-            Reply with only ONE of: ITEM, ENTITY, STRUCTURE, BIOME, DIM, MECHANISM, PLAYING, GENERAL
+            Reply with only ONE of: ITEM, ENTITY, STRUCTURE, BIOME, DIM, MECHANISM, PLAYING, ENUMERATE, GENERAL
             Question: %s
             """;
 
@@ -100,8 +105,12 @@ public class ClassifyAgent {
         try {
             if (classifier != null) {
                 try {
+                    long t0 = System.nanoTime();
                     Result<StructuredClassification> result = classifier.classify(question);
                     lastUsage = result.tokenUsage();
+                    log.info("LLM[ClassifyAgent] {}ms in={} out={}",
+                            (System.nanoTime() - t0) / 1_000_000,
+                            tokenOf(lastUsage, true), tokenOf(lastUsage, false));
                     StructuredClassification structured = result.content();
                     if (structured != null) {
                         return resolve(parseIntent(structured.intent()), question);
@@ -112,8 +121,8 @@ public class ClassifyAgent {
             }
 
             String prompt = CLASSIFY_FALLBACK_PROMPT.formatted(question);
-            log.debug("ClassifyAgent fallback prompt ({} chars):\n{}", prompt.length(), prompt);
-            String response = llm.rawAsk(prompt);
+            log.debug("ClassifyAgent fallback prompt ({} chars):\n{}", prompt.length(), truncatePrompt(prompt));
+            String response = llm.rawAsk("ClassifyAgent", prompt);
             if (response == null || response.isBlank()) return new Classification(null, "llm");
             return resolve(parseIntent(response), question);
         } catch (Exception e) {
@@ -176,6 +185,20 @@ public class ClassifyAgent {
     /** 最近一次调用的真实 Token 用量；回退路径或未配置 Key 时为 null。 */
     public TokenUsage lastUsage() {
         return lastUsage;
+    }
+
+    /** 截断完整 prompt 日志：超长部分省略并注明被截断字符数。 */
+    private static String truncatePrompt(String prompt) {
+        if (prompt == null || prompt.length() <= MAX_PROMPT_LOG_CHARS) return prompt;
+        return prompt.substring(0, MAX_PROMPT_LOG_CHARS)
+                + "\n...[truncated " + (prompt.length() - MAX_PROMPT_LOG_CHARS) + " chars]";
+    }
+
+    /** 取 TokenUsage 的输入/输出计数，缺失时返回 -1。 */
+    private static int tokenOf(TokenUsage usage, boolean input) {
+        if (usage == null) return -1;
+        Integer v = input ? usage.inputTokenCount() : usage.outputTokenCount();
+        return v == null ? -1 : v;
     }
 
     /** 清空上次分类（切换会话时调用）。 */

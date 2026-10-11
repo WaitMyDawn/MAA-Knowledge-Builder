@@ -13,7 +13,7 @@ import java.util.stream.Stream;
  * 多数据库管理器 — 扫描数据目录 + sessions/incremental/ 下的 .mv.db 文件。
  * 增量数据库存储在 sessions/incremental/ 中，随会话删除而清理。
  */
-public class MultiDBManager {
+public class MultiDBManager implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(MultiDBManager.class);
 
@@ -23,6 +23,7 @@ public class MultiDBManager {
     private final DatabaseBuilder baseDb;
     private IncrementalDB currentIncDB;
     private String currentSessionId;
+    private final Map<String, IncrementalDB> opened = new HashMap<>();
 
     public MultiDBManager(Path dataDir, DatabaseBuilder baseDb) {
         this.dataDir = dataDir;
@@ -35,11 +36,12 @@ public class MultiDBManager {
 
     /** Scan dataDir root + sessions/incremental/ for all .mv.db files */
     public List<DBInfo> scan() {
+        Map<String, DBInfo> previous = new HashMap<>(allDbs);
         allDbs.clear();
         try {
             // Scan dataDir root (base DB only)
             try (Stream<Path> files = Files.list(dataDir)) {
-                files.filter(f -> f.getFileName().toString().endsWith(".mv.db"))
+                files.filter(f -> f.getFileName().toString().equals("rag_data.mv.db"))
                         .filter(f -> { try { return Files.size(f) > 1024; } catch (Exception e) { return false; }})
                         .forEach(f -> registerDb(f, false));
             }
@@ -56,6 +58,10 @@ public class MultiDBManager {
                 allDbs.put("rag_data.mv.db", new DBInfo("rag_data.mv.db", "rag_data", 0, true, true));
             }
         } catch (Exception e) { log.warn("DB scan failed: {}", e.getMessage()); }
+        for (var old : previous.values()) {
+            var present = allDbs.get(old.filename());
+            if (present != null && !present.isBase()) setEnabled(old.filename(), old.enabled());
+        }
         return new ArrayList<>(allDbs.values());
     }
 
@@ -97,10 +103,17 @@ public class MultiDBManager {
     }
 
     /** Create or get incremental DB for current session (stored in sessions/incremental/) */
+    private static String validSessionId(String sessionId) {
+        if (sessionId == null || !sessionId.matches("[a-zA-Z0-9_-]+"))
+            throw new IllegalArgumentException("Invalid session ID");
+        return sessionId;
+    }
+
     public IncrementalDB createIncrementalDB(String sessionId, int embeddingDim) {
         this.currentSessionId = sessionId;
-        String dbName = "rag_data_" + sessionId.replaceAll("[^a-zA-Z0-9_-]", "");
-        currentIncDB = new IncrementalDB(incDir, dbName, embeddingDim);
+        String dbName = "rag_data_" + validSessionId(sessionId);
+        currentIncDB = opened.computeIfAbsent(dbName, k -> new IncrementalDB(incDir, k, embeddingDim));
+        allDbs.replaceAll((k, v) -> new DBInfo(v.filename(), v.displayName(), v.sizeBytes(), v.isBase(), v.isBase()));
         allDbs.put(currentIncDB.getDbFile().getFileName().toString(),
                 new DBInfo(currentIncDB.getDbFile().getFileName().toString(), dbName, 0, false, true));
         return currentIncDB;
@@ -110,7 +123,10 @@ public class MultiDBManager {
     public String getCurrentSessionId() { return currentSessionId; }
 
     public void setCurrentSessionId(String sessionId) {
-        this.currentSessionId = sessionId;
+        if (!Objects.equals(currentSessionId, sessionId) || currentIncDB == null) {
+            if (sessionId == null) { currentSessionId = null; currentIncDB = null; allDbs.clear(); }
+            else createIncrementalDB(sessionId, 384);
+        }
         scan();
     }
 
@@ -119,7 +135,7 @@ public class MultiDBManager {
         try {
             Path dbFile = incDir.resolve(dbName + ".mv.db");
             if (!Files.exists(dbFile)) return null;
-            return new IncrementalDB(incDir, dbName, 384);
+            return opened.computeIfAbsent(dbName, k -> new IncrementalDB(incDir, k, 384));
         } catch (Exception e) {
             log.warn("Open incremental DB failed: {}", e.getMessage());
             return null;
@@ -132,6 +148,7 @@ public class MultiDBManager {
         if (info == null || info.isBase) return false;
         try {
             String baseName = info.displayName;
+            closeDatabase(baseName);
             Files.deleteIfExists(incDir.resolve(baseName + ".mv.db"));
             Files.deleteIfExists(incDir.resolve(baseName + ".trace.db"));
             allDbs.remove(filename);
@@ -141,8 +158,9 @@ public class MultiDBManager {
 
     /** Delete the incremental DB for a specific session by session ID */
     public boolean deleteBySessionId(String sessionId) {
-        String dbName = "rag_data_" + sessionId.replaceAll("[^a-zA-Z0-9_-]", "");
+        String dbName = "rag_data_" + validSessionId(sessionId);
         try {
+            closeDatabase(dbName);
             Files.deleteIfExists(incDir.resolve(dbName + ".mv.db"));
             Files.deleteIfExists(incDir.resolve(dbName + ".trace.db"));
             return true;
@@ -150,4 +168,20 @@ public class MultiDBManager {
     }
 
     public Path getIncDir() { return incDir; }
+
+    private void closeDatabase(String name) {
+        IncrementalDB existing = opened.remove(name);
+        if (existing != null) existing.close();
+        if (currentIncDB != null && currentIncDB.getId().equals(name)) {
+            currentIncDB = null;
+            currentSessionId = null;
+        }
+        allDbs.remove(name + ".mv.db");
+    }
+
+    @Override
+    public void close() {
+        for (var database : opened.values()) database.close();
+        opened.clear(); currentIncDB = null; currentSessionId = null;
+    }
 }

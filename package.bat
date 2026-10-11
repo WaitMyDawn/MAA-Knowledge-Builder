@@ -20,7 +20,7 @@ if exist "target\jpackage-staging" rmdir /s /q "target\jpackage-staging"
 if exist "build\package" rmdir /s /q "build\package"
 
 echo [1/2] Building project...
-call mvnw clean package -DskipTests -q
+call mvnw clean package -Prelease -q
 if errorlevel 1 (
     echo [ERROR] Build failed!
     pause
@@ -46,6 +46,7 @@ jpackage ^
   --main-jar MAA-Knowledge-Builder-shaded.jar ^
   --main-class yagen.waitmydawn.kb.MaaKnowledgeBuilderApp ^
   --java-options "-Xmx1g" ^
+  --java-options "-Djava.net.preferIPv6Addresses=system" ^
   --java-options "-Djava.library.path=$APPDIR\javafx" ^
   --java-options "-Dprism.verbose=true" ^
   --java-options "--module-path=$APPDIR\javafx" ^

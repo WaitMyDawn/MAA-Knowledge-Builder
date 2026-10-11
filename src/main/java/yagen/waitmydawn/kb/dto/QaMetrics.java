@@ -13,6 +13,9 @@ import java.util.*;
  *   追踪: 每阶段详细记录
  */
 public class QaMetrics {
+    public int httpRequestCount, httpErrorCount, memoryPageCacheHits, persistentPageCacheHits;
+    public int documentEmbeddingCount, queryEmbeddingCount, reusedEmbeddingCount;
+    public long httpResponseBytes, embeddingTimeMs;
 
     // ===== 性能指标 (ms) =====
     public long classifyTimeMs;
@@ -57,11 +60,12 @@ public class QaMetrics {
     public double contextUtilization;      // 上下文利用率 (使用的块/检索到的块)
 
     // ===== 成本指标 =====
-    public int llmCallCount;               // LLM API 调用次数
-    public int tokenEstimateInput;         // 估算输入 token
-    public int tokenEstimateOutput;        // 估算输出 token
+    public int llmCallCount;               // 模型请求次数，包含未返回用量的失败请求
+    public int unknownUsageCalls;
+    public int tokenEstimateInput;         // 提供方返回的输入 Token；保留旧字段名以兼容历史记录
+    public int tokenEstimateOutput;        // 提供方返回的输出 Token；未知用量另行记录
     public int tokenTotalCount;            // 输入+输出 token 合计（有真实用量时优先）
-    public int dbQueryCount;               // 数据库查询次数
+    public int dbQueryCount;               // 流程级数据库查询次数估算
 
     // ===== 元数据 =====
     public String sessionId;               // 会话 ID
@@ -88,27 +92,23 @@ public class QaMetrics {
         tokenTotalCount += estimatedInputTokens + estimatedOutputTokens;
     }
 
-    /** Compute TTFT — first agent response time (classify + entity resolve) */
+    /** 非流式管道没有首 Token 事件，0 表示未观测。 */
     public void computeTtft() {
-        this.ttftMs = classifyTimeMs + entityResolveTimeMs;
+        this.ttftMs = 0;
     }
 
     /** Compute vector relevance score summary and statistics */
-    public void computeVectorRelevance(List<?> results, double threshold) {
+    public void computeVectorRelevance(List<yagen.waitmydawn.kb.service.VectorStore.SearchResult> results, double threshold) {
         int rel = 0;
         double maxScore = 0;
         double sumScore = 0;
         int count = 0;
-        for (Object r : results) {
-            try {
-                var f = r.getClass().getDeclaredField("score");
-                f.setAccessible(true);
-                double score = (double) f.get(r);
-                if (score > maxScore) maxScore = score;
-                if (score > threshold) rel++;
-                sumScore += score;
-                count++;
-            } catch (Exception ignored) {}
+        for (var result : results) {
+            double score = result.score();
+            if (score > maxScore) maxScore = score;
+            if (score > threshold) rel++;
+            sumScore += score;
+            count++;
         }
         this.vectorRelevantCount = rel;
         this.vectorMaxScore = maxScore;
@@ -171,7 +171,7 @@ public class QaMetrics {
 
         // Performance
         sb.append("┌── Performance ──────────────────────────────────┐\n");
-        sb.append(String.format("│ %-20s %8d ms\n", "TTFT (First Token):", ttftMs));
+        sb.append("│ TTFT (First Token): 未观测（非流式）\n");
         sb.append(String.format("│ %-20s %8d ms\n", "Total Latency:", totalTimeMs));
         sb.append("├──────────────────────────────────────────────────┤\n");
         for (TraceStep step : trace) {
@@ -206,9 +206,13 @@ public class QaMetrics {
 
         // Cost
         sb.append("┌── Cost ──────────────────────────────────────────┐\n");
-        sb.append(String.format("│ LLM Calls:    %-4d   Tokens: ~%d in / ~%d out\n",
+        sb.append(String.format("│ HTTP: %d 次 / 错误 %d / 正文 %d bytes\n",httpRequestCount,httpErrorCount,httpResponseBytes));
+        sb.append(String.format("│ 页面缓存: 内存 %d / 持久化 %d\n",memoryPageCacheHits,persistentPageCacheHits));
+        sb.append(String.format("│ 向量推理: 正文 %d / 查询 %d / 复用 %d / %dms\n",documentEmbeddingCount,queryEmbeddingCount,reusedEmbeddingCount,embeddingTimeMs));
+        sb.append(String.format("│ LLM Calls:    %-4d   Tokens (reported): %d in / %d out\n",
                 llmCallCount, tokenEstimateInput, tokenEstimateOutput));
-        sb.append(String.format("│ DB Queries:   %d\n", dbQueryCount));
+        sb.append(String.format("│ DB Queries (estimated): %d\n", dbQueryCount));
+        sb.append(String.format("│ Unknown token usage calls: %d\n", unknownUsageCalls));
         sb.append(String.format("│ Tokens/char:  %.2f (efficiency)\n",
                 answerLength > 0 ? (double) (tokenEstimateInput + tokenEstimateOutput) / answerLength : 0));
         sb.append("└──────────────────────────────────────────────────┘\n\n");
@@ -223,12 +227,11 @@ public class QaMetrics {
                 cumulative.hits, cumulative.requestCount));
         sb.append(String.format("│ Tier A/B/C/D: %d/%d/%d/%d\n",
                 cumulative.tierA, cumulative.tierB, cumulative.tierC, cumulative.tierD));
-        sb.append(String.format("│ Tokens:       ~%d in / ~%d out\n",
+        sb.append(String.format("│ Tokens (reported): %d in / %d out\n",
                 cumulative.totalTokensIn, cumulative.totalTokensOut));
         sb.append(String.format("│ Entities:     %d resolved  Recipes: %d found\n",
                 cumulative.totalEntities, cumulative.totalRecipes));
-        sb.append(String.format("│ Avg TTFT:     %dms\n",
-                cumulative.requestCount > 0 ? cumulative.totalTtftMs / cumulative.requestCount : 0));
+        sb.append("│ Avg TTFT:     未观测（非流式）\n");
         sb.append("└──────────────────────────────────────────────────┘\n");
 
         return sb.toString();

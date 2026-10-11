@@ -20,13 +20,17 @@ public class AppConfig {
     private static final Path SETTINGS_FILE = SETTINGS_DIR.resolve("settings.properties");
 
     private Path dataDir;
+    private Path nextLaunchDataDir;
     private String apiKey;
+    /** 仅当前进程生效的临时 API Key（--api-key 提供），不写入 settings.properties。 */
+    private volatile String runtimeApiKey;
     private String embeddingModelName = "all-MiniLM-L6-v2";
     private String username = "";
     private String defaultMcVersion = "1.21.1";
     private String defaultLoader = "neoforge";
 
     private boolean initialized = false;
+    private boolean persistenceEnabled = true;
 
     private static AppConfig instance;
 
@@ -35,8 +39,19 @@ public class AppConfig {
         return instance;
     }
 
-    private AppConfig() {
-        load();
+    private AppConfig() { load(); }
+    private AppConfig(boolean isolated) { persistenceEnabled = !isolated; }
+
+    /** 独立运行只借用已授权的凭据，不加载或改写 GUI 的数据目录配置。 */
+    public static AppConfig forIsolatedRun(boolean useSavedKey) throws IOException {
+        var config = new AppConfig(true);
+        if (useSavedKey) {
+            var saved = new Properties();
+            try (Reader reader = Files.newBufferedReader(SETTINGS_FILE)) { saved.load(reader); }
+            config.runtimeApiKey = saved.getProperty("apiKey", "");
+            config.embeddingModelName = saved.getProperty("embeddingModelName", "all-MiniLM-L6-v2");
+        }
+        return config;
     }
 
     // --- properties ---
@@ -45,18 +60,23 @@ public class AppConfig {
 
     public boolean isInitialized() { return initialized && dataDir != null; }
 
+    public void setDataDirForNextLaunch(Path dir) {
+        nextLaunchDataDir = dir;
+        save(dir);
+    }
+
     /**
      * 设置数据目录并持久化。首次调用时创建子目录。
      */
     public void setDataDir(Path dir) {
-        this.dataDir = dir;
+        this.dataDir = dir.toAbsolutePath().normalize();
+        nextLaunchDataDir = null;
         this.initialized = true;
         try {
             Files.createDirectories(dataDir);
             Files.createDirectories(getTexturesDir());
             Files.createDirectories(getGeneratedDir());
             Files.createDirectories(getTemplatesDir());
-            Files.createDirectories(getJarsDir());
             // Initialize file logging (creates logs/ dir under dataDir)
             LogSetup.init(dataDir);
         } catch (IOException e) {
@@ -66,7 +86,23 @@ public class AppConfig {
         log.info("Data dir set: {}", dataDir);
     }
 
-    public String getApiKey() { return apiKey; }
+    /** 返回实际使用的 Key：临时 Key（--api-key）优先，缺省回退到持久化的 apiKey。 */
+    public String getApiKey() {
+        String runKey = runtimeApiKey;
+        return (runKey != null && !runKey.isBlank()) ? runKey : apiKey;
+    }
+
+    /** 判断是否存在可用 Key（临时或持久化任一非空）。 */
+    public boolean hasUsableApiKey() {
+        String k = getApiKey();
+        return k != null && !k.isBlank();
+    }
+
+    /** 设置仅本次进程生效的临时 Key，不触发持久化（不修改 settings.properties 中记录的 Key）。 */
+    public void setApiKeyForRun(String v) {
+        this.runtimeApiKey = v;
+    }
+
     public void setApiKey(String v) { this.apiKey = v; save(); }
 
     public String getEmbeddingModelName() { return embeddingModelName; }
@@ -82,6 +118,10 @@ public class AppConfig {
 
     public Path getTemplatesDir() { return resolve("templates"); }
     public Path getTexturesDir() { return resolve("textures"); }
+    /**
+     * 历史遗留目录：2026-09-07 起 setDataDir 不再自动创建（全项目无消费者）。
+     * getter 保留以防外部引用编译破坏；如需恢复 jar 仓库语义需重新引入消费方。
+     */
     public Path getJarsDir() { return resolve("jars"); }
     public Path getGeneratedDir() { return resolve("generated"); }
     public Path getWikiDir() { return resolve("wiki"); }
@@ -129,12 +169,17 @@ public class AppConfig {
     }
 
     void save() {
+        save(nextLaunchDataDir != null ? nextLaunchDataDir : dataDir);
+    }
+
+    private void save(Path savedDataDir) {
+        if (!persistenceEnabled) return;
         try {
             Files.createDirectories(SETTINGS_DIR);
         } catch (IOException e) { return; }
 
         Properties props = new Properties();
-        props.setProperty("dataDir", dataDir != null ? dataDir.toString() : "");
+        props.setProperty("dataDir", savedDataDir != null ? savedDataDir.toString() : "");
         props.setProperty("apiKey", apiKey != null ? apiKey : "");
         props.setProperty("embeddingModelName", embeddingModelName);
         props.setProperty("username", username);

@@ -56,6 +56,9 @@ public class TextureExtractor {
 
 
     private final AppConfig config;
+    private String generation;
+
+    public void setGeneration(String generation) { this.generation = generation; }
 
     public TextureExtractor(AppConfig config) {
         this.config = config;
@@ -66,8 +69,12 @@ public class TextureExtractor {
      */
     public Map<String, Map<String, String>> extract(Path jarPath, String modId, String modSlug) {
         if (modSlug == null) modSlug = modId;
+        if (modSlug == null || !modSlug.matches("[a-zA-Z0-9_.-]+") || modSlug.equals(".."))
+            throw new IllegalArgumentException("Invalid mod slug");
         Path modDir = config.getTexturesDir().resolve(modSlug);
+        if (generation != null) modDir = config.getTexturesDir().resolve(generation).resolve(modSlug);
         Map<String, Map<String, String>> all = new LinkedHashMap<>();
+        long extractedBytes = 0;
 
         try (JarFile jar = new JarFile(jarPath.toFile())) {
             Files.createDirectories(modDir);
@@ -90,10 +97,14 @@ public class TextureExtractor {
                     if (!name.startsWith(prefix) || !name.endsWith(".png") || je.isDirectory()) continue;
 
                     String relPath = name.substring((assetRoot + "textures/").length());
-                    Path outFile = modDir.resolve(relPath);
+                    Path outFile = ArchivePaths.resolve(modDir, relPath);
                     Files.createDirectories(outFile.getParent());
                     try (InputStream is = jar.getInputStream(je)) {
-                        Files.copy(is, outFile, StandardCopyOption.REPLACE_EXISTING);
+                        byte[] bytes = is.readNBytes(32 * 1024 * 1024 + 1);
+                        extractedBytes += bytes.length;
+                        if (bytes.length > 32 * 1024 * 1024 || extractedBytes > 512L * 1024 * 1024)
+                            throw new IOException("Texture extraction size limit exceeded");
+                        Files.write(outFile, bytes);
                     }
 
                     String fileName = outFile.getFileName().toString();
@@ -123,7 +134,7 @@ public class TextureExtractor {
                 }
             }
         } catch (IOException e) {
-            log.warn("Texture extraction failed: {}", e.getMessage());
+            throw new IllegalStateException("Texture extraction failed", e);
         }
         return all;
     }

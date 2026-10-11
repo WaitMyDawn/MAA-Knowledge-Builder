@@ -1,0 +1,10 @@
+{
+  "model": "all-MiniLM-L6-v2",
+  "format": "ONNX token embeddings with input_ids, attention_mask, token_type_ids",
+  "dimension": 384,
+  "maxTokens": 256,
+  "files": {
+    "model.onnx": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+    "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+  }
+}

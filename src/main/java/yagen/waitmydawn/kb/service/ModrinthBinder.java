@@ -4,224 +4,143 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import yagen.waitmydawn.kb.config.NetworkBootstrap;
+import java.io.IOException;
+import java.net.*;
+import java.net.http.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.*;
 
-/**
- * 通过 Modrinth API v2 精确绑定 slug。
- *
- * 流程:
- *   1. 用 mcVersion + loader 筛选搜索 modId → 拿到候选列表
- *   2. 对每个候选拉取版本列表 → 用 JAR 解析出的 modVersion 精确匹配
- *   3. 若 modId 搜索匹配失败 → 改用 displayName 搜索并重复版本匹配
- *   4. 都不匹配 → source=non-modrinth
- */
+/** JAR 摘要优先确定项目身份；摘要无匹配时使用游戏版本、加载器及完整版本号搜索。 */
 public class ModrinthBinder {
-
     private static final Logger log = LoggerFactory.getLogger(ModrinthBinder.class);
-    private static final String MODRINTH_API = "https://api.modrinth.com/v2";
-    private static final ObjectMapper mapper = new ObjectMapper();
-    private static final String UA = "MAA-Knowledge-Builder/1.0 (yagen)";
-
-    private final HttpClient http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .build();
-
-    // Modrinth loader → category facet value
-    private static final Map<String, String> LOADER_CATEGORY = Map.of(
-            "neoforge", "neoforge",
-            "forge", "forge",
-            "fabric", "fabric",
-            "quilt", "quilt",
-            "vanilla", "datapack"   // vanilla mods are usually datapacks on Modrinth
-    );
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String API = "https://api.modrinth.com/v2";
+    private final Transport transport;
+    private final Map<String, JsonNode> cache = new HashMap<>();
+    private long unavailableUntil;
 
     public record BindResult(String slug, String modrinthUrl, String source) {}
+    record Response(int status, String body) {}
+    @FunctionalInterface interface Transport { Response get(URI uri) throws IOException, InterruptedException; }
 
-    // ==================== Public API ====================
+    public ModrinthBinder() { this(defaultTransport()); }
+    ModrinthBinder(Transport transport) { this.transport = transport; }
 
-    /**
-     * Bind a slug to the given mod metadata.
-     *
-     * @param modId       internal modId from JAR metadata
-     * @param displayName human-readable display name
-     * @param modVersion  mod version string from JAR metadata (e.g. "2.0-beta-17")
-     * @param mcVersion   MC version inferred from dependencies (e.g. "1.21.1")
-     * @param loader      loader name (e.g. "neoforge")
-     * @return BindResult with slug + URL + source, or null if not found
-     */
-    public BindResult bind(String modId, String displayName,
-                           String modVersion, String mcVersion, String loader) {
-        // --- Step 1: search by modId with version+loader filter ---
-        BindResult result = searchAndMatch(modId, modVersion, mcVersion, loader);
-        if (result != null) {
-            log.info("Slug bound (modId): {} to {}", modId, result.slug());
-            return result;
-        }
-
-        // --- Step 2: search by displayName (if different from modId) ---
-        if (displayName != null && !displayName.isBlank()
-                && !displayName.equalsIgnoreCase(modId)) {
-            result = searchAndMatch(displayName, modVersion, mcVersion, loader);
-            if (result != null) {
-                log.info("Slug bound (displayName): {} to {}", displayName, result.slug());
-                return result;
-            }
-        }
-
-        // --- Step 3: try with underscore→dash conversion ---
-        if (modId.contains("_")) {
-            String altId = modId.replace('_', '-');
-            result = searchAndMatch(altId, modVersion, mcVersion, loader);
-            if (result != null) {
-                log.info("Slug bound (altId): {} → {}", altId, result.slug());
-                return result;
-            }
-        }
-
-        // --- Step 4: not found on Modrinth ---
-        log.info("Slug binding failed for {} (v{}) — not on Modrinth", modId, modVersion);
-        return new BindResult(null, null, "non-modrinth");
+    private static Transport defaultTransport() {
+        NetworkBootstrap.configure();
+        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+        return uri -> {
+            var request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "yagen/MAA-Knowledge-Builder/1.0").GET().build();
+            var response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            return new Response(response.statusCode(), response.body());
+        };
     }
 
-    // ==================== Core logic ====================
+    public BindResult bind(String modId, String displayName, String modVersion, String mcVersion, String loader) {
+        return bind(null, modId, displayName, modVersion, mcVersion, loader);
+    }
 
-    /**
-     * Search Modrinth with version+loader filter, then match by exact mod version.
-     */
-    private BindResult searchAndMatch(String query, String modVersion,
-                                      String mcVersion, String loader) {
-        List<SearchHit> hits = searchModrinth(query, mcVersion, loader);
-        if (hits.isEmpty()) return null;
-
-        // Try to match each candidate's version list against our modVersion
-        for (int i = 0; i < Math.min(hits.size(), 5); i++) {
-            SearchHit hit = hits.get(i);
-            List<String> versions = fetchProjectVersions(hit.slug());
-            boolean matched = versions.stream()
-                    .anyMatch(v -> v.equals(modVersion) || v.contains(modVersion));
-            if (matched) {
-                return new BindResult(hit.slug(),
-                        "https://modrinth.com/mod/" + hit.slug(),
-                        "modrinth");
+    public BindResult bind(Path jar, String modId, String displayName,
+                           String modVersion, String mcVersion, String loader) {
+        if (System.nanoTime() < unavailableUntil) return new BindResult(null, null, "modrinth-unavailable");
+        try {
+            if (jar != null) {
+                JsonNode version = request("/version_file/" + sha512(jar) + "?algorithm=sha512");
+                if (version != null) {
+                    String projectId = version.path("project_id").asText();
+                    if (projectId.isBlank()) throw new IOException("Hash response has no project_id");
+                    JsonNode project = request("/project/" + encode(projectId));
+                    if (project == null || project.path("slug").asText().isBlank())
+                        throw new IOException("Hash-matched project could not be resolved");
+                    return bound(project.path("slug").asText(), modId, "JAR sha512");
+                }
             }
-            log.debug("  Version mismatch: {} has versions [{}...], looking for {}",
-                    hit.slug(),
-                    versions.isEmpty() ? "none" : String.join(", ", versions.subList(0, Math.min(3, versions.size()))),
-                    modVersion);
+            var queries = new LinkedHashSet<String>();
+            if (modId != null && !modId.isBlank()) queries.add(modId);
+            if (displayName != null && !displayName.isBlank()) queries.add(displayName);
+            if (modId != null && modId.contains("_")) queries.add(modId.replace('_', '-'));
+            for (String query : queries) {
+                String slug = searchAndMatch(query, modVersion, mcVersion, loader);
+                if (slug != null) return bound(slug, modId, "version match");
+            }
+            // 完成搜索仍不能证明项目从未发布，只能确认本次未找到精确匹配。
+            log.info("No exact Modrinth match for {} (version={}, Minecraft={}, loader={})", modId, modVersion, mcVersion, loader);
+            return new BindResult(null, null, "modrinth-no-match");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new java.util.concurrent.CancellationException("Modrinth binding interrupted");
+        } catch (IOException e) {
+            unavailableUntil = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+            log.warn("Modrinth lookup unavailable for {}: {}. Remaining scan lookups pause for 30s; retry scanning after checking network/address policy", modId, e.toString());
+            return new BindResult(null, null, "modrinth-unavailable");
         }
+    }
 
+    /** 临时网络故障不应抹掉同一模组身份已经确认的绑定。 */
+    public static void preserveKnownBinding(yagen.waitmydawn.kb.model.ModEntry entry,
+                                            yagen.waitmydawn.kb.model.ModEntry previous) {
+        if (!"modrinth-unavailable".equals(entry.getSource()) || previous == null || previous.getSlug() == null) return;
+        if (!Objects.equals(entry.getLoader(), previous.getLoader())
+                || !Objects.equals(entry.getMcVersion(), previous.getMcVersion())) return;
+        entry.setSlug(previous.getSlug());
+        entry.setModrinthUrl(previous.getModrinthUrl());
+    }
+
+    private BindResult bound(String slug, String modId, String method) {
+        log.info("Slug bound ({}): {} -> {}", method, modId, slug);
+        return new BindResult(slug, "https://modrinth.com/mod/" + slug, "modrinth");
+    }
+
+    private String searchAndMatch(String query, String modVersion, String mcVersion, String loader)
+            throws IOException, InterruptedException {
+        var facets = new ArrayList<List<String>>();
+        facets.add(List.of("project_type:mod"));
+        if (loader != null && !loader.isBlank()) facets.add(List.of("categories:" + loader));
+        if (mcVersion != null && !mcVersion.isBlank()) facets.add(List.of("versions:" + mcVersion));
+        JsonNode search = request("/search?query=" + encode(query) + "&facets=" + encode(MAPPER.writeValueAsString(facets)) + "&limit=5");
+        if (search == null || !search.path("hits").isArray()) throw new IOException("Invalid search response");
+        for (JsonNode hit : search.path("hits")) {
+            String slug = hit.path("slug").asText();
+            String project = hit.path("project_id").asText(slug);
+            if (slug.isBlank() || project.isBlank()) continue;
+            String filters = "?loaders=" + encode(MAPPER.writeValueAsString(loader == null || loader.isBlank() ? List.of() : List.of(loader)))
+                    + "&game_versions=" + encode(MAPPER.writeValueAsString(mcVersion == null || mcVersion.isBlank() ? List.of() : List.of(mcVersion)));
+            JsonNode versions = request("/project/" + encode(project) + "/version" + filters);
+            if (versions == null || !versions.isArray()) throw new IOException("Invalid project version response");
+            for (JsonNode version : versions) {
+                if (modVersion != null && modVersion.equals(version.path("version_number").asText())) return slug;
+            }
+        }
         return null;
     }
 
-    // ==================== Modrinth API calls ====================
+    private JsonNode request(String path) throws IOException, InterruptedException {
+        if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+        JsonNode existing = cache.get(path);
+        if (existing != null) return existing;
+        Response response = transport.get(URI.create(API + path));
+        if (response.status() == 404) return null;
+        if (response.status() != 200) throw new IOException("Modrinth HTTP " + response.status());
+        JsonNode result = MAPPER.readTree(response.body());
+        if (result == null) throw new IOException("Empty Modrinth response");
+        cache.put(path, result);
+        return result;
+    }
 
-    /**
-     * Search Modrinth with version + loader facets.
-     *
-     * Facet format: [[\"categories:{loader}\"],[\"versions:{mcVersion}\"]]
-     * Inner array = OR, outer = AND
-     */
-    private List<SearchHit> searchModrinth(String query, String mcVersion, String loader) {
+    private static String encode(String text) { return URLEncoder.encode(text, StandardCharsets.UTF_8); }
+    private static String sha512(Path jar) throws IOException {
         try {
-            String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
-
-            // Build facets: filter by loader category AND game version
-            String cat = LOADER_CATEGORY.getOrDefault(loader, loader);
-            String facets;
-            if (mcVersion != null && !mcVersion.isBlank()) {
-                facets = "[[\"categories:" + cat + "\"],[\"versions:" + mcVersion + "\"]]";
-            } else {
-                facets = "[[\"categories:" + cat + "\"]]";
+            var digest = MessageDigest.getInstance("SHA-512");
+            try (var input = Files.newInputStream(jar)) {
+                byte[] bytes = new byte[65536]; int count;
+                while ((count = input.read(bytes)) >= 0) digest.update(bytes, 0, count);
             }
-
-            String encodedFacets = URLEncoder.encode(facets, StandardCharsets.UTF_8);
-            // Also add project_type:mod facet
-            String encodedType = URLEncoder.encode("[[\"project_type:mod\"]]", StandardCharsets.UTF_8);
-
-            String url = MODRINTH_API + "/search?query=" + encodedQuery
-                    + "&facets=" + encodedFacets + "&limit=5";
-
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(12))
-                    .header("User-Agent", UA)
-                    .GET()
-                    .build();
-
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 200) {
-                return parseHits(mapper.readTree(resp.body()));
-            } else {
-                log.warn("Modrinth search HTTP {} for '{}'", resp.statusCode(), query);
-            }
-        } catch (Exception e) {
-            log.warn("Modrinth search failed for '{}': {}", query, e.getMessage());
-        }
-        return Collections.emptyList();
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
-
-    /** Fetch all version numbers for a project from Modrinth API */
-    private List<String> fetchProjectVersions(String slug) {
-        List<String> versions = new ArrayList<>();
-        try {
-            // Use the project endpoint to get version IDs, then resolve each
-            // Actually, we can use /project/{slug}/version to get version list directly
-            String url = MODRINTH_API + "/project/" + slug + "/version";
-
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("User-Agent", UA)
-                    .GET()
-                    .build();
-
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 200) {
-                JsonNode arr = mapper.readTree(resp.body());
-                if (arr.isArray()) {
-                    for (JsonNode v : arr) {
-                        String versionNumber = v.path("version_number").asText(null);
-                        if (versionNumber != null) {
-                            versions.add(versionNumber);
-                        }
-                    }
-                }
-            } else {
-                log.debug("Modrinth version fetch HTTP {} for slug={}", resp.statusCode(), slug);
-            }
-        } catch (Exception e) {
-            log.debug("Modrinth version fetch failed for {}: {}", slug, e.getMessage());
-        }
-        return versions;
-    }
-
-    // ==================== JSON parsing ====================
-
-    private List<SearchHit> parseHits(JsonNode root) {
-        List<SearchHit> hits = new ArrayList<>();
-        JsonNode arr = root.path("hits");
-        if (arr.isArray()) {
-            for (JsonNode h : arr) {
-                String slug = h.path("slug").asText("");
-                if (!slug.isEmpty()) {
-                    hits.add(new SearchHit(
-                            slug,
-                            h.path("title").asText(""),
-                            h.path("description").asText(""),
-                            h.path("downloads").asInt(0)));
-                }
-            }
-        }
-        return hits;
-    }
-
-    private record SearchHit(String slug, String title, String description, int downloads) {}
 }

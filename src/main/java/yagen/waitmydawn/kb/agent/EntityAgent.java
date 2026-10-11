@@ -15,6 +15,8 @@ import yagen.waitmydawn.kb.model.ModEntry;
 import yagen.waitmydawn.kb.service.EmbeddingService;
 import yagen.waitmydawn.kb.service.RagAgentService;
 import yagen.waitmydawn.kb.service.VectorStore;
+import yagen.waitmydawn.kb.dto.RetrievalPlan;
+import yagen.waitmydawn.kb.service.CatalogEnumeration;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -39,6 +41,8 @@ import java.util.TreeMap;
 public class EntityAgent {
 
     private static final Logger log = LoggerFactory.getLogger(EntityAgent.class);
+    /** debug 日志中完整 prompt 的最大长度，超出截断，避免每问写数万字符日志。 */
+    private static final int MAX_PROMPT_LOG_CHARS = 1500;
 
     private static final String ENTITY_SYSTEM_PROMPT = """
             You are a Minecraft: Java Edition expert assistant specialized in identifying items, blocks, entities, and structures across vanilla Minecraft AND all installed mods.
@@ -139,17 +143,28 @@ public class EntityAgent {
     public record ResolvedEntities(List<ResolvedEntity> items) {}
 
     /** 从别名向量库命中的中英对照条目。 */
-    public record AliasHit(String subQuery, String label, String url, String modId, double score) {}
+    public record AliasHit(String subQuery, String label, String url, String modId, double score, String role) {
+        public AliasHit(String query,String label,String url,String modId,double score) {
+            this(query,label,url,modId,score,"primary");
+        }
+    }
 
     /** EntityAgent 新工作流的结果：别名命中 + 原版 Wiki 主题 + 原版注册名回退 + 拆分后的子问题。 */
     public record EntityResolutionResult(
             List<AliasHit> aliasHits,
             List<String> wikiTopics,
             List<ResolvedEntity> inferredEntities,
-            List<String> subQueries) {}
+            List<String> subQueries, RetrievalPlan plan, String catalogEvidence) {
+        public EntityResolutionResult(List<AliasHit> hits,List<String> topics,List<ResolvedEntity> entities,List<String> queries) {
+            this(hits,topics,entities,queries,null,null);
+        }
+    }
 
     /** LLM 对问题的分析结果：拆分出的主体 + 目标模组 ID。 */
-    public record QuestionAnalysis(List<String> subjects, String targetModId) {}
+    public record QuestionAnalysis(List<String> subjects, String targetModId, RetrievalPlan plan,List<String> vanillaTopics) {
+        public QuestionAnalysis(List<String> subjects,String modId) { this(subjects,modId,null,List.of()); }
+        public QuestionAnalysis(List<String> subjects,String modId,RetrievalPlan plan) { this(subjects,modId,plan,List.of()); }
+    }
 
     private final RagAgentService llm;
     private final DatabaseBuilder db;
@@ -182,26 +197,53 @@ public class EntityAgent {
     }
 
     /**
-     * 新工作流：先拆主体并识别目标模组，然后按主体多线路检索。
-     * 线路 1：每个主体都走 MC Wiki（路径 1，Wiki 自带重定向）。
-     * 线路 2：优先按字面包含匹配所有相关别名（可过滤模组），否则向量检索兜底（路径 3）。
+     * 先确定范围和对象，再选择真实目录页面；操作问题可以追加同模组的机制支撑页。
+     * 原版对象优先使用 Wiki，语义近邻不能直接充当已确认实体。
      */
     public EntityResolutionResult resolveEntities(String question, String conversationContext) {
+        baseVectorStore.verifyProfile(embedder.profile(), false);
         boolean vanillaOnly = question != null
                 && (question.contains("原版") || question.toLowerCase().contains("vanilla"));
         QuestionAnalysis analysis = analyzeQuestion(question, conversationContext);
         List<String> subjects = analysis.subjects().isEmpty() ? List.of(question) : analysis.subjects();
-        String targetModId = vanillaOnly ? null : analysis.targetModId();
+        String targetModId = vanillaOnly ? "minecraft" : analysis.targetModId();
+        if (targetModId != null && !targetModId.equals("minecraft") && db.findModEntry(targetModId)==null) targetModId=null;
+        List<ResolvedEntity> knownVanilla=List.of();
+        if(targetModId==null && (analysis.plan()==null || !analysis.plan().enumerate())) {
+            knownVanilla=inferVanillaRegistries(subjects).stream().filter(e -> hasVanillaRecipe(e.registry())).toList();
+            if(!knownVanilla.isEmpty()) targetModId="minecraft";
+        }
+        RetrievalPlan plan = analysis.plan()==null ? RetrievalPlan.lookup(question,targetModId)
+                : new RetrievalPlan(question,targetModId,analysis.plan().enumerate(),analysis.plan().objectType(),
+                    analysis.plan().filters(),analysis.plan().requestedCount(),analysis.plan().exhaustive(),analysis.plan().intent());
+        if (plan.enumerate()) {
+            if("minecraft".equals(plan.modId())) {
+                var topics=new ArrayList<>(subjects);
+                if("ENTITY".equals(plan.objectType()) && !topics.contains("生物")) topics.add("生物");
+                return new EntityResolutionResult(List.of(),topics,List.of(),topics,plan,null);
+            }
+            var enumeration = new CatalogEnumeration(db,llm).select(plan,subjects);
+            return new EntityResolutionResult(enumeration.hits(),List.of(),List.of(),List.of(question),plan,enumeration.evidence());
+        }
         log.info("EntityAgent: question split into {} subjects: {}, targetMod={}, vanillaOnly={}",
                 subjects.size(), subjects, targetModId, vanillaOnly);
 
         List<AliasHit> hits = new ArrayList<>();
         List<String> wikiTopics = new ArrayList<>();
+        wikiTopics.addAll(analysis.vanillaTopics());
         List<String> vanillaSubjects = new ArrayList<>();
+        var mechanismHints=yagen.waitmydawn.kb.service.KnowledgeHints.match(db,targetModId,question,"ambiguous_mechanism");
+        if(!mechanismHints.isEmpty()) {
+            String branch="歧义解释：卷轴等级与法术强度";
+            for(var hint:mechanismHints) hits.add(new AliasHit(branch,hint.label(),hint.url(),targetModId,1,"support"));
+            return new EntityResolutionResult(hits,List.of(),List.of(),List.of(branch),plan,
+                    "术语存在歧义：分别说明卷轴等级的升级与法术强度的强化；不能断言不存在法术等级。抄写台用于装卸法术，槽位扩容不等于卷轴升级。具体步骤以两个机制正文来源为准。");
+        }
 
         for (String subject : subjects) {
-            // 路径 1：始终保留 MC Wiki 主题，作为原版内容兜底
-            if (subject != null && !subject.isBlank()) wikiTopics.add(subject);
+            if(targetModId!=null && !"minecraft".equals(targetModId) && analysis.vanillaTopics().contains(subject)) continue;
+            // Wiki 与模组目录遵循同一范围，避免原版对象被模组同名条目覆盖。
+            if ((targetModId==null || "minecraft".equals(targetModId)) && subject != null && !subject.isBlank()) wikiTopics.add(subject);
 
             if (vanillaOnly) {
                 vanillaSubjects.add(subject);
@@ -209,29 +251,102 @@ public class EntityAgent {
             }
 
             // 路径 2：先按字面包含匹配所有别名，例如"龙"命中火龙/冰龙/电龙
-            List<VectorStore.AliasResult> aliases =
-                    baseVectorStore.searchAliasesByText(subject, ALIAS_CANDIDATE_LIMIT, targetModId);
+            var relations=yagen.waitmydawn.kb.service.KnowledgeHints.match(db,targetModId,subject,"prototype");
+            if(!relations.isEmpty()) {
+                for(var relation:relations) hits.add(new AliasHit(subject,relation.label(),relation.url(),targetModId,.75,"name_candidate"));
+                continue;
+            }
+            List<VectorStore.AliasResult> aliases = typedAliases(subject,plan);
+            if(aliases.isEmpty()) aliases=baseVectorStore.searchAliasesByText(subject, ALIAS_CANDIDATE_LIMIT, targetModId);
             aliases = selectAliases(aliases, subject);
+            if (aliases.isEmpty() && targetModId != null && !"minecraft".equals(targetModId)) {
+                // 路径 4（2026-09-15）：问题点名的模组过滤后一无所获 → 放开模组过滤再试一次。
+                // 典型场景："Alex's Mobs 里的九头蛇怎么打"——九头蛇实际属于 iceandfire，
+                // 模组过滤会挡住正确页面，导致回退成原版实体并诱发幻觉。
+                aliases = baseVectorStore.searchAliasesByText(subject, ALIAS_CANDIDATE_LIMIT, null);
+                aliases = selectAliases(aliases, subject);
+                if (!aliases.isEmpty()) {
+                    log.info("EntityAgent: subject '{}' had no hit under mod filter '{}'; "
+                            + "cross-mod fallback found {} aliases", subject, targetModId, aliases.size());
+                }
+            }
             if (aliases.isEmpty()) {
-                // 路径 3：文字匹配不到时，再做语义向量检索
-                aliases = baseVectorStore.searchAliases(
-                        embedder.embed(subject), ALIAS_TARGET_K, ALIAS_MIN_SCORE, targetModId);
+                // 其他模组的字面命中优先于当前模组的原型猜测，避免相近生物阻断归属纠偏。
+                aliases = matchKnownAliases(subject,targetModId,null);
             }
             log.info("EntityAgent: subject '{}' -> {} alias hits: {}", subject, aliases.size(),
                     aliases.stream().map(a -> a.label() + "(" + String.format("%.2f", a.score()) + ")")
                             .toList());
             if (aliases.isEmpty()) {
-                vanillaSubjects.add(subject);
+                if (targetModId==null || "minecraft".equals(targetModId)) vanillaSubjects.add(subject);
             }
             for (VectorStore.AliasResult alias : aliases) {
-                hits.add(new AliasHit(subject, alias.label(), alias.url(), alias.modId(), alias.score()));
+                hits.add(new AliasHit(subject, alias.label(), alias.url(), alias.modId(), alias.score(),alias.score()<0.9?"name_candidate":"primary"));
             }
         }
 
         List<ResolvedEntity> inferred = vanillaSubjects.isEmpty()
-                ? List.of()
-                : inferVanillaRegistries(vanillaSubjects);
-        return new EntityResolutionResult(hits, wikiTopics, inferred, subjects);
+                ? knownVanilla
+                : knownVanilla.isEmpty()?inferVanillaRegistries(vanillaSubjects):knownVanilla;
+        String primaryScope=targetModId;
+        // 机制概念未必有同名条目；仅在没有对象候选时使用支撑页，不能覆盖跨模组纠偏。
+        boolean mechanismConcept=hits.stream().noneMatch(h->"primary".equals(h.role())) && Set.of("SPELL","MECHANISM").contains(plan.objectType());
+        if(targetModId!=null && !"minecraft".equals(targetModId) && plan.needsDetails()
+                && (mechanismConcept || hits.stream().anyMatch(h -> primaryScope.equals(h.modId()) && "primary".equals(h.role())))) {
+            for(var alias:matchKnownAliases(String.join("、",subjects),targetModId,question)) {
+                if(hits.stream().noneMatch(h -> h.url().equals(alias.url())))
+                    hits.add(new AliasHit(subjects.getFirst(),alias.label(),alias.url(),alias.modId(),alias.score(),"support"));
+            }
+        }
+        String names=hits.stream().anyMatch(h->"name_candidate".equals(h.role())) && "ENTITY".equals(plan.objectType())
+                ?"名称核验：当前目录没有按用户字面名称匹配到正式条目。相近名称或原型关系候选必须有条件地介绍；只有正文能确认关联与机制，不能编造用户名称的注册名。":null;
+        var queries=new LinkedHashSet<>(subjects); queries.addAll(wikiTopics);
+        return new EntityResolutionResult(hits, wikiTopics, inferred, List.copyOf(queries),plan,names);
+    }
+
+    private boolean hasVanillaRecipe(String registry) {
+        try(var c=db.getConnection(); var p=c.prepareStatement("SELECT 1 FROM rag_recipe WHERE output_item=? AND source_mod='minecraft' LIMIT 1")) {
+            p.setString(1,registry);try(var r=p.executeQuery()) { return r.next(); }
+        } catch(Exception e) { return false; }
+    }
+
+    /** 生物与同名掉落物分别有页面；先按查询对象类型选择，避免扁平映射抢占名称。 */
+    private List<VectorStore.AliasResult> typedAliases(String subject,RetrievalPlan plan) {
+        if(plan.modId()==null || subject==null || subject.isBlank() || plan.objectType().isBlank()) return List.of();
+        String term=subject.toLowerCase(java.util.Locale.ROOT).strip();
+        return new yagen.waitmydawn.kb.service.WebCatalogStore(db).entries(plan.modId(),plan.topCategory()).stream()
+                .filter(e->e.role().equals("entry"))
+                .filter(e->e.chineseName().toLowerCase(java.util.Locale.ROOT).contains(term) || e.englishName().toLowerCase(java.util.Locale.ROOT).contains(term))
+                .map(e->new VectorStore.AliasResult(e.label(),plan.modId(),plan.modId(),e.url(),1))
+                .distinct().limit(ALIAS_CANDIDATE_LIMIT).toList();
+    }
+
+    private List<VectorStore.AliasResult> matchKnownAliases(String subject,String modId,String question) {
+        var candidates = new LinkedHashMap<String,String>();
+        for(var page : db.loadWebPages(modId)) candidates.putAll(page.subWebPage());
+        if(candidates.isEmpty() || llm==null) return List.of();
+        var spellingMatches=candidates.keySet().stream().filter(label -> matchesExpandedName(subject,label)).toList();
+        String task=question==null
+                ?"Match this subject, well-established synonyms or its named variants. If the literal name is absent, you may suggest at most ONE plausible real candidate inspired by that object. Such a prototype/lookalike is only a hypothesis for fetching and verification, not a confirmed synonym. Do NOT return unrelated animals, introductions or workstations. Return [] if there is no plausible candidate. "
+                :"Select existing primary and mechanism/support pages needed for the question. A material's acquisition may need its source creature, and upgrading may need a workstation. Do not return unrelated objects. ";
+        int limit=question==null?8:4;
+        String prompt=task+"Return at most "+limit+" exact candidate labels as JSON array. Choose a minimal set covering the requested mechanisms, not every related page. Subject: "+subject
+                +"\nQuestion: "+(question==null?subject:question)+"\nCandidates:\n"+String.join("\n",candidates.keySet());
+        var response=llm.askWithUsage("EntityAgent.alias",prompt);
+        var labels=new ArrayList<>(spellingMatches);
+        labels.addAll(parseStringArray(response==null?null:response.text()));
+        return labels.stream().filter(candidates::containsKey).distinct().limit(limit)
+                .map(label -> new VectorStore.AliasResult(label,modId,modId,candidates.get(label),spellingMatches.contains(label)?1:0.75)).toList();
+    }
+
+    /** 限定在原有字符间插入少量变体字，不把任意相似词当成同义对象。 */
+    static boolean matchesExpandedName(String subject,String label) {
+        if(subject==null || subject.length()<3 || !containsCjk(subject)) return false;
+        String name=label.split("\\(",2)[0];
+        if(name.length()<subject.length() || name.length()-subject.length()>2) return false;
+        int cursor=0;
+        for(char character:name.toCharArray()) if(cursor<subject.length() && subject.charAt(cursor)==character) cursor++;
+        return cursor==subject.length();
     }
 
     /**
@@ -299,19 +414,29 @@ public class EntityAgent {
             String prompt = """
                     You are analyzing a Chinese Minecraft question.
                     Reply with ONLY one JSON object, no extra text:
-                    {"subjects":["龙"],"modId":"iceandfire"}
+                    {"subjects":["龙"],"modId":"iceandfire","enumerate":false,"objectType":"ENTITY","filters":[],"count":3,"exhaustive":false,"intent":"ENTITY","vanillaTopics":[]}
 
                     - subjects: short search subjects from the question. For "龙有哪几种？法术书有哪几种？" -> ["龙","法术书"].
                     - modId: if the question explicitly mentions a mod, choose the EXACT modId from [Installed Mods].
                       Mod names may be expressed in Chinese or English variants, e.g. "冰火传说", "冰与火之歌", "ice and fire"
                       should all map to the matching installed modId. If no mod is mentioned, use null.
+                      Use "minecraft" for an ordinary vanilla object unless explicitly referring to a mod.
+                    - enumerate: true for listing members of a category or examples, false for a specific object or family such as dragon variants.
+                    - objectType: ENTITY, ITEM, BIOME, DIM, STRUCTURE (natural), MUL_BLOCK, MECHANISM, SPELL, ENCHANT, EFFECT.
+                    - filters: category/habitat/behavior conditions such as terrestrial, tameable, rideable. These need page evidence.
+                    - count: requested example count, default 3; exhaustive: true only if a complete list is explicitly required.
+                    - Resolve pronouns from the previous conversation, but preserve the current action (taming, obtaining, etc.).
+                    - intent: ITEM (crafting/obtaining), ENTITY, STRUCTURE, BIOME, DIM, MECHANISM, PLAYING (taming/breeding), ENUMERATE, GENERAL.
+                    - An ambiguous mechanism term may have several useful interpretations. Retrieve subjects for each plausible interpretation rather than silently choosing one or denying it exists. Spell level may mean scroll level or spell power: choose upgrading and strengthening support subjects.
+                    - For broad combat/playing questions, retrieve practical guide subjects covering preparation, stage-specific actions and hazards, not only entity statistics. For vanilla combat, a valid Wiki tutorial title may be added to vanillaTopics (for example 教程/打败末影龙); do not invent a mod URL.
+                    - vanillaTopics: at most 3 explicitly mentioned vanilla objects whose mechanisms are needed alongside mod knowledge. For a mod spell killing the Ender Dragon, use ["末影龙"] to retrieve the boss's health/damage constraints as well as the spell. Do not add vanilla dragons when the question is only about a mod's own dragons.
 
                     [Installed Mods]
                     %s
 
                     Examples:
                     - "冰火传说的龙有哪几种" -> {"subjects":["龙"],"modId":"iceandfire"}
-                    - "信标怎么做" -> {"subjects":["信标"],"modId":null}
+                    - "信标怎么做" or "桶怎么合成" -> ordinary vanilla ITEM, modId "minecraft".
 
                     [Previous Conversation]
                     %s
@@ -319,11 +444,13 @@ public class EntityAgent {
                     [Question]
                     %s
                     """.formatted(buildModContext(),
-                            conversationContext == null ? "(none)" : conversationContext,
+                            (conversationContext == null || conversationContext.isBlank())
+                                    ? "(none)" : conversationContext,
                             question);
 
-            log.debug("EntityAgent analysis prompt ({} chars):\n{}", prompt.length(), prompt);
-            RagAgentService.LlmResult r = llm.askWithUsage(prompt);
+            log.debug("EntityAgent analysis prompt ({} chars):\n{}",
+                    prompt.length(), truncatePrompt(prompt));
+            RagAgentService.LlmResult r = llm.askWithUsage("EntityAgent.analyze", prompt);
             lastUsage = r != null ? r.tokenUsage() : null;
             String response = r != null ? r.text() : null;
             log.debug("EntityAgent analysis response: {}", response);
@@ -338,6 +465,8 @@ public class EntityAgent {
     private static QuestionAnalysis parseAnalysis(String response, String fallbackQuestion) {
         List<String> subjects = new ArrayList<>();
         String modId = null;
+        RetrievalPlan plan = null;
+        List<String> vanillaTopics=new ArrayList<>();
         if (response != null && !response.isBlank()) {
             try {
                 JsonNode node = MAPPER.readTree(response);
@@ -354,11 +483,21 @@ public class EntityAgent {
                     if (modNode != null && modNode.isTextual() && !modNode.asText().isBlank()) {
                         modId = modNode.asText().trim();
                     }
+                    var filters = new ArrayList<String>();
+                    for(var topic:node.path("vanillaTopics")) if(topic.isTextual() && !topic.asText().isBlank() && topic.asText().length()<=80 && vanillaTopics.size()<3) vanillaTopics.add(topic.asText());
+                    for(var filter:node.path("filters")) if(filter.isTextual()) filters.add(filter.asText());
+                    String kind=node.path("objectType").asText("ITEM").toUpperCase();
+                    if(!Set.of("ENTITY","ITEM","BIOME","DIM","STRUCTURE","MUL_BLOCK","MECHANISM","SPELL","ENCHANT","EFFECT").contains(kind)) kind="ITEM";
+                    yagen.waitmydawn.kb.dto.QuestionType intent;
+                    try { intent=yagen.waitmydawn.kb.dto.QuestionType.valueOf(node.path("intent").asText("GENERAL")); }
+                    catch(IllegalArgumentException e) { intent=yagen.waitmydawn.kb.dto.QuestionType.GENERAL; }
+                    plan=new RetrievalPlan(fallbackQuestion,modId,node.path("enumerate").asBoolean(false),kind,
+                            List.copyOf(filters),Math.max(1,Math.min(30,node.path("count").asInt(3))),node.path("exhaustive").asBoolean(false),intent);
                 }
             } catch (Exception ignored) {}
         }
         if (subjects.isEmpty()) subjects.add(fallbackQuestion);
-        return new QuestionAnalysis(subjects, modId);
+        return new QuestionAnalysis(subjects, modId,plan,List.copyOf(vanillaTopics));
     }
 
     /** 仅在别名检索失败时推断 minecraft 原版注册名。 */
@@ -372,8 +511,9 @@ public class EntityAgent {
                     Subjects: %s
                     """.formatted(String.join(", ", subjects));
 
-            log.debug("EntityAgent vanilla inference prompt ({} chars):\n{}", prompt.length(), prompt);
-            RagAgentService.LlmResult r = llm.askWithUsage(prompt);
+            log.debug("EntityAgent vanilla inference prompt ({} chars):\n{}",
+                    prompt.length(), truncatePrompt(prompt));
+            RagAgentService.LlmResult r = llm.askWithUsage("EntityAgent.vanilla", prompt);
             lastUsage = r != null ? r.tokenUsage() : null;
             String response = r != null ? r.text() : null;
             log.debug("EntityAgent vanilla inference response: {}", response);
@@ -444,7 +584,7 @@ public class EntityAgent {
                             + "\n" + hintsSection
                             + "\n[Question]\n" + question;
                     log.debug("EntityAgent structured prompt ({} chars):\n{}",
-                            structuredPrompt.length(), structuredPrompt);
+                            structuredPrompt.length(), truncatePrompt(structuredPrompt));
                     Result<ResolvedEntities> result = resolver.resolve(structuredPrompt);
                     lastUsage = result.tokenUsage();
                     ResolvedEntities wrapper = result.content();
@@ -466,8 +606,9 @@ public class EntityAgent {
 
             // 回退：旧版竖线文本解析
             String prompt = ENTITY_PROMPT.formatted(modContext, conversationContext, hintsSection, question);
-            log.debug("EntityAgent fallback prompt ({} chars):\n{}", prompt.length(), prompt);
-            String response = llm.rawAsk(prompt);
+            log.debug("EntityAgent fallback prompt ({} chars):\n{}",
+                    prompt.length(), truncatePrompt(prompt));
+            String response = llm.rawAsk("EntityAgent.resolve", prompt);
             if (response == null || response.isBlank() || response.trim().equals("UNKNOWN")) {
                 log.info("EntityAgent: no entity identified for '{}'", question);
                 return results;
@@ -508,6 +649,13 @@ public class EntityAgent {
         return lastUsage;
     }
 
+    /** 截断完整 prompt 日志：超长部分省略并注明被截断字符数。 */
+    private static String truncatePrompt(String prompt) {
+        if (prompt == null || prompt.length() <= MAX_PROMPT_LOG_CHARS) return prompt;
+        return prompt.substring(0, MAX_PROMPT_LOG_CHARS)
+                + "\n...[truncated " + (prompt.length() - MAX_PROMPT_LOG_CHARS) + " chars]";
+    }
+
     /** Build a list of all mods in the DB for LLM context */
     private String buildModContext() {
         StringBuilder sb = new StringBuilder();
@@ -516,7 +664,11 @@ public class EntityAgent {
             if (mods.isEmpty()) {
                 sb.append("  [No mods installed — assume vanilla Minecraft only]\n");
             }
+            // rag_mod_info 允许 (mod_id, loader, mc_version) 并存，同一 mod 可能有多行；
+            // 这里按 modId 去重，避免 prompt 中出现重复模组误导 LLM 并浪费 token。
+            Set<String> seenModIds = new LinkedHashSet<>();
             for (ModEntry m : mods) {
+                if (!seenModIds.add(m.getModId())) continue;
                 String name = m.getDisplayName() != null ? m.getDisplayName() : m.getModId();
                 sb.append(String.format("  %s | %s\n", m.getModId(), name));
             }

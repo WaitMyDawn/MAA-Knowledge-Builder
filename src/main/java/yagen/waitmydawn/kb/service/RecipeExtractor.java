@@ -26,6 +26,7 @@ public class RecipeExtractor {
 
         try (JarFile jar = new JarFile(jarPath.toFile())) {
             String recipesPrefix = "data/" + modId + "/recipe/";
+            String legacyPrefix = "data/" + modId + "/recipes/";
 
             Enumeration<JarEntry> entries = jar.entries();
             while (entries.hasMoreElements()) {
@@ -33,10 +34,11 @@ public class RecipeExtractor {
                 String name = entry.getName();
 
                 if (!name.endsWith(".json")) continue;
-                if (!name.startsWith(recipesPrefix)) continue;
+                if (!name.startsWith(recipesPrefix) && !name.startsWith(legacyPrefix)) continue;
 
                 try (InputStream is = jar.getInputStream(entry)) {
-                    String json = new String(is.readAllBytes());
+                    String json = new String(is.readNBytes(2 * 1024 * 1024 + 1), java.nio.charset.StandardCharsets.UTF_8);
+                    if (json.length() > 2 * 1024 * 1024) throw new IOException("Recipe exceeds size limit");
                     ParsedRecipe pr = parseRecipeJson(json, modId, name);
                     if (pr != null) {
                         recipes.add(pr);
@@ -44,7 +46,7 @@ public class RecipeExtractor {
                 }
             }
         } catch (IOException e) {
-            log.error("Recipe extraction failed: {} - {}", jarPath.getFileName(), e.getMessage());
+            throw new IllegalStateException("Recipe extraction failed: " + jarPath.getFileName(), e);
         }
 
         log.info("Extracted {} recipes from {}", recipes.size(), jarPath.getFileName());
@@ -80,15 +82,9 @@ public class RecipeExtractor {
                 }
             }
 
-            // Fallback: derive from filename
-            if (outputItem == null || outputItem.isEmpty()) {
-                String fileName = fullPath.substring(fullPath.lastIndexOf('/') + 1);
-                fileName = fileName.replace(".json", "");
-                // filename is the recipe name, which USUALLY matches the output item
-                outputItem = modId + ":" + fileName;
-            }
-
-            return new ParsedRecipe(recipeType, outputItem, outputCount, json, modId);
+            String resource = fullPath.replaceFirst("^data/[^/]+/recipes?/", "").replaceFirst("\\.json$", "");
+            return new ParsedRecipe(recipeType, outputItem, outputCount, json, modId, modId + ":" + resource,
+                    type, outputItem == null || outputItem.isBlank() ? "UNKNOWN_OUTPUT" : "PARSED");
         } catch (Exception e) {
             log.debug("Failed to parse recipe JSON: {} - {}", fullPath, e.getMessage());
             return null;
@@ -112,6 +108,9 @@ public class RecipeExtractor {
             String outputItem,
             int outputCount,
             String recipeJson,
-            String sourceMod
+            String sourceMod,
+            String recipeId,
+            String rawType,
+            String parseStatus
     ) {}
 }

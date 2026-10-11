@@ -116,7 +116,9 @@ Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
 
 ### 5.3 自动化测试
 
-- `--test`：读取 `test-questions.json`（多轮对话数组），逐轮走完整 QA 管道并输出 Tier/命中/TF 指标
+- `--test`：读取 `test-questions.json`（多轮对话数组），每个对话模拟一个 GUI 会话（写 `sessions/*.json` 与会话增量库 `sessions/incremental/`，可被 GUI 加载回放），逐轮走完整 QA 管道并输出 Tier/命中/TF 指标
+- `--eval`：读取 `golden-set.json`（黄金评测集 v6：标准答案要点 + 规则断言 + 裁判细则），做规则判分（主判）与 LLM 裁判（复核），产物隔离在 `{dataDir}/eval-runs/{runId}/`（turns.jsonl / summary.json / report.md / bad-cases.md / disagreements.md）
+- `--compare <runA> <runB>`：对比两次评测的主指标与逐题回归/修复清单，用于版本消融表与 CI 门禁
 - `--testweb`：读取 `test-web.json`（URL 列表），独立建库验证“网页抓取 → 正文清洗 → 分块 → 向量化”全链路
 
 ### 5.4 示例提问
@@ -210,7 +212,7 @@ Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
 ├── textures/{modSlug}/...            # 提取的纹理
 ├── templates/                        # 原版 GUI 模板（裁剪缓存）
 ├── generated/{crafting|furnace|smithing}/*.png
-├── jars/                             # 模组 JAR（如启用复制）
+├── jars/                             # 历史遗留（2026-09-07 起不再自动创建，无消费方）
 ├── wiki/                             # Wiki 相关缓存
 ├── sessions/
 │   ├── {sessionId}.json              # 会话历史
@@ -233,8 +235,21 @@ Operations:
   --build <mods-folder> 构建知识库（隐含 --scan）
   --clean               清理 generated/、logs/、sessions/
   --test [file]         运行自动化问答测试（默认 test-questions.json）
+  --dialogue <4,5>      只运行测试文件中指定序号的对话（1 起始，逗号分隔，
+                        例如 --dialogue 4,5 只跑第 4、5 个对话）
+  --eval [file]         运行黄金评测集（默认 golden-set.json）：规则判分 + LLM 裁判，
+                        产物隔离在 {dataDir}/eval-runs/{runId}/
+  --tag <name>          评测 run 的标签（例如 --tag baseline）
+  --repeat <n>          题级未指定时的默认重复次数（稳定性 pass@N）
+  --judge/--no-judge    开/关 LLM 裁判（默认开启）
+  --fail-under <rate>   评测通过率低于阈值时以退出码 2 结束（CI 门禁）
+  --compare <a> <b>     对比两次评测 run（主指标 + 逐题回归/修复）
+  --webdump <regex>     只读检查 rag_web_cache 的「实体→网页URL」映射（正则过滤），
+                        加 --fetch 抓取匹配页面正文（限流+缓存），用于核对与构建参考答案
   --testweb <dir>       测试网页抓取/清洗/分块/入库链路（默认 test-web.json）
-  --api-key <key>       设置 DeepSeek API Key
+  --api-key <key>       指定本次运行的 DeepSeek API Key（临时，不写入配置；
+                        省略时回退到 settings.properties 中已保存的 Key；
+                        --test 在两者都缺失时不执行并输出原因）
 ```
 
 ### 8.2 `.maa-seed.json` 格式
@@ -332,7 +347,7 @@ src/main/java/yagen/waitmydawn/kb/
 2. **模组 JAR**：仅在用户本地解析已合法获取的 JAR，提取纹理/配方元数据用于个人知识库，不修改、不重新分发。
 3. **网页内容**：抓取的 MC 百科 / Wiki 镜像内容仅缓存在本地供个人查询，不对外分发或商业利用。
 4. **训练种子**：只含模组标识符与网页 URL 引用，不含任何版权内容。
-5. **隐私**：知识库、对话历史、纹理、日志全部存储在本地；API Key 加密存放于 `%USERPROFILE%/.maa_kb/settings.properties`；LLM 调用仅发送问题文本与检索片段，不包含文件路径或个人信息。
+5. **隐私**：知识库、对话历史、纹理、日志全部存储在本地；API Key 以明文存放于 `%USERPROFILE%/.maa_kb/settings.properties`；LLM 调用会发送问题、近期会话上下文和检索片段（可能含来源 URL）；不要在问题或导入内容中放入敏感信息。
 6. **使用限制**：仅限个人学习与研究；请遵守目标网站 robots.txt 与服务条款，勿用于大规模商业爬取。
 
 ## 11. 常见问题 FAQ
@@ -392,3 +407,51 @@ Copyright (c) 2026 Yagen. All Rights Reserved.
 ---
 
 > *MAA Knowledge Builder — 让 AI 理解你的 Minecraft 世界。*
+
+
+## 数据兼容与构建验证
+
+向量索引包含模型文件、词表、分词方式和池化方式的指纹。ONNX 不可用时使用固定权重 `hash-ngram-v2`，不会在同一索引中混入回退向量。既有索引没有指纹，或指纹与当前模型不同，都需要重新构建基础知识库；旧会话仍可阅读，但继续检索须使用匹配模型或新建会话。选择新嵌入模型不会自动迁移历史向量。
+
+构建先写临时 H2 库，读取大字段检查完成后，事务替换基础知识库的全部构建数据。空目录、无有效模组及发布异常均保留上一版基础库。纹理、模板与诊断映射按构建代次隔离，配方图片按配方内容与代次生成缓存名。失败构建留下的纹理代次可以在程序退出后清理；不要删除当前基础库引用的纹理目录。
+
+数据目录变更在重启后生效。后台扫描、构建、问答串行执行，运行期间禁止切换或删除会话和数据库。退出时请求中断任务，网络请求仍可能等到超时返回。勾选其他会话数据库表示显式允许跨会话检索。
+
+模型资源因体积未纳入 Git。发布者须取得与 `src/main/resources/embedding-model-lock.json` 一致的 ONNX 导出和词表，并执行：
+
+```powershell
+./scripts/install-embedding-model.ps1 -SourceDirectory <模型文件目录>
+./mvnw.cmd test -Prelease
+./mvnw.cmd package -Prelease
+```
+
+安装脚本先校验两个文件的 SHA-256 再复制；release 测试要求资源完整且匹配锁文件。不同 ONNX 导出即使来自同一模型名称也可能有不同摘要，不能直接替换锁文件而不验证推理行为。普通测试允许模型缺失，以便验证离线代码。
+
+评测记录保存模型指纹、基础库内容摘要与代次、题集副本及摘要、源码与 POM 摘要。共享 HTTP 响应缓存不共享会话的增量库。LLM 请求数和 Token 来自模型监听器；提供方未返回用量时记录未知次数，不补造估算 Token。请求数不代表 SDK 内部网络重试次数。当前非流式接口没有首 Token 事件，TTFT 的 0 表示未观测；数据库查询计数仍为流程级估算，不宜当作精确 SQL 数量。
+
+检索保留精确全表扫描，采用有界 Top-K 候选堆控制结果对象占用。是否需要近似向量索引、中文专用模型或异步网络并行，应依据真实库规模、延迟及固定题集结果决定。
+
+
+## 从零建库与完整在线测试
+
+```powershell
+./scripts/run-e2e.ps1 -ModsDirectory D:/Minecraft/ModsForDatabase
+```
+
+脚本先运行 release 构建，再为每次执行创建新的 `target/e2e-*` 数据目录。顺序为：扫描及 Modrinth 身份绑定 → 从 JAR 和网页构建基础库 → `test-questions.json` 的完整多轮测试 → `golden-set.json` 的规则判分与在线裁判。会消耗已配置的 DeepSeek API Key 对应的额度；凭据仅用于当前进程，不输出、不写入测试目录。全局设置与 GUI 数据目录不改写。`-SkipBuild` 可复用已经编译好的程序，`-FailUnder 0.85` 可设置黄金题集通过率门槛。未设门槛时退出成功仅表示流水线执行完成，需查看质量报告。
+
+也可直接启动 CLI，使用 `--isolated --use-saved-key --data-dir <新目录> --build <JAR目录> --test test-questions.json --eval golden-set.json --judge`。`--isolated` 默认不读取全局设置；`--use-saved-key` 明确授权借用已保存的 API Key 和嵌入模型名。普通多轮测试生成 `test-report-*.txt`、`test-metrics-*.csv`；黄金评测在 `eval-runs/<runId>/` 保存规则、裁判、坏例及输入指纹。
+
+Java 网络启动策略使用 `-Djava.net.preferIPv6Addresses=system`，遵循操作系统的地址优先级。部分网络中 IPv4 与 IPv6 的连通性不同，Java 默认 IPv4 优先可能导致连接超时，而浏览器或 curl 正常。此选项不是代理，也不会修复不可达的网络；IDE、Maven `exec:java` 等已经启动的宿主 JVM 需在宿主启动参数中设置，修改源码后的进程需要重启。
+
+Modrinth 绑定优先使用 JAR SHA-512 对应的版本 API，再解析项目 slug。摘要没有匹配才执行带模组类型、加载器和游戏版本过滤的精确版本搜索。`modrinth-no-match` 表示未找到精确匹配，`modrinth-unavailable` 表示连接、HTTP 或响应错误，不能推断项目不存在。后者短暂暂停同次扫描中的后续请求，并保留已有绑定，可恢复网络后重新扫描。
+
+### 分类目录与枚举检索
+
+构建保存 `rag_web_category` 的父子路径以及 `rag_web_category_member` 的成员归属；同一成员可以属于多个路径，技术性实体、合并子条目和未完成条目带有独立角色。原 `rag_web_cache.sub_web_page_json` 平面映射保持兼容。分类索引随基础库代次一起事务发布并计入内容摘要。旧库仍可进行实体检索，但枚举需要重新抓取分类后才能使用目录。
+
+`ENUMERATE` 检索计划记录模组、对象类型、筛选条件、数量和完整清单意图。名称举例使用目录证据；驯服、骑乘等属性问题在目录内选择候选并抓取详情，默认最多核验 12 页（`-Dmaa.enumeration.maxPages`，硬上限 30）。回答必须披露未覆盖范围，不能将候选名称当成属性证明。实体检索保留当前操作诉求，按页面来源和模组约束正文；配方检索只保留目标产物，不使用同模组弱关联配方兜底。
+
+黄金集 v6 增加关系匹配及实际列表成员计数规则。裁判接收本轮检索证据并区分核心答案缺失与正确补充；参考答案不构成封闭事实全集。报告中的检索命中和数据 Tier 表示检索数据可用性，不能单独证明答案正确或枚举完整。不同题集版本的通过率不能直接作为同口径提升幅度。
+
+页面内排序结合向量相似度与操作关键词，分值归一到 0–1；它不等同于纯向量余弦相似度。主条目、名称待确认候选、机制支撑页及跨模组纠偏候选在检索上下文中标明不同用途。原版枚举继续使用 Wiki 正文和表格，不依赖模组分类目录。

@@ -25,12 +25,15 @@ public class IncrementalKnowledgeService {
     private final WikiScraperService scraper = new WikiScraperService();
     private final TextChunker chunker = new TextChunker();
     private final DatabaseBuilder baseDb;
+    private final PublicKnowledgeCache publicCache;
     private final Set<String> fetchedCache = new HashSet<>(); // URL → fetched
 
     private IncrementalDB currentDb;
 
     public IncrementalKnowledgeService(DatabaseBuilder baseDb) {
         this.baseDb = baseDb;
+        this.publicCache = new PublicKnowledgeCache(baseDb);
+        this.scraper.setPublicCache(publicCache);
     }
 
     /** Set the current incremental DB to write into */
@@ -57,7 +60,6 @@ public class IncrementalKnowledgeService {
             String url = entry.getValue();
 
             if (fetchedCache.contains(url)) continue;
-            fetchedCache.add(url);
 
             try {
                 // Fetch the sub-page
@@ -72,6 +74,7 @@ public class IncrementalKnowledgeService {
                         page.content(), "mcmod", registryName);
                 if (!chunks.isEmpty()) {
                     currentDb.getVectorStore().storeBatch(chunks, embedder);
+                    fetchedCache.add(url);
                     acquired.add(registryName + " (" + chunks.size() + " chunks)");
                     log.info("Incremental: acquired {} → {} chunks from {}", registryName, chunks.size(), url);
                 }
@@ -95,20 +98,23 @@ public class IncrementalKnowledgeService {
             return List.of();
         }
         if (content == null || content.isBlank()) return List.of();
-        if (fetchedCache.contains(url)) return List.of();
-        fetchedCache.add(url);
 
         try {
             List<TextChunker.TextChunk> chunks = chunker.fromWebPage(
                     content, modId, modName, source, url);
             if (chunks.isEmpty()) return List.of();
-            currentDb.getVectorStore().storeBatch(chunks, embedder);
+            currentDb.getVectorStore().storeBatch(chunks, publicCache.embeddings(chunks,embedder), embedder.profile());
+            fetchedCache.add(url);
             log.info("Incremental: acquired {} → {} chunks from {}", topic, chunks.size(), url);
             return chunks;
         } catch (Exception e) {
-            log.warn("Incremental acquire failed for {}: {}", url, e.getMessage());
-            return List.of();
+            throw new IllegalStateException("Incremental page persistence failed: " + url, e);
         }
+    }
+
+    public Map<String,float[]> pageEmbeddings(List<VectorStore.SearchResult> chunks, String profile) {
+        if(currentDb==null) throw new IllegalStateException("No incremental database for page evidence");
+        return currentDb.getVectorStore().loadEmbeddings(chunks,profile);
     }
 
     /**
@@ -140,7 +146,6 @@ public class IncrementalKnowledgeService {
 
                 if (!url.startsWith("https://wiki.biligame.com/mc/")) continue;
                 if (fetchedCache.contains(url)) continue;
-                fetchedCache.add(url);
 
                 String pageName = URLDecoder.decode(
                         url.substring(url.lastIndexOf('/') + 1), StandardCharsets.UTF_8);
@@ -151,6 +156,7 @@ public class IncrementalKnowledgeService {
                         page.content(), "mcwiki", topic);
                 if (!chunks.isEmpty()) {
                     currentDb.getVectorStore().storeBatch(chunks, embedder);
+                    fetchedCache.add(url);
                     acquired.add(topic + " (" + chunks.size() + " chunks)");
                     log.info("Incremental wiki: {} → {} chunks", topic, chunks.size());
                 }

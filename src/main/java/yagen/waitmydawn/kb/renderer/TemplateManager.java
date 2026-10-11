@@ -29,7 +29,9 @@ public class TemplateManager {
 
     private final AppConfig config;
     private final Path templatesDir;
+    private yagen.waitmydawn.kb.model.DatabaseBuilder db;
     private final Path texturesDir;
+    private String cachedGeneration;
     private final Map<String, BufferedImage> templateCache = new HashMap<>();
 
     // Crop regions in the vanilla GUI texture
@@ -38,6 +40,10 @@ public class TemplateManager {
             "furnace",        new Rectangle(55, 16, 82, 54),
             "smithing",       new Rectangle(7, 7, 108, 58)
     );
+
+    public TemplateManager(AppConfig config, yagen.waitmydawn.kb.model.DatabaseBuilder db) {
+        this(config); this.db = db;
+    }
 
     public TemplateManager(AppConfig config) {
         this.config = config;
@@ -53,12 +59,17 @@ public class TemplateManager {
      * @return cropped template image, or null if the vanilla texture is unavailable
      */
     public BufferedImage getOrCreateTemplate(String type) {
+        String generation = db == null ? "legacy" : db.buildGeneration();
+        if (!java.util.Objects.equals(cachedGeneration, generation)) {
+            templateCache.clear();
+            cachedGeneration = generation;
+        }
         // Check cache
         BufferedImage cached = templateCache.get(type);
         if (cached != null) return cached;
 
         // Check if already cropped and saved
-        Path savedPath = templatesDir.resolve(type + "_template.png");
+        Path savedPath = templatesDir.resolve(generation).resolve(type + "_template.png");
         if (Files.exists(savedPath)) {
             try {
                 BufferedImage img = ImageIO.read(savedPath.toFile());
@@ -72,7 +83,8 @@ public class TemplateManager {
 
         // Try to crop from vanilla GUI texture
         // Path: {texturesDir}/minecraft/gui/container/{type}.png
-        Path vanillaPath = texturesDir.resolve("minecraft/gui/container/" + type + ".png");
+        Path vanillaPath = ("legacy".equals(generation) ? texturesDir : texturesDir.resolve(generation))
+                .resolve("minecraft/gui/container/" + type + ".png");
         if (!Files.exists(vanillaPath)) {
             // Try alternate: the slug might be different
             // Look for any gui/container/{type}.png under textures/
@@ -108,6 +120,7 @@ public class TemplateManager {
 
         // Save for reuse
         try {
+            Files.createDirectories(savedPath.getParent());
             ImageIO.write(cropped, "PNG", savedPath.toFile());
             log.info("Template cropped and saved: {} ({}x{})", savedPath, w, h);
         } catch (Exception e) {

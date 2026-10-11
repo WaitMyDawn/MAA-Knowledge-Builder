@@ -19,7 +19,7 @@ import java.util.*;
 public class LocalEmbeddingModel {
 
     private static final Logger log = LoggerFactory.getLogger(LocalEmbeddingModel.class);
-    private static final int MAX_LEN = 512;
+    private static final int MAX_LEN = 256;
 
     // Bundled model definitions
     private static final Map<String, ModelDef> BUNDLED = Map.of(
@@ -28,15 +28,17 @@ public class LocalEmbeddingModel {
 
     record ModelDef(String name, int dims) {}
 
-    private final AppConfig config;
+    private final Path dataDir;
     private OrtEnvironment env;
     private OrtSession session;
     private WordPieceTokenizer tokenizer;
     private boolean ready = false;
     private int loadedDim = 384;
     private String loadedModel = null;
+    private String modelProfile;
 
-    public LocalEmbeddingModel(AppConfig config) { this.config = config; }
+    public LocalEmbeddingModel(AppConfig config) { this.dataDir = config == null ? null : config.getDataDir(); }
+    LocalEmbeddingModel(Path dataDir) { this.dataDir = dataDir; }
 
     // ==================== Public API ====================
 
@@ -46,12 +48,14 @@ public class LocalEmbeddingModel {
         // Release previous
         close();
 
+        if (modelName == null || !modelName.matches("[a-zA-Z0-9_-]+"))
+            throw new IllegalArgumentException("Invalid model name");
         ModelDef def = BUNDLED.get(modelName);
         try {
             Path modelDir;
             if (def != null) {
                 // Bundled: extract from classpath to data dir
-                modelDir = config.getDataDir().resolve("models").resolve(def.name());
+                modelDir = dataDir.resolve("models").resolve(def.name());
                 Files.createDirectories(modelDir);
                 Path onnx = modelDir.resolve("model.onnx");
                 Path vocab = modelDir.resolve("vocab.txt");
@@ -61,7 +65,7 @@ public class LocalEmbeddingModel {
                     extractResource("/models/" + def.name() + "/vocab.txt", vocab);
             } else {
                 // User-provided: {data}/models/{name}/
-                modelDir = config.getDataDir().resolve("models").resolve(modelName);
+                modelDir = dataDir.resolve("models").resolve(modelName);
                 if (!Files.isDirectory(modelDir)) return false;
                 Path onnx = modelDir.resolve("model.onnx");
                 Path vocab = modelDir.resolve("vocab.txt");
@@ -70,9 +74,13 @@ public class LocalEmbeddingModel {
 
             Path onnxFile = modelDir.resolve("model.onnx");
             Path vocabFile = modelDir.resolve("vocab.txt");
+            modelProfile = "onnx:" + modelName + ":" + sha256(onnxFile) + ":" + sha256(vocabFile)
+                    + ":wordpiece-v3:mean-l2:256";
 
             env = OrtEnvironment.getEnvironment();
-            session = env.createSession(onnxFile.toString(), new OrtSession.SessionOptions());
+            try (var options = new OrtSession.SessionOptions()) {
+                session = env.createSession(onnxFile.toString(), options);
+            }
             tokenizer = new WordPieceTokenizer(vocabFile);
             ready = true;
             loadedDim = (def != null) ? def.dims() : 384; // default 384 for custom
@@ -80,6 +88,7 @@ public class LocalEmbeddingModel {
             log.info("Model loaded: {} ({} dims)", modelName, loadedDim);
             return true;
         } catch (Exception e) {
+            close();
             log.warn("Failed to load model '{}': {}", modelName, e.getMessage());
             return false;
         }
@@ -88,6 +97,7 @@ public class LocalEmbeddingModel {
     public boolean isReady() { return ready; }
     public int getDimension() { return loadedDim; }
     public String getActiveModel() { return loadedModel; }
+    public String profile() { return modelProfile; }
 
     public float[] embed(String text) {
         if (!ready) return null;
@@ -106,10 +116,10 @@ public class LocalEmbeddingModel {
                 inputs.put("attention_mask", mask);
                 inputs.put("token_type_ids", typeIds);
 
-                OrtSession.Result result = session.run(inputs);
-                float[][][] output = (float[][][]) result.get(0).getValue();
-                result.close();
-                return meanPool(output[0], seqLen);
+                try (OrtSession.Result result = session.run(inputs)) {
+                    float[][][] output = (float[][][]) result.get(0).getValue();
+                    return meanPool(output[0], seqLen);
+                }
             }
         } catch (Exception e) {
             log.warn("ONNX inference failed: {}", e.getMessage());
@@ -119,11 +129,22 @@ public class LocalEmbeddingModel {
 
     public void close() {
         try { if (session != null) { session.close(); session = null; } } catch (Exception ignored) {}
-        try { if (env != null) { env.close(); env = null; } } catch (Exception ignored) {}
+        // OrtEnvironment is shared by all local model instances in the process.
+        env = null;
         ready = false; loadedModel = null; tokenizer = null;
     }
 
     // ==================== Helpers ====================
+
+    private static String sha256(Path file) throws Exception {
+        var digest = java.security.MessageDigest.getInstance("SHA-256");
+        try (InputStream input = Files.newInputStream(file)) {
+            byte[] buffer = new byte[65536];
+            int n;
+            while ((n = input.read(buffer)) != -1) digest.update(buffer, 0, n);
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
 
     private void extractResource(String path, Path dest) throws IOException {
         try (InputStream is = getClass().getResourceAsStream(path)) {

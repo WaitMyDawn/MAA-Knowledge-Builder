@@ -9,6 +9,9 @@ import yagen.waitmydawn.kb.agent.ClassifyAgent;
 import yagen.waitmydawn.kb.agent.EntityAgent;
 import yagen.waitmydawn.kb.agent.UrlAgent;
 import yagen.waitmydawn.kb.config.AppConfig;
+import yagen.waitmydawn.kb.config.DataDirLock;
+import yagen.waitmydawn.kb.eval.EvalRunner;
+import yagen.waitmydawn.kb.eval.RunComparator;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
 import yagen.waitmydawn.kb.service.*;
 
@@ -16,7 +19,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Headless / CLI runner — 无需 JavaFX UI。
@@ -31,24 +37,39 @@ import java.util.List;
  *   --build <mods-folder> 构建知识库 (隐含 --scan)
  *   --clean              清理 generated/, logs/, sessions/
  *   --test [file]        运行自动测试 (默认 test-questions.json)
- *   --api-key <key>      DeepSeek API Key
+ *   --dialogue <1,2,...> 只运行指定对话（test 文件中 1-based 下标，如 --dialogue 4,5）
+ *   --api-key <key>      本次运行临时 DeepSeek API Key（不写入配置，缺省回退已保存 Key）
  */
 public class HeadlessRunner {
 
     private static final Logger log = LoggerFactory.getLogger(HeadlessRunner.class);
 
     public static void main(String[] args) throws Exception {
+        yagen.waitmydawn.kb.config.NetworkBootstrap.configure();
         String dataDir = null;
         String modsFolder = null;
         String testFile = "test-questions.json";
         String webTestFile = "test-web.json";
         String webTestDir = null;
         String apiKey = null;
+        String dialogueSpec = null;
+        boolean isolated = false;
+        boolean useSavedKey = false;
         boolean doScan = false;
         boolean doBuild = false;
         boolean doClean = false;
         boolean doTest = false;
         boolean doWebTest = false;
+        String evalFile = "golden-set.json";
+        String evalTag = null;
+        int evalRepeat = 1;
+        boolean doEval = false;
+        boolean judgeEnabled = true;
+        double failUnder = -1;
+        String compareA = null;
+        String compareB = null;
+        String webDumpPattern = null;
+        boolean webDumpFetch = false;
 
         // Parse CLI args
         // # 完整流水线: clean + build + test
@@ -58,14 +79,59 @@ public class HeadlessRunner {
         // ./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --test"
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
+                case "--isolated" -> isolated = true;
+                case "--use-saved-key" -> useSavedKey = true;
                 case "--data-dir" -> dataDir = args[++i];
                 case "--scan" -> { doScan = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) modsFolder = args[++i]; }
                 case "--build" -> { doBuild = true; doScan = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) modsFolder = args[++i]; }
                 case "--clean" -> doClean = true;
                 case "--test" -> { doTest = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) testFile = args[++i]; }
+                case "--eval" -> { doEval = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) evalFile = args[++i]; }
+                case "--tag" -> { if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
+                    System.err.println("ERROR: --tag requires a value (e.g. --tag baseline)");
+                    System.exit(1);
+                } evalTag = args[++i]; }
+                case "--repeat" -> { if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
+                    System.err.println("ERROR: --repeat requires a number (e.g. --repeat 5)");
+                    System.exit(1);
+                } evalRepeat = Integer.parseInt(args[++i]); }
+                case "--judge" -> judgeEnabled = true;
+                case "--no-judge" -> judgeEnabled = false;
+                case "--fail-under" -> { if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
+                    System.err.println("ERROR: --fail-under requires a rate (e.g. --fail-under 0.85)");
+                    System.exit(1);
+                } failUnder = Double.parseDouble(args[++i]); }
+                case "--compare" -> { if (i + 2 >= args.length) {
+                    System.err.println("ERROR: --compare requires two run ids (e.g. --compare run-A run-B)");
+                    System.exit(1);
+                } compareA = args[++i]; compareB = args[++i]; }
+                case "--webdump" -> { if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
+                    System.err.println("ERROR: --webdump requires a label regex (e.g. --webdump \"弹跳机兵|糖果独角兽\")");
+                    System.exit(1);
+                } webDumpPattern = args[++i]; }
+                case "--fetch" -> webDumpFetch = true;
+                case "--dialogue" -> { if (i + 1 >= args.length || args[i + 1].startsWith("--")) {
+                    System.err.println("ERROR: --dialogue requires a value like 4,5 (comma-separated 1-based dialogue indexes)");
+                    System.exit(1);
+                } dialogueSpec = args[++i]; }
                 case "--testweb" -> { doWebTest = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) webTestDir = args[++i]; }
                 case "--api-key" -> apiKey = args[++i];
                 case "--help", "-h" -> { printUsage(); return; }
+            }
+        }
+
+        // 解析 --dialogue（conversations 数组的 1-based 下标，逗号分隔）
+        Set<Integer> dialogueIndexes = null;
+        if (dialogueSpec != null) {
+            try {
+                dialogueIndexes = parseDialogueIndexes(dialogueSpec);
+            } catch (IllegalArgumentException ex) {
+                System.err.println("ERROR: " + ex.getMessage());
+                printUsage();
+                System.exit(1);
+            }
+            if (!doTest && !doEval) {
+                System.out.println("Note: --dialogue is ignored because neither --test nor --eval was requested");
             }
         }
 
@@ -84,21 +150,56 @@ public class HeadlessRunner {
             System.exit(1);
         }
 
+        // === 评测版本对比（只读，不初始化配置/LLM）===
+        if (compareA != null) {
+            Path evalRoot = Path.of(dataDir).resolve("eval-runs");
+            Path dirA = evalRoot.resolve(compareA);
+            Path dirB = evalRoot.resolve(compareB);
+            if (!Files.exists(dirA.resolve("summary.json")) || !Files.exists(dirB.resolve("summary.json"))) {
+                System.err.println("ERROR: run summary.json not found. A=" + dirA + " B=" + dirB);
+                System.exit(1);
+            }
+            String markdown = RunComparator.compare(dirA, dirB);
+            System.out.println(markdown);
+            Files.writeString(dirB.resolve("compare-" + compareA + "__" + compareB + ".md"), markdown);
+            return;
+        }
+
         System.out.println("══════════════════════════════════════════");
         System.out.println("  MAA Knowledge Builder — Headless Mode");
         System.out.println("══════════════════════════════════════════");
 
         // Init config
-        AppConfig config = AppConfig.getInstance();
+        if (useSavedKey && !isolated) throw new IllegalArgumentException("--use-saved-key requires --isolated");
+        AppConfig config = isolated ? AppConfig.forIsolatedRun(useSavedKey) : AppConfig.getInstance();
         Path dataPath = Path.of(dataDir);
         Files.createDirectories(dataPath);
         config.setDataDir(dataPath);
 
-        // If API key provided, override config
+        // 独占 dataDir：防止 GUI/CLI 同时写同一个嵌入式 H2 文件（2026-09-15 损坏事故教训）
+        try {
+            DataDirLock dirLock = DataDirLock.acquire(dataPath);
+            Runtime.getRuntime().addShutdownHook(new Thread(dirLock::close));
+        } catch (IOException e) {
+            System.err.println("ERROR: " + e.getMessage());
+            System.exit(3);
+            return;
+        }
+
+        // --api-key 只作为本次运行的临时 Key：不写入 settings.properties，
+        // 也不覆盖已保存的 Key；未提供时回退到 config 中已记录的 Key。
         if (apiKey != null && !apiKey.isBlank()) {
-            // Set directly — AppConfig's save will persist it
-            // But for headless, just set on the instance
-            System.out.println("API Key: configured");
+            config.setApiKeyForRun(apiKey);
+            System.out.println("API Key: --api-key provided (runtime override, not persisted)");
+        }
+
+        // --test / --eval（自动问答）依赖 LLM：若既无 --api-key 也无已保存 Key，则不执行并说明原因。
+        if ((doTest || doEval) && !config.hasUsableApiKey()) {
+            System.err.println("ERROR: --test/--eval require a DeepSeek API Key, but neither --api-key was provided"
+                    + " nor an apiKey is saved in settings.properties.");
+            System.err.println("  - Pass --api-key <key> for a runtime-only key (NOT persisted); or");
+            System.err.println("  - Configure the key in the GUI Settings / settings.properties first.");
+            System.exit(1);
         }
 
         // === Clean ===
@@ -114,6 +215,20 @@ public class HeadlessRunner {
         DatabaseBuilder db = new DatabaseBuilder(config);
         db.initDatabase();
         System.out.println("Database: " + db.getJdbcUrl());
+        try {
+            db.healthCheck();
+        } catch (Exception e) {
+            System.err.println("ERROR: 数据库健康检查失败（可能已损坏或被其它进程写入）：" + e.getMessage());
+            System.err.println("  处理建议：① 从 backup-*/ 目录恢复备份；② 或用 --build <mods-folder> 重建基础库。");
+            System.exit(4);
+            return;
+        }
+
+        // === WebDump（只读）：检验 rag_web_cache 的 subWebPage 映射，可选抓取页面正文 ===
+        if (webDumpPattern != null) {
+            runWebDump(db, dataPath, webDumpPattern, webDumpFetch);
+            return;
+        }
 
         // Init embedding service
         EmbeddingService embedder = new EmbeddingService(config);
@@ -148,14 +263,16 @@ public class HeadlessRunner {
                 var entry = parser.parse(jar);
                 if (entry != null) {
                     if (!"minecraft".equals(entry.getModId()) && !"vanilla".equals(entry.getLoader())) {
-                        var bind = binder.bind(entry.getModId(), entry.getDisplayName(),
+                        var bind = binder.bind(jar, entry.getModId(), entry.getDisplayName(),
                                 entry.getVersion(), entry.getMcVersion(), entry.getLoader());
+                        if (bind != null) entry.setSource(bind.source());
                         if (bind != null && bind.slug() != null) {
                             entry.setSlug(bind.slug());
                             entry.setModrinthUrl(bind.modrinthUrl());
                             entry.setSource(bind.source());
                         }
                     }
+                    ModrinthBinder.preserveKnownBinding(entry, db.findModEntry(entry.getModId()));
                     db.saveModEntry(entry);
                     count++;
                     System.out.println("  [" + count + "] " + entry.getModId() + (entry.getSlug() != null ? " -> " + entry.getSlug() : ""));
@@ -166,7 +283,7 @@ public class HeadlessRunner {
 
         if (doBuild && modsFolder != null) {
             System.out.println("\n[Build] Starting knowledge base build...");
-            knowledgeBuilder = new KnowledgeBuilder(config, db);
+            knowledgeBuilder = new KnowledgeBuilder(config, db, embedder);
             KnowledgeBuilder.BuildResult r = knowledgeBuilder.build(Path.of(modsFolder),
                     (phase, cur, total, msg) -> {
                         if ("done".equals(phase) || cur == total || total <= 1) {
@@ -188,7 +305,7 @@ public class HeadlessRunner {
                 vectorStore = new VectorStore(db, embedder.getDimension());
             }
             if (knowledgeBuilder == null) {
-                knowledgeBuilder = new KnowledgeBuilder(config, db);
+                knowledgeBuilder = new KnowledgeBuilder(config, db, embedder);
             }
 
             ClassifyAgent classifyAgent = new ClassifyAgent(llm);
@@ -199,29 +316,74 @@ public class HeadlessRunner {
             dbManager.scan();
 
             QaPipeline pipeline = new QaPipeline(classifyAgent, entityAgent, urlAgent,
-                    answerAgent, llm, vectorStore, embedder, db, dbManager);
+                    answerAgent, llm, vectorStore, embedder, db, dbManager, dataPath);
 
-            AutoTestService tester = new AutoTestService(pipeline);
+            // 会话化：每个对话模拟一个 GUI 会话（sessions/*.json + 会话增量库）
+            ChatHistoryService chatHistoryService = new ChatHistoryService(dataPath);
+            AutoTestService tester = new AutoTestService(
+                    pipeline, chatHistoryService, dbManager, embedder.getDimension());
             Path testPath = Path.of(testFile);
             if (!Files.exists(testPath)) {
                 System.err.println("ERROR: test file not found: " + testFile);
                 System.exit(1);
             }
 
+            AutoTestService.TestReport report = null;
             try {
-                AutoTestService.TestReport report = tester.runFromFile(testPath);
+                report = tester.runFromFile(testPath, dialogueIndexes);
                 System.out.println(report.toTextReport());
+            } catch (Exception e) {
+                System.err.println("Test failed: " + e.getMessage());
+                e.printStackTrace();
+                System.exit(1);
+            }
 
-                // Save reports
-                Path reportPath = dataPath.resolve("test-report-" + java.time.LocalDate.now() + ".txt");
-                Path csvPath = dataPath.resolve("test-metrics-" + java.time.LocalDate.now() + ".csv");
+            // 报告落盘失败只告警（例如 CSV 被 Excel 占用），不影响测试结论与退出码
+            Path reportPath = dataPath.resolve("test-report-" + java.time.LocalDate.now() + ".txt");
+            Path csvPath = dataPath.resolve("test-metrics-" + java.time.LocalDate.now() + ".csv");
+            try {
                 report.saveToFile(reportPath);
-                report.saveCsv(csvPath);
-                System.out.println("\nReports saved:");
                 System.out.println("  " + reportPath);
+            } catch (IOException e) {
+                System.err.println("Warning: could not save report " + reportPath + ": " + e.getMessage());
+            }
+            try {
+                report.saveCsv(csvPath);
                 System.out.println("  " + csvPath);
             } catch (IOException e) {
-                System.err.println("Test failed: " + e.getMessage());
+                System.err.println("Warning: could not save CSV " + csvPath + ": " + e.getMessage());
+            }
+        }
+
+        // === Eval（黄金评测集：规则判分 + LLM 裁判 + run 产物隔离）===
+        if (doEval) {
+            Path evalPath = Path.of(evalFile);
+            if (!Files.exists(evalPath)) {
+                System.err.println("ERROR: eval file not found: " + evalFile);
+                System.exit(1);
+            }
+            System.out.println("\n[Eval] Golden set: " + evalPath.toAbsolutePath());
+            System.out.println("[Eval] judge=" + (judgeEnabled ? "on" : "off")
+                    + " defaultRepeat=" + evalRepeat
+                    + " dialogues=" + (dialogueIndexes == null ? "all" : dialogueIndexes));
+            VectorStore evalVectorStore = vectorStore != null
+                    ? vectorStore : new VectorStore(db, embedder.getDimension());
+            EvalRunner.Config evalConfig = new EvalRunner.Config(dataPath, evalPath, dialogueIndexes,
+                    evalTag, evalRepeat, judgeEnabled);
+            try {
+                EvalRunner.Outcome outcome = new EvalRunner(config, db, embedder,
+                        evalVectorStore, llm, evalConfig).run();
+                System.out.println(outcome.reportMarkdown());
+                System.out.printf("EVAL RUN %s: passRate=%.1f%% (%d/%d) runDir=%s%n",
+                        outcome.runId(), outcome.passRate() * 100, outcome.passedTurns(),
+                        outcome.totalTurns(), outcome.runDir());
+                if (failUnder > 0 && outcome.passRate() < failUnder) {
+                    System.err.printf("ERROR: pass rate %.1f%% < --fail-under %.1f%%%n",
+                            outcome.passRate() * 100, failUnder * 100);
+                    System.exit(2);
+                }
+            } catch (Exception e) {
+                System.err.println("Eval failed: " + e.getMessage());
                 e.printStackTrace();
                 System.exit(1);
             }
@@ -230,6 +392,58 @@ public class HeadlessRunner {
         System.out.println("\n══════════════════════════════════════════");
         System.out.println("  Headless run complete.");
         System.out.println("══════════════════════════════════════════");
+    }
+
+    /**
+     * 检验 rag_web_cache 的 subWebPage 映射（实体/物品 → 网页 URL），可选抓取页面正文。
+     * 用途：① 评估"主体 → 网页映射"节点的有效性；② 反向构建黄金集参考答案。
+     */
+    private static void runWebDump(DatabaseBuilder db, Path dataDir, String pattern, boolean fetch) {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(pattern);
+        List<DatabaseBuilder.WebCacheEntry> entries = db.loadAllWebPages();
+        Map<String, Integer> perMod = new java.util.TreeMap<>();
+        int totalMappings = 0;
+        int matched = 0;
+        WikiScraperService scraper = new WikiScraperService();
+        StringBuilder report = new StringBuilder();
+        report.append("[WebDump] pattern=").append(pattern).append(" fetch=").append(fetch)
+                .append(" cachedPages=").append(entries.size()).append('\n');
+        for (DatabaseBuilder.WebCacheEntry entry : entries) {
+            Map<String, String> sub = entry.subWebPage();
+            if (sub == null || sub.isEmpty()) continue;
+            perMod.merge(entry.modId(), sub.size(), Integer::sum);
+            for (Map.Entry<String, String> kv : sub.entrySet()) {
+                totalMappings++;
+                if (!p.matcher(kv.getKey()).find()) continue;
+                matched++;
+                report.append(String.format("  [%s] %s -> %s%n", entry.modId(), kv.getKey(), kv.getValue()));
+                if (fetch && matched <= 40) {
+                    try {
+                        WikiScraperService.WebPage page = scraper.fetchMcmodPage(kv.getValue());
+                        String text = page == null ? null : page.content();
+                        report.append("    --- page chars=").append(text == null ? 0 : text.length()).append(" ---\n");
+                        if (text != null) {
+                            String snippet = text.replaceAll("\\s+", " ");
+                            report.append("    ").append(snippet.length() > 1500
+                                    ? snippet.substring(0, 1500) + "..." : snippet).append('\n');
+                        }
+                    } catch (Exception e) {
+                        report.append("    fetch failed: ").append(e.getMessage()).append('\n');
+                    }
+                }
+            }
+        }
+        report.append("[WebDump] total mappings=").append(totalMappings).append(" matched=").append(matched).append('\n');
+        report.append("[WebDump] per-mod mappings: ").append(perMod).append('\n');
+        Path out = dataDir.resolve("webdump.txt");
+        try {
+            Files.writeString(out, report.toString(), java.nio.charset.StandardCharsets.UTF_8);
+            System.out.println("[WebDump] cachedPages=" + entries.size() + " matched=" + matched
+                    + " → report written to " + out);
+        } catch (IOException e) {
+            System.out.println(report);
+            System.err.println("[WebDump] failed to write report: " + e.getMessage());
+        }
     }
 
     /** 仅测试网页抓取 → 正文清洗 → 分块 → 向量入库流程。 */
@@ -245,7 +459,7 @@ public class HeadlessRunner {
             @Override
             public String getJdbcUrl() {
                 return "jdbc:h2:file:" + targetDir.resolve("rag_data").toString().replace('\\', '/')
-                        + ";DATABASE_TO_LOWER=TRUE";
+                        + ";DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
             }
         };
         db.initDatabase();
@@ -305,6 +519,33 @@ public class HeadlessRunner {
         }
     }
 
+    /** 解析 --dialogue 值：如 "4,5" → {4,5}；非法或非正数抛 IllegalArgumentException。 */
+    static Set<Integer> parseDialogueIndexes(String spec) {
+        if (spec == null || spec.isBlank()) {
+            throw new IllegalArgumentException("--dialogue value is empty");
+        }
+        Set<Integer> indexes = new LinkedHashSet<>();
+        for (String part : spec.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) continue;
+            try {
+                int idx = Integer.parseInt(trimmed);
+                if (idx < 1) {
+                    throw new IllegalArgumentException(
+                            "--dialogue indexes are 1-based and must be >= 1: '" + spec + "'");
+                }
+                indexes.add(idx);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        "Invalid --dialogue value: '" + spec + "' (expected comma-separated 1-based indexes like 4,5)");
+            }
+        }
+        if (indexes.isEmpty()) {
+            throw new IllegalArgumentException("--dialogue value is empty: '" + spec + "'");
+        }
+        return indexes;
+    }
+
     private static void printUsage() {
         System.out.println("""
             Usage: HeadlessRunner --data-dir <path> [flags]
@@ -316,9 +557,24 @@ public class HeadlessRunner {
               --scan <mods-folder>  Scan JAR files and bind Modrinth slugs
               --build <mods-folder> Build knowledge base (implies --scan)
               --clean               Delete generated/, logs/, sessions/
+              --isolated           Do not read/write global settings or change GUI data directory
+              --use-saved-key      With --isolated, read the saved API key for this run only
               --test [file]         Run automated tests (default: test-questions.json)
+              --dialogue <4,5>      Run only the listed dialogues (1-based index in the test
+                                    file, comma-separated; e.g. --dialogue 4,5)
+              --eval [file]         Run golden-set evaluation (default: golden-set.json):
+                                    rule scoring + LLM judge, isolated under {data}/eval-runs/
+              --tag <name>          Tag for the eval run id (e.g. --tag baseline)
+              --repeat <n>          Default repeats per turn for stability (default 1)
+              --judge / --no-judge  Enable/disable LLM judge (default: enabled)
+              --fail-under <rate>   Exit code 2 when eval pass rate is below rate (e.g. 0.85)
+              --compare <a> <b>     Compare two eval runs and print the ablation table
+              --webdump <regex>     Inspect rag_web_cache subWebPage mappings (entity -> URL);
+                                    with --fetch also crawl the matched pages (rate-limited)
+              --fetch               Fetch matched pages in --webdump mode
               --testweb <target-dir> Test web fetch/chunk/vector pipeline (default: test-web.json)
-              --api-key <key>       Set DeepSeek API key
+              --api-key <key>       Runtime-only DeepSeek API key for this run (not persisted;
+                                    falls back to the saved key when omitted)
 
             Examples:
               # Full pipeline: clean -> build -> test

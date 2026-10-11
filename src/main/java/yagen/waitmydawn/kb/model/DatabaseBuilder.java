@@ -29,8 +29,98 @@ public class DatabaseBuilder {
         // config may be null for IncrementalDB subclasses that override getJdbcUrl()
         if (config != null) {
             this.jdbcUrl = "jdbc:h2:file:" + config.getDbPath().toString().replace('\\', '/')
-                    + ";DATABASE_TO_LOWER=TRUE";
+                    // DB_CLOSE_DELAY=-1：进程内保持数据库打开。否则每次最后一个连接关闭都会
+                    // close+flush 整个 MVStore，长任务里反复 close/reopen 会写坏空闲位图
+                    // （2026-09-15 实测 "Double mark" 损坏，见 workflow 第 10 章）。
+                    + ";DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
         }
+    }
+
+    public static DatabaseBuilder atPath(java.nio.file.Path path) {
+        DatabaseBuilder database = new DatabaseBuilder(null);
+        database.jdbcUrl = "jdbc:h2:file:" + path.toAbsolutePath().toString().replace('\\', '/')
+                + ";DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
+        return database;
+    }
+
+    private static final List<String> BUILD_TABLES = List.of("rag_mod_info", "rag_recipe",
+            "rag_texture_cache", "rag_entity_registry", "rag_web_cache", "rag_web_category", "rag_web_category_member", "rag_vectors", "rag_vector_profile", "rag_build_metadata");
+
+    /** 网络与解析工作在临时库完成，发布事务只包含已校验的数据复制。 */
+    public void replaceBuildDataFrom(DatabaseBuilder staging) {
+        try (var target = getConnection(); var source = staging.getConnection()) {
+            target.setAutoCommit(false);
+            try {
+                for (String table : BUILD_TABLES) {
+                    try (var delete = target.createStatement()) { delete.executeUpdate("DELETE FROM " + table); }
+                    try (var query = source.createStatement(); var rows = query.executeQuery("SELECT * FROM " + table)) {
+                        var meta = rows.getMetaData();
+                        var columns = new ArrayList<Integer>();
+                        var names = new ArrayList<String>();
+                        for (int i = 1; i <= meta.getColumnCount(); i++) {
+                            if ("id".equalsIgnoreCase(meta.getColumnName(i)) && !table.equals("rag_vector_profile")) continue;
+                            columns.add(i); names.add(meta.getColumnName(i));
+                        }
+                        String sql = "INSERT INTO " + table + " (" + String.join(",", names) + ") VALUES ("
+                                + String.join(",", java.util.Collections.nCopies(names.size(), "?")) + ")";
+                        try (var insert = target.prepareStatement(sql)) {
+                            int batch = 0;
+                            while (rows.next()) {
+                                for (int j = 0; j < columns.size(); j++) {
+                                    int column = columns.get(j);
+                                    if (meta.getColumnType(column) == Types.BLOB) insert.setBytes(j + 1, rows.getBytes(column));
+                                    else if (meta.getColumnType(column) == Types.CLOB) insert.setString(j + 1, rows.getString(column));
+                                    else insert.setObject(j + 1, rows.getObject(column));
+                                }
+                                insert.addBatch();
+                                if (++batch % 100 == 0) insert.executeBatch();
+                            }
+                            insert.executeBatch();
+                        }
+                    }
+                }
+                target.commit();
+            } catch (Exception e) { target.rollback(); throw e; }
+        } catch (Exception e) { throw new IllegalStateException("Build publication failed; previous database retained", e); }
+    }
+
+    public String buildGeneration() {
+        try (var c = getConnection(); var s = c.createStatement(); var r = s.executeQuery("SELECT meta_value FROM rag_build_metadata WHERE name='generation'")) {
+            return r.next() ? r.getString(1) : "legacy";
+        } catch (SQLException e) { throw new IllegalStateException("Build metadata read failed", e); }
+    }
+
+    public String contentFingerprint() {
+        try {
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            try (var c = getConnection()) {
+                c.setAutoCommit(false); c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+                for (String table : BUILD_TABLES) {
+                    digest.update(table.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    String order = table.equals("rag_build_metadata") ? "name"
+                            : table.equals("rag_web_category") ? "category_id"
+                            : table.equals("rag_web_category_member") ? "category_id,item_url" : "id";
+                    try (var s = c.createStatement(); var rows = s.executeQuery("SELECT * FROM " + table + " ORDER BY " + order)) {
+                        var metadata = rows.getMetaData();
+                        while (rows.next()) for (int i = 1; i <= metadata.getColumnCount(); i++) {
+                            byte[] bytes;
+                            if (metadata.getColumnType(i) == Types.BLOB) bytes = rows.getBytes(i);
+                            else { String value = rows.getString(i); bytes = value == null ? null : value.getBytes(java.nio.charset.StandardCharsets.UTF_8); }
+                            digest.update(java.nio.ByteBuffer.allocate(4).putInt(bytes == null ? -1 : bytes.length).array());
+                            if (bytes != null) digest.update(bytes);
+                        }
+                    }
+                }
+                c.commit();
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        } catch (Exception e) { throw new IllegalStateException("Database fingerprint failed", e); }
+    }
+
+    public void setBuildGeneration(String generation) {
+        try (var c = getConnection(); var p = c.prepareStatement("MERGE INTO rag_build_metadata (name,meta_value) KEY(name) VALUES ('generation',?)")) {
+            p.setString(1, generation); p.executeUpdate();
+        } catch (SQLException e) { throw new IllegalStateException("Build metadata write failed", e); }
     }
 
     /** 获取 JDBC URL (可被子类覆写) */
@@ -61,9 +151,56 @@ public class DatabaseBuilder {
         return DriverManager.getConnection(getJdbcUrl(), "sa", "");
     }
 
+    public void shutdown() {
+        try (var c = getConnection(); var s = c.createStatement()) { s.execute("SHUTDOWN"); }
+        catch (SQLException e) { throw new IllegalStateException("Database shutdown failed", e); }
+    }
+
+    /**
+     * 轻量健康检查（2026-09-15 事故后新增）：读取关键表的行数并触碰 LOB 列，
+     * 用于在长任务开始前/运行中发现 MVStore 损坏（`Double mark` 等）。
+     *
+     * @throws SQLException 数据库不可读/已损坏时抛出
+     */
+    public void healthCheck() throws SQLException {
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            for (String sql : new String[]{
+                    "SELECT COUNT(*) FROM rag_mod_info",
+                    "SELECT COUNT(*) FROM rag_recipe",
+                    "SELECT COUNT(*) FROM rag_vectors",
+                    "SELECT COUNT(*) FROM rag_web_cache",
+                    "SELECT COUNT(*) FROM rag_web_category",
+                    "SELECT COUNT(*) FROM rag_web_category_member",
+                    "SELECT recipe_data FROM rag_recipe",
+                    "SELECT embedding FROM rag_vectors",
+                    "SELECT sub_web_page_json FROM rag_web_cache",
+                    "SELECT path_json FROM rag_web_category"}) {
+                try {
+                    try (ResultSet rs = stmt.executeQuery(sql)) {
+                        while (rs.next()) {
+                            Object value = rs.getObject(1);
+                            if (value instanceof Blob blob) { blob.getBytes(1, (int) blob.length()); blob.free(); }
+                            else if (value instanceof Clob clob) { clob.getSubString(1, (int) clob.length()); clob.free(); }
+                        }
+                    }
+                } catch (SQLException e) {
+                    // 表尚未创建（空库/首次使用，如 rag_vectors 由 VectorStore 首次使用时建表）不算损坏
+                    if (e.getErrorCode() == 42102 || String.valueOf(e.getMessage()).contains("not found")) {
+                        continue;
+                    }
+                    throw e;
+                }
+            }
+        }
+    }
+
     /** 初始化数据库：创建所有表 */
     public void initDatabase() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            yagen.waitmydawn.kb.service.WebCatalogStore.init(conn);
+
+            stmt.execute("CREATE TABLE IF NOT EXISTS rag_build_metadata (name VARCHAR(100) PRIMARY KEY, meta_value VARCHAR(1000))");
+            stmt.execute("CREATE TABLE IF NOT EXISTS rag_vector_profile (id INT PRIMARY KEY, profile VARCHAR(1000) NOT NULL)");
 
             // rag_mod_info — 模组元数据
             stmt.execute("""
@@ -113,6 +250,11 @@ public class DatabaseBuilder {
                 """);
 
             // rag_multiblock — 多方块结构
+            stmt.execute("ALTER TABLE rag_recipe ADD COLUMN IF NOT EXISTS recipe_id VARCHAR(500)");
+            stmt.execute("ALTER TABLE rag_recipe ADD COLUMN IF NOT EXISTS raw_type VARCHAR(255)");
+            stmt.execute("ALTER TABLE rag_recipe ADD COLUMN IF NOT EXISTS parse_status VARCHAR(50) DEFAULT 'LEGACY'");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_recipe_output ON rag_recipe(output_item)");
+
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS rag_multiblock (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -228,6 +370,7 @@ public class DatabaseBuilder {
             log.debug("ModEntry saved: {}", entry.getModId());
         } catch (SQLException e) {
             log.error("Save ModEntry failed: {}", e.getMessage(), e);
+            throw new IllegalStateException("Save ModEntry failed", e);
         }
     }
 
@@ -275,9 +418,13 @@ public class DatabaseBuilder {
             stmt.execute("DELETE FROM rag_texture_cache");
             stmt.execute("DELETE FROM rag_entity_registry");
             stmt.execute("DELETE FROM rag_web_cache");
+            stmt.execute("DELETE FROM rag_web_category_member");
+            stmt.execute("DELETE FROM rag_web_category");
+            stmt.execute("DELETE FROM rag_vector_profile");
             log.info("Build data cleared (overwrite mode)");
         } catch (SQLException e) {
             log.error("Clear build data failed", e);
+            throw new IllegalStateException("Clear build data failed", e);
         }
     }
 
@@ -285,22 +432,21 @@ public class DatabaseBuilder {
      * 保存爬取的网页列表 (含 subWebPage 映射) 到 rag_web_cache。
      * 用于后续 Q&A 阶段按 namespace 查找子网页 URL 进行增量抓取。
      */
-    public void saveWebPages(String modId, List<?> pages) {
+    public void saveWebPages(String modId, List<? extends WebPageData> pages) {
         String sql = """
             INSERT INTO rag_web_cache (mod_id, title, url, content, source, sub_web_page_json)
             VALUES (?, ?, ?, ?, ?, ?)
             """;
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
-            for (Object obj : pages) {
-                if (!(obj instanceof Record r)) continue;
+            for (WebPageData page : pages) {
                 ps.setString(1, modId);
-                ps.setString(2, safeGet(r, "title"));
-                ps.setString(3, safeGet(r, "url"));
-                ps.setString(4, safeGet(r, "content"));
-                ps.setString(5, safeGet(r, "source"));
+                ps.setString(2, page.title());
+                ps.setString(3, page.url());
+                ps.setString(4, page.content());
+                ps.setString(5, page.source());
                 // 序列化 subWebPage Map → JSON
-                Object subMap = safeGetObj(r, "subWebPage");
+                Object subMap = page.subWebPage();
                 ps.setString(6, subMap != null ? jsonMapper.writeValueAsString(subMap) : "{}");
                 ps.addBatch();
             }
@@ -308,6 +454,7 @@ public class DatabaseBuilder {
             log.info("Web cache saved: {} pages for modId={}", pages.size(), modId);
         } catch (Exception e) {
             log.error("Save WebPages failed: {}", e.getMessage(), e);
+            throw new IllegalStateException("Save WebPages failed", e);
         }
     }
 
@@ -395,25 +542,6 @@ public class DatabaseBuilder {
     public record WebCacheEntry(String modId, String title, String url,
                                 String content, String source,
                                 Map<String, String> subWebPage) {}
-
-    // --- Record 反射辅助 (避免 model → service 依赖) ---
-
-    private static String safeGet(Record r, String field) {
-        try {
-            var f = r.getClass().getDeclaredField(field);
-            f.setAccessible(true);
-            Object v = f.get(r);
-            return v != null ? v.toString() : null;
-        } catch (Exception e) { return null; }
-    }
-
-    private static Object safeGetObj(Record r, String field) {
-        try {
-            var f = r.getClass().getDeclaredField(field);
-            f.setAccessible(true);
-            return f.get(r);
-        } catch (Exception e) { return null; }
-    }
 
     // ======================== ModEntry CRUD ========================
 

@@ -118,6 +118,8 @@ public class WikiScraperService {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private record CacheEntry(FetchedPage page, long expireAt) {}
+    private PublicKnowledgeCache publicCache;
+    public void setPublicCache(PublicKnowledgeCache cache) { this.publicCache=cache; }
 
     // ==================== MC百科 分类枚举 ====================
 
@@ -288,9 +290,17 @@ public class WikiScraperService {
     }
 
     public List<WebPage> scrapeModDeep(String modId, ScrapeProgress progress) {
+        return scrapeModCatalog(modId, progress).pages();
+    }
+
+    public record ModScrapeResult(List<WebPage> pages, yagen.waitmydawn.kb.model.WebCatalog catalog) {}
+
+    public ModScrapeResult scrapeModCatalog(String modId, ScrapeProgress progress) {
         List<WebPage> pages = new ArrayList<>();
+        var nodes = new ArrayList<yagen.waitmydawn.kb.model.WebCatalog.Node>();
+        var members = new ArrayList<yagen.waitmydawn.kb.model.WebCatalog.Member>();
         String classId = findModClassId(modId);
-        if (classId == null) return pages;
+        if (classId == null) return new ModScrapeResult(pages, new yagen.waitmydawn.kb.model.WebCatalog(nodes, members));
 
         // Visit main page first to get session cookies
         String mainUrl = "https://www.mcmod.cn/class/" + classId + ".html";
@@ -327,6 +337,9 @@ public class WikiScraperService {
                     progress.onProgress(catIdx, allCats.length, cat.getName(), -1, 0, "404");
                 continue;
             }
+
+            var catalog = new WebCatalogParser().parse(doc, modId, subUrl, cat.getId(), cat.getName());
+            nodes.addAll(catalog.nodes()); members.addAll(catalog.members());
 
             // 提取真实物品链接
             Elements itemLinks = doc.select("a[href*=/item/]");
@@ -405,7 +418,7 @@ public class WikiScraperService {
             pages.add(new WebPage(title, subUrl, content.toString(), "mcmod",
                     new LinkedHashMap<>()));
 
-            try { Thread.sleep(CATEGORY_DELAY_MS); } catch (Exception ignored) {}
+            sleepQuietly(CATEGORY_DELAY_MS);
         }
 
         // 把 subWebPage 映射挂到第一个页面 (mod 主页面) 上
@@ -415,7 +428,7 @@ public class WikiScraperService {
         }
 
         log.info("mcmod.cn deep: {} pages, {} sub-pages for modId={}", pages.size(), subWebPage.size(), modId);
-        return pages;
+        return new ModScrapeResult(pages, new yagen.waitmydawn.kb.model.WebCatalog(nodes, members));
     }
 
     /** Legacy: old extractNamespace without cookies (kept for callers that don't have session) */
@@ -442,16 +455,33 @@ public class WikiScraperService {
     /** 带缓存与限流的统一抓取入口。 */
     private FetchedPage fetchCached(String url, String source, boolean withRegistries,
                                     Map<String, String> cookies, int maxRetries) {
+        validateFetchUrl(url);
+        if (publicCache!=null) {
+            FetchedPage persisted=publicCache.find(url);
+            if(persisted!=null) return persisted;
+        }
         CacheEntry cached = FETCH_CACHE.get(url);
         if (cached != null) {
             if (cached.expireAt() > System.currentTimeMillis()) {
                 log.debug("Fetch cache hit: {}", url);
+                RetrievalTelemetry.pageHit(false);
+                if(publicCache!=null) publicCache.put(url,cached.page());
                 return cached.page();
             }
             FETCH_CACHE.remove(url);
         }
 
-        FetchOutcome out = executeRaw(url, cookies, refererFor(source), true, maxRetries);
+        var snapshot=publicCache==null?null:publicCache.snapshot(url);
+        var validators=new LinkedHashMap<String,String>();
+        if(snapshot!=null) {
+            if(snapshot.etag()!=null) validators.put("If-None-Match",snapshot.etag());
+            if(snapshot.lastModified()!=null) validators.put("If-Modified-Since",snapshot.lastModified());
+        }
+        FetchOutcome out = executeRaw(url, cookies, refererFor(source), true, maxRetries,validators);
+        if(out.status()==304 && snapshot!=null) {
+            publicCache.put(url,snapshot.page(),out.etag()==null?snapshot.etag():out.etag(),out.lastModified()==null?snapshot.lastModified():out.lastModified());
+            cachePut(url,snapshot.page()); return snapshot.page();
+        }
         if (out.status() != 200 || out.body() == null || out.body().isBlank()) {
             log.warn("Fetch failed {}: HTTP {}", url, out.status());
             return null;
@@ -462,12 +492,12 @@ public class WikiScraperService {
         }
 
         Document doc = Jsoup.parse(out.body());
-        List<String> registries = withRegistries
-                ? ("mcmod".equals(source) ? extractMcmodRegistries(out.body())
-                                          : extractMcWikiRegistries(out.body()))
-                : List.of();
+        List<String> registries = "mcmod".equals(source) ? extractMcmodRegistries(out.body())
+                                          : extractMcWikiRegistries(out.body());
         FetchedPage fetched = new FetchedPage(toWebPage(doc, url, source), registries);
+        if(fetched.page().content().isBlank()) return null;
         cachePut(url, fetched);
+        if(publicCache!=null) publicCache.put(url,fetched,out.etag(),out.lastModified());
         return fetched;
     }
 
@@ -502,18 +532,44 @@ public class WikiScraperService {
 
     // ==================== 统一请求执行器（限流 + 退避 + 预算） ====================
 
-    private record FetchOutcome(int status, String body, int attempts) {}
+    private record FetchOutcome(int status, String body, int attempts,String etag,String lastModified) {
+        FetchOutcome(int status,String body,int attempts) { this(status,body,attempts,null,null); }
+    }
 
     /**
      * 统一请求执行器：每域名限速 → 请求预算 → 浏览器头 → Cookie 会话 → 指数退避+抖动。
      * 403/429 按 Retry-After（若提供）或 1s*2^n 退避；5xx 短退避；404 不重试。
      */
+    static void validateFetchUrl(String url) {
+        java.net.URI uri = java.net.URI.create(url);
+        String host = uri.getHost();
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getUserInfo() != null
+                || (uri.getPort() != -1 && uri.getPort() != 443) || host == null
+                || !Set.of("mcmod.cn", "www.mcmod.cn", "search.mcmod.cn", "wiki.biligame.com")
+                    .contains(host.toLowerCase(java.util.Locale.ROOT)))
+            throw new IllegalArgumentException("Unsupported knowledge source URL");
+    }
+
+    private static void checkCancelled() {
+        if (Thread.currentThread().isInterrupted())
+            throw new java.util.concurrent.CancellationException("Web request cancelled");
+    }
+
     private FetchOutcome executeRaw(String url, Map<String, String> cookies, String referer,
                                     boolean captureCookies, int maxRetries) {
+        return executeRaw(url,cookies,referer,captureCookies,maxRetries,Map.of());
+    }
+
+    private FetchOutcome executeRaw(String url, Map<String,String> cookies,String referer,
+                                    boolean captureCookies,int maxRetries,Map<String,String> headers) {
+        validateFetchUrl(url);
+        int redirects = 0;
         int lastStatus = 0;
         int lastBodyLen = -1;
         for (int attempt = 0; attempt < maxRetries; attempt++) {
+            checkCancelled();
             politeWait(url);
+            checkCancelled();
             if (overBudget(url)) {
                 log.warn("Request budget exceeded for {} — skip further requests", hostOf(url));
                 return new FetchOutcome(lastStatus, null, attempt + 1);
@@ -526,15 +582,35 @@ public class WikiScraperService {
                         .header("Accept-Encoding", ACCEPT_ENC)
                         .header("Connection", "keep-alive")
                         .timeout(15000)
-                        .followRedirects(true)
+                        .followRedirects(false)
+                        .maxBodySize(2 * 1024 * 1024)
                         .ignoreHttpErrors(true)
                         .ignoreContentType(true);
                 if (referer != null) conn.header("Referer", referer);
                 if (PROXY_HOST != null) conn.proxy(PROXY_HOST, PROXY_PORT);
                 if (cookies != null && !cookies.isEmpty()) conn.cookies(cookies);
+                conn.headers(headers);
 
+                RetrievalTelemetry.httpAttempt();
                 var resp = conn.execute();
+                RetrievalTelemetry.httpResponse(resp.statusCode(),resp.bodyAsBytes().length);
+                checkCancelled();
                 int status = resp.statusCode();
+                if(status==304) return new FetchOutcome(304,"",attempt+1,resp.header("ETag"),resp.header("Last-Modified"));
+                if (status >= 300 && status < 400 && resp.header("Location") != null) {
+                    if (++redirects > 5) throw new IllegalArgumentException("Too many redirects");
+                    String redirected = java.net.URI.create(url).resolve(resp.header("Location")).toString();
+                    try { validateFetchUrl(redirected); }
+                    catch (IllegalArgumentException unsafeRedirect) {
+                        var destination = java.net.URI.create(redirected);
+                        log.warn("Knowledge source redirect rejected: {} -> scheme={}, host={}", hostOf(url), destination.getScheme(), destination.getHost());
+                        return new FetchOutcome(status, null, attempt + 1);
+                    }
+                    if (!hostOf(url).equals(hostOf(redirected)) && cookies != null) cookies.clear();
+                    url = redirected;
+                    attempt--;
+                    continue;
+                }
                 String body = resp.body();
 
                 if (captureCookies && cookies != null) {
@@ -545,7 +621,7 @@ public class WikiScraperService {
                 lastBodyLen = body != null ? body.length() : 0;
 
                 if (status == 200 && body != null && body.length() > MIN_VALID_BODY_LEN) {
-                    return new FetchOutcome(200, body, attempt + 1);
+                    return new FetchOutcome(200, body, attempt + 1,resp.header("ETag"),resp.header("Last-Modified"));
                 }
                 if (status == 404) {
                     return new FetchOutcome(404, body, attempt + 1); // 永久性错误，不重试
@@ -565,7 +641,9 @@ public class WikiScraperService {
                 } else {
                     delay = RETRY_BASE_DELAY_MS + jitter();
                 }
-                sleepQuietly(delay);
+                sleepQuietly(Math.min(delay, 30_000L));
+            } catch (java.util.concurrent.CancellationException | IllegalArgumentException e) {
+                throw e;
             } catch (java.net.SocketTimeoutException e) {
                 lastStatus = 0;
                 log.warn("Socket timeout for {} (attempt {}/{})", url, attempt + 1, maxRetries);
@@ -600,6 +678,7 @@ public class WikiScraperService {
             Thread.sleep(ms);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            checkCancelled();
         }
     }
 
@@ -635,16 +714,17 @@ public class WikiScraperService {
         }
     }
 
-    /** 从 MC百科网页提取 /summon 等 data-command 中的注册名。 */
+    /** 优先读取条目元数据的 give/summon 目标，忽略命令中 NBT 或正文引用的其它注册名。 */
     public List<String> extractMcmodRegistries(String html) {
         Set<String> result = new LinkedHashSet<>();
         if (html == null) return List.of();
-        Matcher commandMatcher = Pattern.compile("data-command=\"([^\"]+)\"").matcher(html);
-        Pattern registryPattern = Pattern.compile("([a-z_][a-z0-9_]*:[a-z_][a-z0-9_]*)");
-        while (commandMatcher.find()) {
-            String command = commandMatcher.group(1);
-            Matcher regMatcher = registryPattern.matcher(command);
-            while (regMatcher.find()) result.add(regMatcher.group(1));
+        var doc=Jsoup.parse(html);
+        var commands=doc.select(".maintext [data-command]");
+        if(commands.isEmpty()) commands=doc.select("[data-command]");
+        Pattern target=Pattern.compile("^/(?:give\\s+\\S+|summon)\\s+([a-z_][a-z0-9_]*:[a-z_][a-z0-9_]*)");
+        for(var command:commands) {
+            var match=target.matcher(command.attr("data-command"));
+            if(match.find()) result.add(match.group(1));
         }
         return new ArrayList<>(result);
     }
@@ -669,7 +749,7 @@ public class WikiScraperService {
     }
 
     /** 把 Jsoup Document 转换为统一的 WebPage 文本结构，按站点清洗导航/页脚等噪音。 */
-    private WebPage toWebPage(Document doc, String url, String source) {
+    static WebPage toWebPage(Document doc, String url, String source) {
         String title = doc.title();
         StringBuilder content = new StringBuilder();
 
@@ -687,39 +767,26 @@ public class WikiScraperService {
                 if (!k.isEmpty() && !v.isEmpty()) content.append(k).append("：").append(v).append("\n");
             }
 
-            Element main = doc.selectFirst(".item-content.common-text");
+            Element main = doc.selectFirst(".item-content.common-text, .class-text.common-text, .class-text .common-text, .class-text");
             if (main != null) {
-                for (Element e : main.select("p, .common-text-title, h2, h3, h4")) {
-                    String text = e.text().trim();
-                    if (text.isEmpty()) continue;
-                    if (e.hasClass("common-text-title")) content.append("\n## ").append(text).append("\n");
-                    else content.append(text).append("\n");
-                }
+                content.append(WikiBodyExtractor.extract(main));
             }
         } else {
             content.append("标题：").append(title).append("\n");
             Element main = doc.selectFirst("#mw-content-text, .mw-parser-output");
             if (main != null) {
-                Element clone = main.clone();
-                clone.select("style, script, .mw-editsection, .toc, .infobox, "
-                        + ".msgbox, .hatnote, .navbox, .printfooter, .catlinks").remove();
-                for (Element e : clone.select("p, h2, h3, h4, li:not(:has(p))")) {
-                    String text = e.text().trim();
-                    if (text.isEmpty()) continue;
-                    if (e.tagName().startsWith("h")) content.append("\n## ").append(text).append("\n");
-                    else content.append(text).append("\n");
-                }
+                content.append(WikiBodyExtractor.extract(main));
             }
         }
 
-        if (content.length() <= 20) {
-            content.append(doc.body().text());
-        }
+        // 缺失正文时整页回退会把用户评论和导航变成事实证据，必须保持未知。
+        if ("mcmod".equals(source) && doc.selectFirst(".item-content.common-text, .item-info-table, .class-text") == null)
+            return new WebPage(title,url,"",source,new LinkedHashMap<>());
         return new WebPage(title, url, cleanAndDedupe(content.toString()), source, new LinkedHashMap<>());
     }
 
     /** 去重、去空行和明显非内容行。 */
-    private String cleanAndDedupe(String text) {
+    private static String cleanAndDedupe(String text) {
         Set<String> seen = new LinkedHashSet<>();
         StringBuilder result = new StringBuilder();
         for (String line : text.split("\\n")) {
@@ -787,6 +854,8 @@ public class WikiScraperService {
      * Find the class ID for a mod on MC百科
      */
     private String findModClassId(String modId) {
+        String canonical=KnowledgeSourcePolicy.canonicalClassId(modId);
+        if(canonical!=null) return canonical;
         try {
             String url = MCMOD_SEARCH_BASE + URLEncoder.encode(modId, StandardCharsets.UTF_8);
             FetchOutcome out = executeRaw(url, null, MCMOD_BASE + "/", true, 2);
@@ -824,7 +893,7 @@ public class WikiScraperService {
      *                   例如: "iceandfire:ghost" → "https://www.mcmod.cn/item/790985.html"
      */
     public record WebPage(String title, String url, String content, String source,
-                          Map<String, String> subWebPage) {
+                          Map<String, String> subWebPage) implements yagen.waitmydawn.kb.model.WebPageData {
     }
 
     /** 网页正文 + 从原始 HTML 提取的注册名清单。 */

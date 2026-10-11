@@ -33,8 +33,15 @@ public class KnowledgeBuilder {
     private final VectorStore vectorStore;
     private final WikiScraperService wikiScraper = new WikiScraperService();
     private final Map<String, String> allEntityMappings = new LinkedHashMap<>();
+    private Map<String, ModEntry> previousMods = Map.of();
+    private Path diagnosticDir;
+    private PublicKnowledgeCache publicCache;
 
     public KnowledgeBuilder(AppConfig config, DatabaseBuilder db) {
+        this(config, db, initializedEmbedder(config));
+    }
+
+    public KnowledgeBuilder(AppConfig config, DatabaseBuilder db, EmbeddingService embedder) {
         this.config = config;
         this.db = db;
         this.scanner = new JarScannerService();
@@ -42,8 +49,16 @@ public class KnowledgeBuilder {
         this.textureExtractor = new TextureExtractor(config);
         this.recipeExtractor = new RecipeExtractor();
         this.chunker = new TextChunker();
-        this.embedder = new EmbeddingService(config);
+        this.embedder = embedder;
         this.vectorStore = new VectorStore(db, embedder.getDimension());
+        this.publicCache = new PublicKnowledgeCache(db);
+        wikiScraper.setPublicCache(publicCache);
+    }
+
+    private static EmbeddingService initializedEmbedder(AppConfig config) {
+        var service = new EmbeddingService(config);
+        service.initModel(config.getEmbeddingModelName());
+        return service;
     }
 
     @FunctionalInterface
@@ -54,6 +69,50 @@ public class KnowledgeBuilder {
     public VectorStore getVectorStore() { return vectorStore; }
 
     public BuildResult build(Path modFolder, ProgressCallback progressCallback) {
+        if (!java.nio.file.Files.isDirectory(modFolder) || scanner.scan(modFolder).isEmpty())
+            throw new IllegalArgumentException("No JAR files found; previous knowledge base retained");
+        String generation = "build-" + UUID.randomUUID();
+        Path stagingPath = config.getDataDir().resolve("staging-" + UUID.randomUUID());
+        DatabaseBuilder staging = DatabaseBuilder.atPath(stagingPath);
+        try {
+            staging.initDatabase();
+            var candidate = new KnowledgeBuilder(config, staging, embedder);
+            candidate.publicCache=publicCache;
+            candidate.wikiScraper.setPublicCache(publicCache);
+            var oldMods = new LinkedHashMap<String, ModEntry>();
+            for (var mod : db.findAllModEntries()) oldMods.put(mod.getModId(), mod);
+            candidate.previousMods = oldMods;
+            candidate.textureExtractor.setGeneration(generation);
+            candidate.diagnosticDir = config.getTexturesDir().resolve(generation);
+            java.nio.file.Files.createDirectories(candidate.diagnosticDir);
+            staging.setBuildGeneration(generation);
+            BuildResult result = candidate.buildInto(modFolder, (phase, cur, total, message) -> {
+                if (!"done".equals(phase)) report(progressCallback, phase, cur, total, message);
+            });
+            if (result.parsed == 0) throw new IllegalStateException("No valid mods found; previous knowledge base retained");
+            checkCancelled();
+            staging.healthCheck();
+            checkCancelled();
+            db.replaceBuildDataFrom(staging);
+            report(progressCallback, "done", result.parsed, result.parsed, "Build published: " + result.embeddings + " vectors");
+            return result;
+        } catch (java.sql.SQLException | java.io.IOException e) {
+            throw new IllegalStateException("Staging database validation failed", e);
+        } finally {
+            try { staging.shutdown(); } catch (Exception e) { log.warn("Staging shutdown failed", e); }
+            try {
+                java.nio.file.Files.deleteIfExists(Path.of(stagingPath + ".mv.db"));
+                java.nio.file.Files.deleteIfExists(Path.of(stagingPath + ".trace.db"));
+            } catch (Exception e) { log.warn("Staging cleanup failed", e); }
+        }
+    }
+
+    private static void checkCancelled() {
+        if (Thread.currentThread().isInterrupted())
+            throw new java.util.concurrent.CancellationException("Knowledge build cancelled");
+    }
+
+    private BuildResult buildInto(Path modFolder, ProgressCallback progressCallback) {
         BuildResult result = new BuildResult();
         long timeStamp0 = System.currentTimeMillis();
 
@@ -67,6 +126,7 @@ public class KnowledgeBuilder {
         result.totalJars = jars.size();
 
         for (int i = 0; i < jars.size(); i++) {
+            checkCancelled();
             Path jar = jars.get(i);
             ModEntry entry = parser.parse(jar);
             if (entry == null) { result.skipped++; continue; }
@@ -81,7 +141,7 @@ public class KnowledgeBuilder {
             // Extract textures once, use for counting + saving
             Map<String, Map<String, String>> allTex = textureExtractor.extract(jar, modId, slug);
             result.textures += allTex.values().stream().mapToInt(Map::size).sum();
-            TextureExtractor.dumpMapping(allTex, config.getDataDir());
+            TextureExtractor.dumpMapping(allTex, diagnosticDir);
 
             // Entity texture scanning — extract registry names from textures/entity/
             report(progressCallback, "entity", i + 1, jars.size(), "Entities: " + modId);
@@ -102,7 +162,9 @@ public class KnowledgeBuilder {
             if (entry.getDescription() != null && !entry.getDescription().isBlank())
                 chunks.addAll(chunker.fromDescription(entry.getDescription(), modId, modName));
             for (var r : recipes) {
+                if (!"PARSED".equals(r.parseStatus())) continue;
                 var rc = chunker.fromRecipe(r.recipeJson(), modId, modName, r.outputItem());
+                if (rc != null) rc = new TextChunker.TextChunk(r.recipeId(), rc.text(), modId, modName, "recipe", r.recipeId());
                 if (rc != null) chunks.add(rc);
             }
             result.textChunks += chunks.size();
@@ -115,7 +177,7 @@ public class KnowledgeBuilder {
 
             // Preserve slug from previous scan if not set during parse
             if (entry.getSlug() == null) {
-                ModEntry existing = db.findModEntry(entry.getModId());
+                ModEntry existing = previousMods.get(entry.getModId());
                 if (existing != null && existing.getSlug() != null) {
                     entry.setSlug(existing.getSlug());
                     entry.setModrinthUrl(existing.getModrinthUrl());
@@ -137,12 +199,12 @@ public class KnowledgeBuilder {
                 report(progressCallback, "wiki", idx, total, "MC Wiki: " + page);
                 WikiScraperService.WebPage wp = wikiScraper.fetchMcWiki(page);
                 if (wp != null) {
-                    wikiChunks.addAll(chunker.fromDescription(wp.content(), "minecraft", "Minecraft"));
+                    wikiChunks.addAll(chunker.fromWebPage(wp.content(), "minecraft", "Minecraft", "mcwiki", wp.url()));
                 }
                 try { Thread.sleep(200); } catch (Exception ignored) {} // Be polite to wiki
             }
             if (!wikiChunks.isEmpty()) {
-                vectorStore.storeBatch(wikiChunks, embedder);
+                vectorStore.storeBatch(wikiChunks, publicCache.embeddings(wikiChunks,embedder),embedder.profile());
                 result.embeddings += wikiChunks.size();
                 log.info("Baseline Wiki: {} chunks from {} pages", wikiChunks.size(), idx);
             }
@@ -166,8 +228,7 @@ public class KnowledgeBuilder {
             final int cur = sIdx;
             final int total = deduped.size();
             final String mid = modEntry.getModId();
-            List<WikiScraperService.WebPage> pages =
-                    wikiScraper.scrapeModDeep(modEntry.getModId(),
+            var scrape = wikiScraper.scrapeModCatalog(modEntry.getModId(),
                             (catCur, catTotal, catName, itemCur, itemTotal, status) -> {
                         String detail;
                         if (status.startsWith("error:")) {
@@ -191,6 +252,8 @@ public class KnowledgeBuilder {
                         }
                         report(progressCallback, "scrape", cur, total, detail);
                     });
+            List<WikiScraperService.WebPage> pages = scrape.pages();
+            new WebCatalogStore(db).save(scrape.catalog());
             if (!pages.isEmpty()) {
                 // 持久化网页 (含 subWebPage 映射), 供 Q&A 阶段增量抓取
                 db.saveWebPages(modEntry.getModId(), pages);
@@ -220,13 +283,39 @@ public class KnowledgeBuilder {
                 }
 
                 List<TextChunker.TextChunk> modChunks = new ArrayList<>();
-                for (var p : pages) modChunks.addAll(chunker.fromDescription(p.content(), modEntry.getModId(),
-                        modEntry.getDisplayName() != null ? modEntry.getDisplayName() : modEntry.getModId()));
+                for (var p : pages) modChunks.addAll(chunker.fromWebPage(p.content(), modEntry.getModId(),
+                        modEntry.getDisplayName() != null ? modEntry.getDisplayName() : modEntry.getModId(), p.source(), p.url()));
                 if (!modChunks.isEmpty()) {
-                    vectorStore.storeBatch(modChunks, embedder);
+                    vectorStore.storeBatch(modChunks, publicCache.embeddings(modChunks,embedder),embedder.profile());
                     result.embeddings += modChunks.size();
                     log.info("mcmod: {} chunks for {}", modChunks.size(), modEntry.getModId());
                 }
+            }
+            // 小预算预热覆盖不同子分类的生物；完整目录仍保留，不把预热范围当成全部。
+            int warmLimit=Math.max(0,Math.min(30,Integer.getInteger("maa.build.prewarmPages",6)));
+            var warmed=new LinkedHashMap<String,WebCatalogStore.Entry>();
+            var hintUrls=KnowledgeHints.forMod(modEntry.getModId()).stream().map(KnowledgeHints.Relation::url).toList();
+            var paths=new HashSet<List<String>>();
+            for(var entry:new WebCatalogStore(db).entries(modEntry.getModId(),4)) {
+                if(entry.role().equals("entry") && paths.add(entry.path())) warmed.putIfAbsent(entry.url(),entry);
+                if(warmed.size()>=warmLimit) break;
+            }
+            for(var hint:KnowledgeHints.forMod(modEntry.getModId())) {
+                if(warmLimit==0) break;
+                for(var category:WikiScraperService.McmodCategory.values()) for(var entry:new WebCatalogStore(db).entries(modEntry.getModId(),category.getId()))
+                    if(hint.url().equals(entry.url())) warmed.putIfAbsent(entry.url(),entry);
+            }
+            int warm=0;
+            if(warmLimit==0) warmed.clear();
+            for(var entry:warmed.values()) {
+                if(warm++>=warmLimit+hintUrls.size()) break;
+                checkCancelled();
+                report(progressCallback,"prewarm",warm,warmed.size(),"详情预热："+entry.label());
+                var fetched=wikiScraper.fetchPageWithRegistries(entry.url(),"mcmod");
+                if(fetched==null) continue;
+                var chunks=chunker.fromWebPage(fetched.page().content(),modEntry.getModId(),modEntry.getDisplayName(),"mcmod",entry.url());
+                vectorStore.storeBatch(chunks,publicCache.embeddings(chunks,embedder),embedder.profile());
+                result.embeddings+=chunks.size();
             }
             try { Thread.sleep(500); } catch (Exception ignored) {}
         }
@@ -238,7 +327,7 @@ public class KnowledgeBuilder {
             try {
                 var mapper = new com.fasterxml.jackson.databind.ObjectMapper()
                         .enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
-                mapper.writeValue(config.getDataDir().resolve("entity_map.json").toFile(), allEntityMappings);
+                mapper.writeValue(diagnosticDir.resolve("entity_map.json").toFile(), allEntityMappings);
             } catch (Exception ex) { log.warn("Entity map export failed", ex); }
         }
 
@@ -258,7 +347,9 @@ public class KnowledgeBuilder {
                     "assets/" + modId.toLowerCase() + "/lang/en_us.json"}) {
                 JarEntry je = jar.getJarEntry(p);
                 if (je != null) try (InputStream is = jar.getInputStream(je)) {
-                    return chunker.fromLangJson(new String(is.readAllBytes()), modId, modName, p);
+                    byte[] bytes = is.readNBytes(2 * 1024 * 1024 + 1);
+                    if (bytes.length > 2 * 1024 * 1024) throw new IllegalArgumentException("Language resource too large: " + p);
+                    return chunker.fromLangJson(new String(bytes, java.nio.charset.StandardCharsets.UTF_8), modId, modName, p);
                 } catch (Exception ignored) {}
             }
         } catch (Exception e) { log.debug("Lang: {} - {}", modId, e.getMessage()); }
@@ -277,7 +368,7 @@ public class KnowledgeBuilder {
                 }
             }
             ps.executeBatch();
-        } catch (Exception ex) { log.error("Save textures failed", ex); }
+        } catch (Exception ex) { throw new IllegalStateException("Save textures failed", ex); }
     }
 
     private void saveEntityRegistries(Map<String, String> entities, String modId) {
@@ -291,15 +382,19 @@ public class KnowledgeBuilder {
                 ps.addBatch();
             }
             ps.executeBatch();
-        } catch (Exception ex) { log.error("Save entity registries failed", ex); }
+        } catch (Exception ex) { throw new IllegalStateException("Save entity registries failed", ex); }
     }
 
     private void saveRecipes(List<RecipeExtractor.ParsedRecipe> recipes, String loader, String v) {
         try (var c = db.getConnection(); var ps = c.prepareStatement(
-                "MERGE INTO rag_recipe (recipe_type, output_item, output_count, recipe_data, source_mod, loader, mod_version, source_type) KEY (output_item, recipe_type, source_mod) VALUES (?, ?, ?, ?, ?, ?, ?, 'JAR_PARSE')")) {
-            for (var r : recipes) { ps.setString(1, r.recipeType()); ps.setString(2, r.outputItem()); ps.setInt(3, r.outputCount()); ps.setString(4, r.recipeJson()); ps.setString(5, r.sourceMod()); ps.setString(6, loader); ps.setString(7, v); ps.addBatch(); }
+                "MERGE INTO rag_recipe (recipe_type, output_item, output_count, recipe_data, source_mod, loader, mod_version, recipe_id, raw_type, parse_status, source_type) KEY (recipe_id, source_mod) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'JAR_PARSE')")) {
+            for (var r : recipes) {
+                ps.setString(1, r.recipeType()); ps.setString(2, r.outputItem()); ps.setInt(3, r.outputCount());
+                ps.setString(4, r.recipeJson()); ps.setString(5, r.sourceMod()); ps.setString(6, loader); ps.setString(7, v);
+                ps.setString(8, r.recipeId()); ps.setString(9, r.rawType()); ps.setString(10, r.parseStatus()); ps.addBatch();
+            }
             ps.executeBatch();
-        } catch (Exception ex) { log.error("Save recipes failed", ex); }
+        } catch (Exception ex) { throw new IllegalStateException("Save recipes failed", ex); }
     }
 
     private void report(ProgressCallback cb, String phase, int cur, int total, String msg) {

@@ -8,15 +8,15 @@ import java.util.*;
 
 /**
  * Minimal BERT WordPiece tokenizer.
- * 支持 BGE-micro-v2 词表 (~30k tokens)。
+ * 特殊 Token ID 来自词表，适用于兼容 BERT 的小写 WordPiece 模型。
  */
 public class WordPieceTokenizer {
 
     private final Map<String, Integer> vocab = new HashMap<>(32000);
     private final Map<Integer, String> idToToken = new HashMap<>(32000);
-    private final int UNK_ID = 100;    // [UNK]
-    private final int CLS_ID = 101;   // [CLS]
-    private final int SEP_ID = 102;   // [SEP]
+    private final int UNK_ID;
+    private final int CLS_ID;
+    private final int SEP_ID;
 
     public WordPieceTokenizer(Path vocabFile) throws IOException {
         try (BufferedReader br = Files.newBufferedReader(vocabFile)) {
@@ -29,12 +29,16 @@ public class WordPieceTokenizer {
                 id++;
             }
         }
+        for (String special : List.of("[UNK]", "[CLS]", "[SEP]"))
+            if (!vocab.containsKey(special)) throw new IOException("Missing tokenizer special token: " + special);
+        UNK_ID = vocab.get("[UNK]"); CLS_ID = vocab.get("[CLS]"); SEP_ID = vocab.get("[SEP]");
     }
 
     /**
      * Encode text to token IDs.
      */
     public long[] encode(String text, int maxLen) {
+        if (maxLen < 2) throw new IllegalArgumentException("Token limit must include CLS and SEP");
         List<Integer> tokens = new ArrayList<>();
         tokens.add(CLS_ID);
 
@@ -44,8 +48,8 @@ public class WordPieceTokenizer {
             if (tokens.size() >= maxLen - 1) break;
         }
 
+        if (tokens.size() >= maxLen) tokens = new ArrayList<>(tokens.subList(0, maxLen - 1));
         tokens.add(SEP_ID);
-        if (tokens.size() > maxLen) tokens = tokens.subList(0, maxLen);
 
         long[] ids = new long[tokens.size()];
         for (int i = 0; i < tokens.size(); i++) ids[i] = tokens.get(i);
@@ -59,19 +63,19 @@ public class WordPieceTokenizer {
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
             if (Character.isWhitespace(c) || isPunctuation(c)) {
-                if (!buf.isEmpty()) { words.add(buf.toString().toLowerCase()); buf.setLength(0); }
+                if (!buf.isEmpty()) { words.add(buf.toString().toLowerCase(Locale.ROOT)); buf.setLength(0); }
                 // Add punctuation as a separate token if it's in vocab
                 String punct = String.valueOf(c);
                 if (vocab.containsKey(punct)) words.add(punct);
             } else if (isCJK(c)) {
-                if (!buf.isEmpty()) { words.add(buf.toString().toLowerCase()); buf.setLength(0); }
+                if (!buf.isEmpty()) { words.add(buf.toString().toLowerCase(Locale.ROOT)); buf.setLength(0); }
                 // CJK chars as individual tokens or try bigrams
                 words.add(String.valueOf(c));
             } else {
                 buf.append(c);
             }
         }
-        if (!buf.isEmpty()) words.add(buf.toString().toLowerCase());
+        if (!buf.isEmpty()) words.add(buf.toString().toLowerCase(Locale.ROOT));
         return words;
     }
 
@@ -86,6 +90,7 @@ public class WordPieceTokenizer {
         }
 
         // Try subword split
+        int initialSize = tokenIds.size();
         int start = 0;
         while (start < word.length()) {
             int end = word.length();
@@ -100,6 +105,7 @@ public class WordPieceTokenizer {
                 end--;
             }
             if (sub == null) {
+                tokenIds.subList(initialSize, tokenIds.size()).clear();
                 tokenIds.add(UNK_ID);
                 break;
             }

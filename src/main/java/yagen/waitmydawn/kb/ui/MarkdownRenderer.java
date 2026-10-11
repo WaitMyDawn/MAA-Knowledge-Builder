@@ -30,6 +30,10 @@ public class MarkdownRenderer {
     private static final int IMAGE_FIT_WIDTH = 260;
 
     public static Node render(String markdown) {
+        return render(markdown, List.of());
+    }
+
+    public static Node render(String markdown, List<Path> imageRoots) {
         if (markdown == null || markdown.isBlank()) return new Label();
 
         VBox container = new VBox(4);
@@ -39,23 +43,21 @@ public class MarkdownRenderer {
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             if (line.trim().isEmpty()) {
-                flushBuffer(container, buffer);
+                flushBuffer(container, buffer, imageRoots);
                 continue;
             }
             // Header
             if (line.trim().startsWith("## ") || line.trim().startsWith("### ")) {
-                flushBuffer(container, buffer);
+                flushBuffer(container, buffer, imageRoots);
                 String text = line.replaceAll("^#+\\s*", "");
-                Label h = new Label(text);
-                h.setFont(Font.font("Segoe UI", FontWeight.BOLD, 16));
-                h.setTextFill(HEADER_COLOR);
+                TextFlow h = buildCellFlow(text, true);
                 h.setPadding(new javafx.geometry.Insets(8, 0, 2, 0));
                 container.getChildren().add(h);
                 continue;
             }
             // Horizontal rule
             if (line.trim().matches("^-{3,}$") || line.trim().matches("^\\*{3,}$")) {
-                flushBuffer(container, buffer);
+                flushBuffer(container, buffer, imageRoots);
                 container.getChildren().add(new javafx.scene.control.Separator());
                 continue;
             }
@@ -71,7 +73,7 @@ public class MarkdownRenderer {
                 }
                 Node table = buildTable(tableLines);
                 if (table != null) {
-                    flushBuffer(container, buffer);
+                    flushBuffer(container, buffer, imageRoots);
                     container.getChildren().add(table);
                     i = j - 1;
                     continue;
@@ -80,7 +82,7 @@ public class MarkdownRenderer {
 
             buffer.add(line);
         }
-        flushBuffer(container, buffer);
+        flushBuffer(container, buffer, imageRoots);
         return container;
     }
 
@@ -167,7 +169,7 @@ public class MarkdownRenderer {
         return flow;
     }
 
-    private static void flushBuffer(VBox container, List<String> buffer) {
+    private static void flushBuffer(VBox container, List<String> buffer, List<Path> imageRoots) {
         if (buffer.isEmpty()) return;
         String text = String.join("\n", buffer);
         buffer.clear();
@@ -181,7 +183,7 @@ public class MarkdownRenderer {
         while (img.find()) {
             String before = text.substring(last, img.start());
             if (!before.isBlank()) appendInline(flow, before);
-            appendImage(flow, img.group(1), img.group(2));
+            appendImage(flow, img.group(1), img.group(2), imageRoots);
             last = img.end();
         }
         if (last == 0) {
@@ -203,6 +205,30 @@ public class MarkdownRenderer {
 
     /** 解析一段纯文本中的 **bold** / `code` / 普通文本。 */
     private static void appendInline(TextFlow flow, String text) {
+        var links = Pattern.compile("(?<!!)\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)").matcher(text);
+        int end = 0;
+        boolean found = false;
+        while (links.find()) {
+            found = true;
+            appendStyled(flow, text.substring(end, links.start()));
+            String url = links.group(2);
+            String label = links.group(1).replace("**", "").replace("`", "");
+            if (yagen.waitmydawn.kb.service.AnswerSourceLinks.safeUrl(url)) {
+                var link = new javafx.scene.control.Hyperlink(label);
+                link.setPadding(javafx.geometry.Insets.EMPTY);
+                link.setOnAction(event -> {
+                    try { if (java.awt.Desktop.isDesktopSupported()) java.awt.Desktop.getDesktop().browse(URI.create(url)); }
+                    catch (Exception failure) { link.setTooltip(new javafx.scene.control.Tooltip("无法打开链接：" + url)); }
+                });
+                flow.getChildren().add(link);
+            } else appendStyled(flow, label);
+            end = links.end();
+        }
+        if (found) appendStyled(flow, text.substring(end));
+        else appendStyled(flow, text);
+    }
+
+    private static void appendStyled(TextFlow flow, String text) {
         // Simple inline parsing: **bold**, `code`, plain text
         Pattern inline = Pattern.compile("(\\*\\*(.+?)\\*\\*)|(`(.+?)`)|([^*`]+)");
         Matcher m = inline.matcher(text);
@@ -229,7 +255,7 @@ public class MarkdownRenderer {
     }
 
     /** 渲染 ![alt](path) 为内联缩略图；图片不存在时退化为灰色替代文本。 */
-    private static void appendImage(TextFlow flow, String alt, String rawPath) {
+    private static void appendImage(TextFlow flow, String alt, String rawPath, List<Path> imageRoots) {
         String path = rawPath.trim();
         if (path.startsWith("<") && path.endsWith(">")) {
             path = path.substring(1, path.length() - 1).trim();
@@ -250,7 +276,7 @@ public class MarkdownRenderer {
             file = new File(System.getProperty("user.dir"), path);
         }
 
-        if (file.exists() && file.isFile()) {
+        if (isAllowedImage(file.toPath(), imageRoots)) {
             try {
                 Image image = new Image(file.toURI().toString());
                 ImageView view = new ImageView(image);
@@ -272,6 +298,18 @@ public class MarkdownRenderer {
         fallback.setFont(Font.font("Segoe UI", 12));
         fallback.setFill(Color.web("#9ca3af"));
         flow.getChildren().add(fallback);
+    }
+
+    static boolean isAllowedImage(Path image, List<Path> roots) {
+        try {
+            Path actual = image.toRealPath();
+            String name = actual.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+            if (!name.matches(".*\\.(png|jpe?g|gif)")) return false;
+            if (!java.nio.file.Files.isRegularFile(actual) || java.nio.file.Files.size(actual) > 32L * 1024 * 1024)
+                return false;
+            for (Path root : roots) if (actual.startsWith(root.toRealPath())) return true;
+        } catch (Exception ignored) { }
+        return false;
     }
 
     /** 点击图片用系统默认程序打开原图。 */

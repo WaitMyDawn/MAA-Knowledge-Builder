@@ -24,6 +24,45 @@ public class RagAgentService {
 
     private final AppConfig config;
     private volatile ChatModel chatModel;
+    /** 评测裁判专用模型：temperature=0，尽量稳定复现判分。 */
+    private volatile ChatModel judgeModel;
+    private final ThreadLocal<UsageTrace> trace = ThreadLocal.withInitial(UsageTrace::new);
+
+    public static final class UsageTrace {
+        public int calls, inputTokens, outputTokens, unknownUsageCalls;
+        public long latencyMs;
+        UsageTrace copy() {
+            var copy = new UsageTrace(); copy.calls = calls; copy.inputTokens = inputTokens;
+            copy.outputTokens = outputTokens; copy.unknownUsageCalls = unknownUsageCalls; copy.latencyMs = latencyMs;
+            return copy;
+        }
+    }
+
+    public void beginTrace() { trace.set(new UsageTrace()); }
+    public UsageTrace usageTrace() { return trace.get().copy(); }
+    public void endTrace() { trace.remove(); }
+
+    private final dev.langchain4j.model.chat.listener.ChatModelListener usageListener = new dev.langchain4j.model.chat.listener.ChatModelListener() {
+        @Override public void onRequest(dev.langchain4j.model.chat.listener.ChatModelRequestContext context) {
+            trace.get().calls++;
+            context.attributes().put("mkbStart", System.nanoTime());
+        }
+        @Override public void onResponse(dev.langchain4j.model.chat.listener.ChatModelResponseContext context) {
+            var usage = context.chatResponse().tokenUsage();
+            var stats = trace.get();
+            if (usage == null || usage.inputTokenCount() == null || usage.outputTokenCount() == null) stats.unknownUsageCalls++;
+            else { stats.inputTokens += usage.inputTokenCount(); stats.outputTokens += usage.outputTokenCount(); }
+            complete(context.attributes());
+        }
+        @Override public void onError(dev.langchain4j.model.chat.listener.ChatModelErrorContext context) {
+            trace.get().unknownUsageCalls++;
+            complete(context.attributes());
+        }
+        private void complete(java.util.Map<Object, Object> attributes) {
+            Object start = attributes.get("mkbStart");
+            if (start instanceof Long nanos) trace.get().latencyMs += (System.nanoTime() - nanos) / 1_000_000;
+        }
+    };
 
     private static final String SYSTEM_PROMPT = """
             You are an expert Minecraft knowledge assistant.
@@ -51,15 +90,23 @@ public class RagAgentService {
 
     /** Ask LLM a raw question, return text. For helper callers. */
     public String rawAsk(String prompt) {
+        return rawAsk("generic", prompt);
+    }
+
+    /** 带调用方标签的原始 LLM 调用：记录耗时/token/结束原因，便于自动化评测定位。 */
+    public String rawAsk(String caller, String prompt) {
         ChatModel model = getModel();
         if (model == null) return null;
+        long t0 = System.nanoTime();
         try {
-            return model.chat(ChatRequest.builder()
+            ChatResponse response = model.chat(ChatRequest.builder()
                             .messages(UserMessage.from(prompt))
-                            .build())
-                    .aiMessage().text();
+                            .build());
+            logLlmCall(caller, t0, response);
+            return response.aiMessage().text();
         } catch (Exception e) {
-            log.debug("rawAsk failed: {}", e.getMessage());
+            log.warn("LLM[{}] rawAsk failed after {}ms: {}", caller,
+                    (System.nanoTime() - t0) / 1_000_000, e.getMessage());
             return null;
         }
     }
@@ -69,18 +116,63 @@ public class RagAgentService {
      * 供 QaMetrics 使用真实 Token 数据替换估算值。
      */
     public LlmResult askWithUsage(String prompt) {
+        return askWithUsage("generic", prompt);
+    }
+
+    /** 带调用方标签的 LLM 调用：返回文本 + 真实用量，并输出单次调用日志。 */
+    public LlmResult askWithUsage(String caller, String prompt) {
         ChatModel model = getModel();
         if (model == null) return null;
+        long t0 = System.nanoTime();
         try {
             ChatResponse response = model.chat(ChatRequest.builder()
                     .messages(UserMessage.from(prompt))
                     .build());
+            logLlmCall(caller, t0, response);
             return new LlmResult(response.aiMessage().text(), response.tokenUsage(),
                     response.finishReason() != null ? response.finishReason().name() : null);
         } catch (Exception e) {
-            log.debug("askWithUsage failed: {}", e.getMessage());
+            log.warn("LLM[{}] askWithUsage failed after {}ms: {}", caller,
+                    (System.nanoTime() - t0) / 1_000_000, e.getMessage());
             return null;
         }
+    }
+
+    /** 单次 LLM 调用的结构化摘要日志（评测/自动化依赖这一行做成本与失败定位）。 */
+    private static void logLlmCall(String caller, long startNanos, ChatResponse response) {
+        long ms = (System.nanoTime() - startNanos) / 1_000_000;
+        TokenUsage u = response.tokenUsage();
+        int in = u != null && u.inputTokenCount() != null ? u.inputTokenCount() : -1;
+        int out = u != null && u.outputTokenCount() != null ? u.outputTokenCount() : -1;
+        String finish = response.finishReason() != null ? response.finishReason().name() : "?";
+        log.info("LLM[{}] {}ms in={} out={} finish={}", caller, ms, in, out, finish);
+    }
+
+    /**
+     * 评测裁判模型（temperature=0、较小 maxTokens）。未配置 Key 时返回 null。
+     */
+    public ChatModel getJudgeModel() {
+        ChatModel model = judgeModel;
+        if (model == null) {
+            synchronized (this) {
+                model = judgeModel;
+                if (model == null) {
+                    String apiKey = config.getApiKey();
+                    if (apiKey == null || apiKey.isBlank()) return null;
+                    model = OpenAiChatModel.builder()
+                            .baseUrl("https://api.deepseek.com/v1")
+                            .apiKey(apiKey)
+                            .modelName("deepseek-chat")
+                            .timeout(Duration.ofSeconds(90))
+                            .maxTokens(1024)
+                            .temperature(0.0)
+                            .build();
+                    judgeModel = model;
+                    log.info("Judge model initialized (DeepSeek, temperature=0)");
+                }
+            }
+        }
+        return model;
     }
 
     /**
@@ -107,6 +199,7 @@ public class RagAgentService {
                         return null;
                     }
                     model = OpenAiChatModel.builder()
+                            .listeners(java.util.List.of(usageListener))
                             .baseUrl("https://api.deepseek.com/v1")
                             .apiKey(apiKey)
                             .modelName("deepseek-chat")

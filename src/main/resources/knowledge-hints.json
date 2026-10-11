@@ -1,0 +1,49 @@
+{
+  "relations": [
+    {
+      "modId": "alexscaves",
+      "kind": "prototype",
+      "aliases": [
+        "霸王龙",
+        "T-Rex",
+        "Tyrannosaurus Rex"
+      ],
+      "label": "撼地龙(Tremorsaurus)",
+      "url": "https://www.mcmod.cn/item/750369.html",
+      "evidence": "正文明确记录原型来自霸王龙；原型关系不等于正式同义名称。"
+    },
+    {
+      "modId": "irons_spellbooks",
+      "kind": "ambiguous_mechanism",
+      "aliases": [
+        "法术等级",
+        "法术级别"
+      ],
+      "label": "奥术铁砧(Arcane Anvil)",
+      "url": "https://www.mcmod.cn/item/699084.html",
+      "evidence": "卷轴等级解释的工作站来源；具体升级方法及版本条件从正文读取。"
+    },
+    {
+      "modId": "irons_spellbooks",
+      "kind": "ambiguous_mechanism",
+      "aliases": [
+        "法术等级",
+        "法术级别"
+      ],
+      "label": "法术强度(Spell Power)",
+      "url": "https://www.mcmod.cn/item/764056.html",
+      "evidence": "属性强度解释的来源；强度与卷轴等级分别说明，不把槽位扩容等同于升级。"
+    },
+    {
+      "modId": "minecraft",
+      "kind": "playing_guide",
+      "aliases": [
+        "末影龙",
+        "Ender Dragon"
+      ],
+      "label": "教程/打败末影龙",
+      "url": "https://wiki.biligame.com/mc/教程/打败末影龙",
+      "evidence": "中文 Minecraft Wiki 战斗教程，补充实体页面缺少的准备与分阶段操作；具体打法读取正文。"
+    }
+  ]
+}

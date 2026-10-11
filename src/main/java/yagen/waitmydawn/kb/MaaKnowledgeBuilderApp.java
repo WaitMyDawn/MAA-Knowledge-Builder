@@ -20,6 +20,7 @@ import yagen.waitmydawn.kb.agent.ClassifyAgent;
 import yagen.waitmydawn.kb.agent.EntityAgent;
 import yagen.waitmydawn.kb.agent.UrlAgent;
 import yagen.waitmydawn.kb.config.AppConfig;
+import yagen.waitmydawn.kb.config.DataDirLock;
 import yagen.waitmydawn.kb.dto.ClassificationResult;
 import yagen.waitmydawn.kb.dto.QaMetrics;
 import yagen.waitmydawn.kb.dto.RetrievalResult;
@@ -27,6 +28,7 @@ import yagen.waitmydawn.kb.model.*;
 import yagen.waitmydawn.kb.renderer.TemplateManager;
 import yagen.waitmydawn.kb.service.*;
 
+import javax.imageio.ImageIO;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,6 +41,11 @@ public class MaaKnowledgeBuilderApp extends Application {
     private static final Logger log = LoggerFactory.getLogger(MaaKnowledgeBuilderApp.class);
 
     private AppConfig config;
+    private final java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "knowledge-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
     private DatabaseBuilder db;
     private KnowledgeBuilder knowledgeBuilder;
     private RagAgentService ragAgent;
@@ -50,12 +57,18 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     // UI state
     private StackPane contentArea;
-    private VBox builderPage, qaPage, seedPage, settingsPage, metricsPage;
+    private VBox builderPage, qaPage, seedPage, settingsPage, metricsPage, knowledgePage, evaluationPage;
     private TextField folderField, apiKeyField, dataDirField;
     private TextArea builderLog, qaLog;
     private ListView<String> modListView;
     private VBox chatHistory;
-    private TextField questionField;
+    private TextArea questionField;
+    private Button cancelButton;
+    private volatile Thread activeWorker;
+    private Button askBtn;
+    /** QA 是否正在处理中：防止连点/回车造成并发 process() 共享 Agent 状态。 */
+    private volatile boolean qaInFlight;
+    private volatile boolean operationInFlight;
     private Label statusText;
     private ProgressBar progressBar;
     private List<ModEntry> scannedMods;
@@ -71,6 +84,8 @@ public class MaaKnowledgeBuilderApp extends Application {
     private MetricsHistoryService metricsHistoryService;
     private TextArea metricsDisplay;
     private RendererService rendererService;
+    /** dataDir 独占锁：防止 GUI 与 CLI/IDE 同时写同一个 H2 文件。 */
+    private DataDirLock dataDirLock;
 
     @Override
     public void init() {
@@ -90,11 +105,11 @@ public class MaaKnowledgeBuilderApp extends Application {
         // Init services now that data dir is set
         try {
             config.getDataDir(); // force NPE check
+            dataDirLock = DataDirLock.acquire(config.getDataDir());
             Files.createDirectories(config.getTexturesDir());
             Files.createDirectories(config.getGeneratedDir());
             db = new DatabaseBuilder(config);
             db.initDatabase();
-            knowledgeBuilder = new KnowledgeBuilder(config, db);
             ragAgent = new RagAgentService(config);
             embedder = new EmbeddingService(config);
             vectorStore = new VectorStore(db, embedder.getDimension());
@@ -104,6 +119,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                 savedModel = null;
             }
             embedder.initModel(savedModel);
+            knowledgeBuilder = new KnowledgeBuilder(config, db, embedder);
             // Create agents
             classifyAgent = new ClassifyAgent(ragAgent);
             entityAgent = new EntityAgent(ragAgent, db, embedder, vectorStore);
@@ -114,7 +130,8 @@ public class MaaKnowledgeBuilderApp extends Application {
             dbManager.scan();
             // Pipeline with agents
             qaPipeline = new QaPipeline(classifyAgent, entityAgent, urlAgent,
-                    answerAgent, ragAgent, vectorStore, embedder, db, dbManager);
+                    answerAgent, ragAgent, vectorStore, embedder, db, dbManager,
+                    config.getDataDir());
             metricsHistoryService = qaPipeline.getMetricsHistory();
             rendererService = new RendererService(config, db);
             entityResolver.rebuildFromDB(db);
@@ -132,6 +149,25 @@ public class MaaKnowledgeBuilderApp extends Application {
         }
 
         buildMainUI(stage);
+    }
+
+    @Override
+    public void stop() {
+        worker.shutdownNow();
+        boolean terminated = false;
+        try { terminated = worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        if (!terminated) {
+            log.warn("Background operation still stopping; resources retained until process exit");
+            return;
+        }
+        try { if (dbManager != null) dbManager.close(); }
+        catch (Exception e) { log.warn("Incremental database shutdown failed", e); }
+        try { if (db != null) db.shutdown(); }
+        catch (Exception e) { log.warn("Base database shutdown failed", e); }
+        try { if (embedder != null) embedder.close(); }
+        catch (Exception e) { log.warn("Embedding shutdown failed", e); }
+        if (dataDirLock != null) { dataDirLock.close(); dataDirLock = null; }
     }
 
     // =================== Setup Dialog ===================
@@ -158,7 +194,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         TextField dirField = new TextField(Path.of(System.getProperty("user.home"), "MAA-Knowledge-Builder").toString());
         dirField.setPrefWidth(400);
 
-        Button browse = new Button("Browse...");
+        Button browse = new Button("浏览…");
         browse.setOnAction(e -> {
             DirectoryChooser dc = new DirectoryChooser();
             dc.setTitle("Select Data Directory");
@@ -169,7 +205,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         HBox dirRow = new HBox(8, dirField, browse);
         dirRow.setAlignment(Pos.CENTER);
 
-        Button confirm = new Button("Start");
+        Button confirm = new Button("开始");
         confirm.setStyle("-fx-background-color: #6C63FF; -fx-text-fill: white; -fx-font-size: 14px; -fx-padding: 8 30;");
         confirm.setOnAction(e -> {
             Path p = Path.of(dirField.getText().trim());
@@ -201,27 +237,34 @@ public class MaaKnowledgeBuilderApp extends Application {
         seedPage = buildSeedPage(stage);
         metricsPage = buildMetricsPage();
         settingsPage = buildSettingsPage(stage);
+        knowledgePage = new yagen.waitmydawn.kb.ui.KnowledgeBrowser(db,worker);
+        evaluationPage = new yagen.waitmydawn.kb.ui.EvaluationBrowser(config.getDataDir());
 
         contentArea = new StackPane(builderPage); // default page
 
         // Status bar
-        statusText = new Label("Ready");
+        statusText = new Label("就绪");
         statusText.setFont(Font.font(12));
         progressBar = new ProgressBar(0);
         progressBar.setPrefWidth(120);
         progressBar.setVisible(false);
-        HBox statusBar = new HBox(8, statusText, progressBar);
+        progressBar.setManaged(false);
+        cancelButton=new Button("取消当前任务"); cancelButton.setDisable(true); cancelButton.getStyleClass().add("danger-button");
+        cancelButton.setOnAction(e->{ var running=activeWorker; if(running!=null) { cancelButton.setDisable(true); running.interrupt(); setStatus("正在取消，等待当前请求退出…",true); } });
+        var statusSpacer=new Region(); HBox.setHgrow(statusSpacer,Priority.ALWAYS);
+        HBox statusBar = new HBox(12, statusText, progressBar,statusSpacer,cancelButton);
         statusBar.setPadding(new Insets(4, 12, 4, 12));
         statusBar.setAlignment(Pos.CENTER_LEFT);
-        statusBar.setStyle("-fx-background-color: #f8f9fa; -fx-border-color: #dee2e6; -fx-border-width: 1 0 0 0;");
+        statusBar.getStyleClass().add("status-bar");
 
         BorderPane root = new BorderPane();
         root.setLeft(sidebar);
         root.setCenter(contentArea);
         root.setBottom(statusBar);
 
-        Scene scene = new Scene(root, 1000, 600);
-        root.setStyle("-fx-font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;");
+        Scene scene = new Scene(root, 1280, 800);
+        scene.getStylesheets().add(java.util.Objects.requireNonNull(getClass().getResource("/ui/workspace.css")).toExternalForm());
+        stage.setMinWidth(1060); stage.setMinHeight(680);
         stage.setTitle("MAA Knowledge Builder");
         stage.setScene(scene);
         stage.show();
@@ -232,27 +275,29 @@ public class MaaKnowledgeBuilderApp extends Application {
     private List<Button> navButtons = new java.util.ArrayList<>();
 
     private VBox buildSidebar(Stage stage) {
-        VBox sidebar = new VBox(0);
-        sidebar.setPrefWidth(220);
-        sidebar.setStyle("-fx-background-color: #2b2d42;");
+        VBox sidebar = new VBox(10);
+        sidebar.setPrefWidth(196);
+        sidebar.getStyleClass().add("sidebar");
 
         // Logo
-        Label logo = new Label("MAA  KB");
+        Label logo = new Label("MAA 知识库");
         logo.setFont(Font.font("Segoe UI", FontWeight.BOLD, 20));
         logo.setTextFill(Color.WHITE);
         logo.setPadding(new Insets(20, 16, 20, 16));
         logo.setMaxWidth(Double.MAX_VALUE);
-        logo.setStyle("-fx-background-color: #1e1f2e;");
+        logo.getStyleClass().add("sidebar-brand");
 
         // Nav items
-        VBox nav = new VBox(0);
+        VBox nav = new VBox(8);
         navButtons.clear();
 
-        navButtons.add(navItem("Builder", () -> switchPage(builderPage, 0)));
-        navButtons.add(navItem("Q&A", () -> switchPage(qaPage, 1)));
-        navButtons.add(navItem("Seed Mgr", () -> switchPage(seedPage, 2)));
-        navButtons.add(navItem("Metrics", () -> switchPage(metricsPage, 3)));
-        navButtons.add(navItem("Settings", () -> switchPage(settingsPage, 4)));
+        navButtons.add(navItem("构建知识库", () -> switchPage(builderPage, 0)));
+        navButtons.add(navItem("知识问答", () -> switchPage(qaPage, 1)));
+        navButtons.add(navItem("知识种子", () -> switchPage(seedPage, 2)));
+        navButtons.add(navItem("性能统计", () -> switchPage(metricsPage, 3)));
+        navButtons.add(navItem("设置", () -> switchPage(settingsPage, 4)));
+        navButtons.add(navItem("知识目录", () -> switchPage(knowledgePage, 5)));
+        navButtons.add(navItem("评测与复核", () -> switchPage(evaluationPage, 6)));
 
         nav.getChildren().addAll(navButtons);
         setActiveNav(0); // Default: Builder active
@@ -271,10 +316,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         for (int i = 0; i < navButtons.size(); i++) {
             Button btn = navButtons.get(i);
             boolean isActive = (i == activeIdx);
-            String bg = isActive ? "#6C63FF" : "transparent";
-            String border = isActive ? "-fx-border-width: 0 0 0 3; -fx-border-color: #a78bfa;" : "";
-            btn.setStyle("-fx-background-color: " + bg + "; -fx-text-fill: white; -fx-padding: 12 16; "
-                    + border + " -fx-cursor: hand;");
+            btn.pseudoClassStateChanged(javafx.css.PseudoClass.getPseudoClass("active"),isActive);
         }
     }
 
@@ -283,22 +325,9 @@ public class MaaKnowledgeBuilderApp extends Application {
         btn.setMaxWidth(Double.MAX_VALUE);
         btn.setAlignment(Pos.CENTER_LEFT);
         btn.setFont(Font.font("Segoe UI", 14));
-        btn.setStyle("-fx-background-color: transparent; -fx-text-fill: white; -fx-padding: 12 16; "
-                + "-fx-border-width: 0; -fx-cursor: hand;");
-        btn.setOnMouseEntered(e -> {
-            if (!isActiveNav(btn))
-                btn.setStyle("-fx-background-color: #3a3b50; -fx-text-fill: white; -fx-padding: 12 16; -fx-cursor: hand;");
-        });
-        btn.setOnMouseExited(e -> {
-            if (!isActiveNav(btn))
-                btn.setStyle("-fx-background-color: transparent; -fx-text-fill: white; -fx-padding: 12 16; -fx-border-width: 0; -fx-cursor: hand;");
-        });
+        btn.getStyleClass().add("nav-button");
         btn.setOnAction(e -> action.run());
         return btn;
-    }
-
-    private boolean isActiveNav(Button btn) {
-        return btn.getStyle().contains("#6C63FF");
     }
 
     // =================== Builder Page ===================
@@ -306,16 +335,16 @@ public class MaaKnowledgeBuilderApp extends Application {
     private VBox buildBuilderPage(Stage stage) {
         VBox page = new VBox(12);
         page.setPadding(new Insets(20));
-        page.setStyle("-fx-background-color: #f8f9fa;");
+        page.getStyleClass().add("workspace-page");
 
-        Label title = pageTitle("Knowledge Builder");
+        Label title = pageTitle("构建知识库");
 
         // Step 1: Folder
         folderField = new TextField();
-        folderField.setPromptText("Select your mods folder...");
+        folderField.setPromptText("选择包含模组 JAR 的目录…");
         folderField.setPrefWidth(400);
-        Button browseMods = new Button("Browse");
-        Button scanBtn = styledButton("Scan JARs", "#6C63FF");
+        Button browseMods = new Button("浏览");
+        Button scanBtn = styledButton("扫描 JAR", "#6C63FF");
         scanBtn.setOnAction(e -> onScan());
         browseMods.setOnAction(e -> {
             DirectoryChooser dc = new DirectoryChooser();
@@ -323,6 +352,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             if (f != null) folderField.setText(f.getAbsolutePath());
         });
         HBox folderRow = new HBox(8, folderField, browseMods, scanBtn);
+        HBox.setHgrow(folderField,Priority.ALWAYS);
         folderRow.setAlignment(Pos.CENTER_LEFT);
 
         // Step 2: Mod list
@@ -339,7 +369,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         });
 
         // Step 3: Build
-        Button buildBtn = styledButton("Build Knowledge Base", "#10b981");
+        Button buildBtn = styledButton("构建知识库", "#10b981");
         buildBtn.setFont(Font.font(14));
         buildBtn.setOnAction(e -> onBuild());
         HBox buildRow = new HBox(12, buildBtn);
@@ -353,12 +383,12 @@ public class MaaKnowledgeBuilderApp extends Application {
 
         SplitPane splitPane = new SplitPane();
         VBox topSection = new VBox(8,
-                card("Mod Folder", folderRow),
-                card("Detected Mods", modListView));
+                card("模组目录", folderRow),
+                card("已识别模组", modListView));
         VBox.setVgrow(modListView, Priority.ALWAYS);
         VBox bottomSection = new VBox(8,
-                card("Build", buildRow),
-                card("Log", builderLog));
+                card("开始构建", buildRow),
+                card("构建日志", builderLog));
         VBox.setVgrow(builderLog, Priority.ALWAYS);
         splitPane.setOrientation(javafx.geometry.Orientation.VERTICAL);
         splitPane.getItems().addAll(topSection, bottomSection);
@@ -371,6 +401,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     }
 
     private void onScan() {
+        if (busy()) return;
         String folderPath = folderField.getText().trim();
         if (folderPath.isEmpty()) {
             logText("Select a mod folder first.");
@@ -383,10 +414,12 @@ public class MaaKnowledgeBuilderApp extends Application {
         }
 
         logText("Scanning: " + folderPath);
-        setStatus("Scanning...", true);
+        setStatus("正在扫描 JAR…", true);
         modListView.getItems().clear();
+        operationInFlight = true;
 
-        new Thread(() -> {
+        submitOperation(() -> {
+            try {
             JarScannerService scanner = new JarScannerService();
             ModMetadataParser parser = new ModMetadataParser();
             ModrinthBinder binder = new ModrinthBinder();
@@ -394,12 +427,13 @@ public class MaaKnowledgeBuilderApp extends Application {
             java.util.List<ModEntry> entries = new java.util.ArrayList<>();
 
             for (Path jar : jars) {
+                if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("扫描已取消");
                 ModEntry modEntry = parser.parse(jar);
                 if (modEntry != null) {
                     // Don't search slug for vanilla or already-known
                     if (!"minecraft".equals(modEntry.getModId()) && !"vanilla".equals(modEntry.getLoader())) {
                         ModrinthBinder.BindResult bind = binder.bind(
-                                modEntry.getModId(),
+                                jar, modEntry.getModId(),
                                 modEntry.getDisplayName(),
                                 modEntry.getVersion(),
                                 modEntry.getMcVersion(),
@@ -409,10 +443,11 @@ public class MaaKnowledgeBuilderApp extends Application {
                             modEntry.setModrinthUrl(bind.modrinthUrl());
                             modEntry.setSource(bind.source());
                         } else if (bind != null) {
-                            modEntry.setSource(bind.source()); // "non-modrinth"
+                            modEntry.setSource(bind.source());
                         }
                     }
-                    db.saveModEntry(modEntry); // persist slug immediately
+                    ModrinthBinder.preserveKnownBinding(modEntry, db.findModEntry(modEntry.getModId()));
+                    db.saveModEntry(modEntry);
                     entries.add(modEntry);
                     ModEntry fe = modEntry;
                     Platform.runLater(() -> modListView.getItems().add(formatEntry(fe)));
@@ -425,9 +460,12 @@ public class MaaKnowledgeBuilderApp extends Application {
             List<ModEntry> fEntries = entries;
             Platform.runLater(() -> {
                 logText("Scanned " + fEntries.size() + " mods.");
-                setStatus("Ready", false);
+                setStatus("就绪", false);
             });
-        }, "mod-scan").start();
+            } catch (Exception ex) {
+                Platform.runLater(() -> showError("Scan failed: " + ex.getMessage()));
+            } finally { Platform.runLater(() -> { operationInFlight = false; setStatus("就绪", false); }); }
+        });
     }
 
     private String formatEntry(ModEntry e) {
@@ -438,41 +476,52 @@ public class MaaKnowledgeBuilderApp extends Application {
         if (e.getVersion() != null) sb.append(" v").append(e.getVersion());
         if (e.getMcVersion() != null) sb.append(" [MC ").append(e.getMcVersion()).append("]");
         if (e.getLoader() != null) sb.append(" (").append(e.getLoader()).append(")");
+        if ("modrinth-unavailable".equals(e.getSource())) sb.append("  [Modrinth 网络不可用，待重试]");
+        else if ("modrinth-no-match".equals(e.getSource())) sb.append("  [未找到精确版本匹配]");
         if (e.getSlug() != null) sb.append("  <<slug=").append(e.getSlug()).append(">>");
         else sb.append("  <<no slug - click to set>>");
         return sb.toString();
     }
 
     private void onBuild() {
+        if (busy()) return;
         String folderPath = folderField.getText().trim();
         if (folderPath.isEmpty() || !Files.isDirectory(Path.of(folderPath))) {
             logText("Select valid mod folder first.");
             return;
         }
         logText("Building knowledge base (JAR extraction + embed)...");
-        setStatus("Building...", true);
-        new Thread(() -> {
+        setStatus("正在构建知识库…", true);
+        operationInFlight = true;
+        submitOperation(() -> {
+            try {
             KnowledgeBuilder.BuildResult r = knowledgeBuilder.build(Path.of(folderPath),
                     (phase, cur, total, msg) -> Platform.runLater(() -> {
                         if (total > 0) progressBar.setProgress((double) cur / total);
                         logText("[" + phase + "] " + msg);
                     }));
             vectorStore = knowledgeBuilder.getVectorStore();
+            rendererService.clearCache();
             // Refresh agents after build (new mods + subWebPages in DB)
             entityAgent = new EntityAgent(ragAgent, db, embedder, vectorStore);
             UrlAgent newUrlAgent = new UrlAgent(ragAgent, db, embedder);
             qaPipeline = new QaPipeline(classifyAgent, entityAgent, newUrlAgent,
-                    answerAgent, ragAgent, vectorStore, embedder, db, dbManager);
+                    answerAgent, ragAgent, vectorStore, embedder, db, dbManager,
+                    config.getDataDir());
             metricsHistoryService = qaPipeline.getMetricsHistory();
+            if (currentSession != null) qaPipeline.restoreHistory(currentSession.messages);
             Platform.runLater(() -> {
                 logText("=== Complete ===");
                 logText("Mods: " + r.parsed + "  Textures: " + r.textures
                         + "  Recipes: " + r.recipes);
                 logText("Chunks: " + r.textChunks + "  Vectors: " + r.embeddings);
                 logText("Duration: " + (r.durationMs / 1000.0) + "s");
-                setStatus("Ready", false);
+                setStatus("就绪", false);
             });
-        }, "kb-build").start();
+            } catch (Exception ex) {
+                Platform.runLater(() -> { if(ex instanceof java.util.concurrent.CancellationException) logText("构建已取消，保留原基础知识库。"); else showError("构建失败，保留原基础知识库："+ex.getMessage()); });
+            } finally { Platform.runLater(() -> { operationInFlight = false; setStatus("就绪", false); }); }
+        });
     }
 
     // =================== QA Page ===================
@@ -481,7 +530,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     private VBox buildQAPage() {
         HBox page = new HBox(0);
-        page.setStyle("-fx-background-color: #f8f9fa;");
+        page.getStyleClass().add("workspace-page");
 
         // --- Left: History sidebar ---
         VBox historySidebar = new VBox(8);
@@ -493,19 +542,23 @@ public class MaaKnowledgeBuilderApp extends Application {
         qaDataDirLabel.setFont(Font.font(10));
         qaDataDirLabel.setTextFill(Color.web("#9ca3af"));
 
-        Button newChatBtn = styledButton("+ New Chat", "#6C63FF");
+        Button newChatBtn = styledButton("+ 新对话", "#6C63FF");
         newChatBtn.setMaxWidth(Double.MAX_VALUE);
         newChatBtn.setOnAction(e -> {
+            if (busy()) return;
+            dbManager.setCurrentSessionId(null);
             currentSession = null;
             chatHistory.getChildren().clear();
             qaPipeline.clearHistory();
             refreshSessionList(historySidebar);
         });
 
-        Button clearBtn = new Button("Clear All");
+        Button clearBtn = new Button("清空对话");
         clearBtn.setStyle("-fx-text-fill: #ef4444; -fx-background-color: transparent; -fx-font-size: 11px;");
         clearBtn.setOnAction(e -> {
+            if (busy()) return;
             try {
+                dbManager.close();
                 // Delete session JSON files
                 java.io.File[] files = config.getDataDir().resolve("sessions").toFile()
                         .listFiles(f2 -> f2.getName().endsWith(".json"));
@@ -521,6 +574,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                 log.warn("Clear failed", ex);
             }
             currentSession = null;
+            qaPipeline.clearHistory();
             chatHistory.getChildren().clear();
             refreshSessionList(historySidebar);
         });
@@ -537,14 +591,14 @@ public class MaaKnowledgeBuilderApp extends Application {
         ScrollPane dbScroll = new ScrollPane(dbCheckboxList);
         dbScroll.setFitToWidth(true);
         dbScroll.setPrefHeight(100);
-        Button refreshDbBtn = new Button("Refresh DBs");
+        Button refreshDbBtn = new Button("刷新知识库");
         refreshDbBtn.setFont(Font.font(10));
         refreshDbBtn.setStyle("-fx-background-color: transparent; -fx-text-fill: #6C63FF;");
         refreshDbBtn.setOnAction(ev -> refreshDBCheckboxes(dbCheckboxList));
 
         historySidebar.getChildren().addAll(qaDataDirLabel, newChatBtn, clearBtn,
-                new Separator(), new Label("Databases:"), dbScroll, refreshDbBtn,
-                new Separator(), new Label("History:"), sessionScroll);
+                new Separator(), new Label("检索数据库："), dbScroll, refreshDbBtn,
+                new Separator(), new Label("最近对话："), sessionScroll);
 
         // --- Right: Chat area ---
         VBox chatArea = new VBox(12);
@@ -557,36 +611,36 @@ public class MaaKnowledgeBuilderApp extends Application {
         chatScroll.setPrefHeight(440);
         chatScroll.setStyle("-fx-background: #ffffff; -fx-border-color: #e5e7eb; -fx-border-radius: 8;");
 
-        questionField = new TextField();
-        questionField.setPromptText("Ask about Minecraft recipes, structures, mechanics...");
+        questionField = new TextArea();
+        questionField.setWrapText(true); questionField.setPrefRowCount(2); questionField.setMaxHeight(100);
+        questionField.setPromptText("询问模组、生物、配方或机制 · Ctrl + Enter 发送");
         questionField.setPrefWidth(500);
-        questionField.setOnAction(e -> onAsk());
-        Button askBtn = styledButton("Ask", "#6C63FF");
+        questionField.setOnKeyPressed(e -> { if(e.isControlDown() && e.getCode()==javafx.scene.input.KeyCode.ENTER) { onAsk(); e.consume(); } });
+        askBtn = styledButton("发送", "#6C63FF");
         askBtn.setOnAction(e -> onAsk());
         HBox inputRow = new HBox(8, questionField, askBtn);
+        HBox.setHgrow(questionField,Priority.ALWAYS); inputRow.setAlignment(Pos.BOTTOM_CENTER);
 
         qaLog = new TextArea();
         qaLog.setEditable(false);
         qaLog.setPrefRowCount(3);
         qaLog.setStyle("-fx-font-family: 'Consolas'; -fx-font-size: 11px;");
 
-        SplitPane qaSplit = new SplitPane();
-        qaSplit.setOrientation(javafx.geometry.Orientation.VERTICAL);
         VBox chatSection = new VBox(4, chatScroll, inputRow);
         VBox.setVgrow(chatScroll, Priority.ALWAYS);
-        VBox detailSection = new VBox(4, card("Details", qaLog));
-        qaSplit.getItems().addAll(chatSection, detailSection);
-        qaSplit.setDividerPositions(0.8);
-        VBox.setVgrow(qaSplit, Priority.ALWAYS);
+        var detailSection = new TitledPane("检索与性能详情",qaLog); detailSection.setExpanded(false);
+        VBox qaLayout = new VBox(12,chatSection,detailSection); VBox.setVgrow(chatSection,Priority.ALWAYS);
 
-        chatArea.getChildren().addAll(pageTitle("MC Knowledge Q&A"), qaSplit);
-        VBox.setVgrow(qaSplit, Priority.ALWAYS);
+        chatArea.getChildren().addAll(pageTitle("知识问答"), qaLayout);
+        VBox.setVgrow(qaLayout, Priority.ALWAYS);
         HBox.setHgrow(chatArea, Priority.ALWAYS);
 
         page.getChildren().addAll(historySidebar, chatArea);
         refreshSessionList(historySidebar);
+        refreshDBCheckboxes(dbCheckboxList);
 
         VBox wrapper = new VBox(page);
+        VBox.setVgrow(page,Priority.ALWAYS);
         return wrapper;
     }
 
@@ -608,11 +662,15 @@ public class MaaKnowledgeBuilderApp extends Application {
                 delBtn.setFont(Font.font(9));
                 delBtn.setStyle("-fx-text-fill: #ef4444; -fx-background-color: transparent; -fx-padding: 0 4;");
                 delBtn.setOnAction(ev -> {
+                    if (busy()) return;
                     try {
                         Files.deleteIfExists(
                                 config.getDataDir().resolve("sessions").resolve(sess.sessionId + ".json"));
                         // Also delete associated incremental DB from sessions/incremental/
-                        dbManager.deleteBySessionId(sess.sessionId);
+                        if (!dbManager.deleteBySessionId(sess.sessionId)) throw new IllegalStateException("Incremental database deletion failed");
+                        if (currentSession != null && currentSession.sessionId.equals(sess.sessionId)) {
+                            currentSession = null; qaPipeline.clearHistory(); chatHistory.getChildren().clear();
+                        }
                     } catch (Exception ignored) {
                     }
                     refreshSessionList(historySidebar);
@@ -632,6 +690,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     }
 
     private void loadSession(ChatHistoryService.ChatSession sess) {
+        if (busy()) return;
         currentSession = sess;
         // Switch incremental DB for this session
         dbManager.setCurrentSessionId(sess.sessionId);
@@ -640,7 +699,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             incDb = dbManager.createIncrementalDB(sess.sessionId, embedder.getDimension());
         }
         qaPipeline.setIncrementalDB(incDb);
-        qaPipeline.clearHistory();  // Reset conversation context for new session
+        qaPipeline.restoreHistory(sess.messages);
         refreshDBCheckboxes(dbCheckboxList);
 
         chatHistory.getChildren().clear();
@@ -654,9 +713,14 @@ public class MaaKnowledgeBuilderApp extends Application {
     private void onAsk() {
         String q = questionField.getText().trim();
         if (q.isEmpty()) return;
+        // 单会话管道非线程安全：上一问未结束时忽略重复提交（批次 A 修复）。
+        if (busy()) return;
+        qaInFlight = true;
+        questionField.setDisable(true);
+        askBtn.setDisable(true);
         questionField.clear();
         addChatBubble("You", q, "#e8f0fe");
-        setStatus("Thinking...", true);
+        setStatus("正在检索与生成回答…", true);
 
         // Init session if needed
         if (currentSession == null) {
@@ -668,10 +732,12 @@ public class MaaKnowledgeBuilderApp extends Application {
             refreshDBCheckboxes(dbCheckboxList);
         }
         chatHistoryService.addMessage(currentSession, "user", q);
+        final var submittedSession = currentSession;
+        final var submittedPipeline = qaPipeline;
 
-        new Thread(() -> {
+        submitOperation(() -> {
             try {
-                QaPipeline.QaResult result = qaPipeline.process(q);
+                QaPipeline.QaResult result = submittedPipeline.process(q);
 
                 // Render recipe images on demand (skip if already exists)
                 final Map<String, String> recipeImages;
@@ -680,7 +746,22 @@ public class MaaKnowledgeBuilderApp extends Application {
                     recipeImages = rendererService.renderRecipes(result.recipesToRender);
                     for (String p : recipeImages.values()) {
                         java.io.File f = new java.io.File(p);
-                        if (f.exists() && f.length() > 2000) imagePaths.add(p);
+                        // 不再用字节大小粗筛（合法小图如 1KB 熔炉图会被误丢），
+                        // 改为校验文件存在且可被解码为图片（2026-09-07 修复）。
+                        boolean valid = f.exists() && f.length() > 0;
+                        if (valid) {
+                            try (var in = new java.io.FileInputStream(f)) {
+                                valid = ImageIO.read(in) != null;
+                            } catch (Exception ex) {
+                                valid = false;
+                            }
+                        }
+                        if (valid) {
+                            imagePaths.add(p);
+                        } else {
+                            log.warn("Recipe image invalid or unreadable, skipping: {} ({} bytes)",
+                                    p, f.exists() ? f.length() : 0);
+                        }
                     }
                 } else {
                     recipeImages = Map.of();
@@ -691,8 +772,9 @@ public class MaaKnowledgeBuilderApp extends Application {
                 if (!recipeImages.isEmpty()) {
                     StringBuilder imgs = new StringBuilder("\n\n## 配方图\n\n");
                     for (var e : recipeImages.entrySet()) {
-                        String name = e.getKey().contains(":")
-                                ? e.getKey().substring(e.getKey().indexOf(':') + 1) : e.getKey();
+                        String outputLabel = e.getKey().split("#", 2)[0];
+                        String name = outputLabel.contains(":")
+                                ? outputLabel.substring(outputLabel.indexOf(':') + 1) : outputLabel;
                         imgs.append("![recipe:").append(name).append("](")
                                 .append(e.getValue().replace('\\', '/')).append(")\n\n");
                     }
@@ -703,29 +785,36 @@ public class MaaKnowledgeBuilderApp extends Application {
 
                 Platform.runLater(() -> {
                     addChatBubble("MAA", answerWithImages, "#f0fdf4");
+                    appendEvidence(result);
                     if (result.metrics != null) {
                         log.info("QA Metrics: total={}ms answers={} imgs={}",
                                 result.metrics.totalTimeMs, result.metrics.answerLength,
                                 imagePaths.size());
                     }
-                    chatHistoryService.addMessage(currentSession, "maa", answerWithImages);
+                    chatHistoryService.addMessage(submittedSession, "maa", answerWithImages);
                     try {
-                        chatHistoryService.save(currentSession);
+                        chatHistoryService.save(submittedSession);
                     } catch (Exception ignored) {}
-                    setStatus("Ready", false);
+                    setStatus("就绪", false);
+                    qaInFlight = false;
+                    questionField.setDisable(false);
+                    askBtn.setDisable(false);
                 });
             } catch (Exception ex) {
                 Platform.runLater(() -> {
-                    addChatBubble("Error", ex.getMessage(), "#fee2e2");
-                    setStatus("Error", false);
+                    addChatBubble("失败", ex.getMessage(), "#fee2e2");
+                    setStatus("失败", false);
+                    qaInFlight = false;
+                    questionField.setDisable(false);
+                    askBtn.setDisable(false);
                 });
             }
-        }, "qa").start();
+        });
     }
 
     private void addChatBubble(String sender, String msg, String bg) {
         VBox b = new VBox(4);
-        b.setStyle("-fx-background-color: " + bg + "; -fx-padding: 10; -fx-background-radius: 8; -fx-max-width: 850;");
+        b.getStyleClass().add("You".equals(sender)?"chat-user":"chat-assistant");
 
         // Header row
         HBox header = new HBox(8);
@@ -743,7 +832,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             b.getChildren().addAll(header, m);
         } else {
             // Copy button for MAA responses
-            Button copyBtn = new Button("Copy");
+            Button copyBtn = new Button("复制");
             copyBtn.setFont(Font.font(10));
             copyBtn.setStyle("-fx-text-fill: #6b7280; -fx-background-color: #e5e7eb; -fx-padding: 2 6; -fx-background-radius: 3;");
             String raw = msg;
@@ -751,18 +840,14 @@ public class MaaKnowledgeBuilderApp extends Application {
                 javafx.scene.input.Clipboard.getSystemClipboard()
                         .setContent(Map.of(javafx.scene.input.DataFormat.PLAIN_TEXT, raw));
                 copyBtn.setText("Copied!");
-                new Thread(() -> {
-                    try {
-                        Thread.sleep(1500);
-                    } catch (Exception ignored) {
-                    }
-                    Platform.runLater(() -> copyBtn.setText("Copy"));
-                }).start();
+                var delay = new javafx.animation.PauseTransition(javafx.util.Duration.seconds(1.5));
+                delay.setOnFinished(event -> copyBtn.setText("复制"));
+                delay.play();
             });
             header.getChildren().add(copyBtn);
 
             b.getChildren().add(header);
-            b.getChildren().add(yagen.waitmydawn.kb.ui.MarkdownRenderer.render(msg));
+            b.getChildren().add(yagen.waitmydawn.kb.ui.MarkdownRenderer.render(msg, java.util.List.of(config.getGeneratedDir())));
         }
         chatHistory.getChildren().add(b);
     }
@@ -772,17 +857,17 @@ public class MaaKnowledgeBuilderApp extends Application {
     private VBox buildSeedPage(Stage stage) {
         VBox page = new VBox(12);
         page.setPadding(new Insets(20));
-        page.setStyle("-fx-background-color: #f8f9fa;");
+        page.getStyleClass().add("workspace-page");
 
         // Export
-        Label exportTitle = pageTitle("Export Training Seed");
+        Label exportTitle = pageTitle("导出知识种子");
         TextField nameF = new TextField();
-        nameF.setPromptText("Knowledge base name");
+        nameF.setPromptText("知识库名称");
         nameF.setPrefWidth(350);
         TextField descF = new TextField();
-        descF.setPromptText("Description");
+        descF.setPromptText("描述");
         descF.setPrefWidth(350);
-        Button exportBtn = styledButton("Export .maa-seed.json", "#10b981");
+        Button exportBtn = styledButton("导出知识种子", "#10b981");
         exportBtn.setOnAction(e -> {
             FileChooser fc = new FileChooser();
             fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("MAA Seed", "*.maa-seed.json"));
@@ -797,18 +882,18 @@ public class MaaKnowledgeBuilderApp extends Application {
                 }
             }
         });
-        VBox exportCard = card("Export", new VBox(8,
-                new HBox(8, new Label("Name:"), nameF),
-                new HBox(8, new Label("Desc:"), descF),
+        VBox exportCard = card("导出", new VBox(8,
+                new HBox(8, new Label("名称："), nameF),
+                new HBox(8, new Label("描述："), descF),
                 exportBtn));
 
         // Import
-        Label importTitle = pageTitle("Import Training Seed");
+        Label importTitle = pageTitle("导入知识种子");
         HBox importRow = new HBox(8);
         TextField seedFile = new TextField();
-        seedFile.setPromptText("Select .maa-seed.json...");
+        seedFile.setPromptText("选择 .maa-seed.json 文件…");
         seedFile.setPrefWidth(350);
-        Button browseSeed = new Button("Browse...");
+        Button browseSeed = new Button("浏览…");
         browseSeed.setOnAction(e -> {
             FileChooser fc = new FileChooser();
             fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("MAA Seed", "*.maa-seed.json"));
@@ -817,7 +902,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         });
         importRow.getChildren().addAll(seedFile, browseSeed);
 
-        Button importBtn = styledButton("Import & Match", "#6C63FF");
+        Button importBtn = styledButton("导入与匹配", "#6C63FF");
         TextArea importResult = new TextArea();
         importResult.setEditable(false);
         importResult.setPrefRowCount(8);
@@ -841,7 +926,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                 importResult.setText("Error: " + ex.getMessage());
             }
         });
-        VBox importCard = card("Import", new VBox(8, importRow, importBtn, importResult));
+        VBox importCard = card("导入", new VBox(8, importRow, importBtn, importResult));
 
         page.getChildren().addAll(exportTitle, exportCard, importTitle, importCard);
         return page;
@@ -859,12 +944,12 @@ public class MaaKnowledgeBuilderApp extends Application {
     private VBox buildMetricsPage() {
         VBox page = new VBox(12);
         page.setPadding(new Insets(20));
-        page.setStyle("-fx-background-color: #f8f9fa;");
+        page.getStyleClass().add("workspace-page");
 
-        Label title = pageTitle("Metrics Dashboard");
+        Label title = pageTitle("性能统计");
 
         // --- Filter row ---
-        Label filterLabel = new Label("Filter:");
+        Label filterLabel = new Label("筛选：");
         filterLabel.setFont(Font.font(13));
 
         metricsFilterMode = new ComboBox<>();
@@ -888,10 +973,10 @@ public class MaaKnowledgeBuilderApp extends Application {
             if (!val.matches("\\d*")) metricsFilterValue.setText(val.replaceAll("[^\\d]", ""));
         });
 
-        Button refreshBtn = styledButton("Refresh", "#6C63FF");
+        Button refreshBtn = styledButton("刷新", "#6C63FF");
         refreshBtn.setOnAction(e -> refreshMetricsDisplay());
 
-        Button exportCsvBtn = new Button("Export CSV");
+        Button exportCsvBtn = new Button("导出 CSV");
         exportCsvBtn.setStyle("-fx-text-fill: #6C63FF; -fx-background-color: transparent;");
         exportCsvBtn.setOnAction(e -> exportMetricsCsv());
 
@@ -913,7 +998,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                 metricCard("Avg Latency", cardLatency, "#ef4444")
         );
 
-        VBox quickSection = card("Overview (Filtered)", quickCards);
+        VBox quickSection = card("当前筛选范围概览", quickCards);
 
         // --- Detailed report ---
         metricsDisplay = new TextArea();
@@ -924,7 +1009,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         VBox.setVgrow(metricsDisplay, Priority.ALWAYS);
 
         page.getChildren().addAll(title, filterRow, quickSection,
-                card("Detailed Metrics", metricsDisplay));
+                card("指标明细", metricsDisplay));
 
         // Initial load
         refreshMetricsDisplay();
@@ -1065,33 +1150,26 @@ public class MaaKnowledgeBuilderApp extends Application {
     private VBox buildSettingsPage(Stage stage) {
         VBox page = new VBox(12);
         page.setPadding(new Insets(20));
-        page.setStyle("-fx-background-color: #f8f9fa;");
+        page.getStyleClass().add("workspace-page");
 
         // Data Directory
-        Label dirTitle = pageTitle("Data Directory");
+        Label dirTitle = pageTitle("数据目录");
         dataDirField = new TextField(config.getDataDir().toString());
         dataDirField.setPrefWidth(400);
-        Button changeDir = new Button("Change...");
+        Button changeDir = new Button("更换…");
         changeDir.setOnAction(e -> {
+            if (busy()) return;
             DirectoryChooser dc = new DirectoryChooser();
             dc.setTitle("Select New Data Directory");
             File f = dc.showDialog(stage);
             if (f != null) {
                 Path newDir = Path.of(f.getAbsolutePath());
-                // Move or just switch? For simplicity, switch and warn
-                config.setDataDir(newDir);
-                dataDirField.setText(newDir.toString());
-                // Re-init DB
-                db = new DatabaseBuilder(config);
-                db.initDatabase();
-                knowledgeBuilder = new KnowledgeBuilder(config, db);
-                seedExport = new SeedExportService(db);
-                seedImport = new SeedImportService(db);
-                logText("Data directory changed to: " + newDir);
+                config.setDataDirForNextLaunch(newDir);
+                showError("数据目录已保存，下次启动生效。请重启应用。");
             }
         });
         HBox dirRow = new HBox(8, dataDirField, changeDir);
-        VBox dirCard = card("Storage Location", dirRow);
+        VBox dirCard = card("存储位置", dirRow);
         Label dirNote = new Label("All data (database, textures, generated images) is stored in this folder. "
                 + "You can move this folder to another computer.");
         dirNote.setWrapText(true);
@@ -1099,12 +1177,12 @@ public class MaaKnowledgeBuilderApp extends Application {
         dirNote.setTextFill(Color.web("#6b7280"));
 
         // Author
-        Label authorTitle = pageTitle("Profile");
+        Label authorTitle = pageTitle("个人信息");
         TextField authorField = new TextField(config.getUsername());
         authorField.setPrefWidth(200);
         authorField.textProperty().addListener((o, old, val) -> config.setUsername(val));
-        HBox authorRow = new HBox(8, new Label("Username:"), authorField);
-        VBox authorCard = card("Author Name", authorRow);
+        HBox authorRow = new HBox(8, new Label("署名："), authorField);
+        VBox authorCard = card("种子作者", authorRow);
 
         // API Key
         Label apiTitle = pageTitle("API Key");
@@ -1114,7 +1192,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         if (config.getApiKey() != null) apiKeyField.setText(config.getApiKey());
         apiKeyField.textProperty().addListener((o, old, val) -> config.setApiKey(val));
         HBox apiRow = new HBox(8, new Label("DeepSeek Key:"), apiKeyField);
-        VBox apiCard = card("LLM Configuration", apiRow);
+        VBox apiCard = card("模型连接", apiRow);
         Label apiNote = new Label("API key is stored in %USERPROFILE%/.maa_kb/settings.properties. "
                 + "Without a key, the Q&A will use offline mode showing raw retrieval results.");
         apiNote.setWrapText(true);
@@ -1122,7 +1200,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         apiNote.setTextFill(Color.web("#6b7280"));
 
         // Embedding model selector
-        Label embedLabel = pageTitle("Embedding Model");
+        Label embedLabel = pageTitle("本地向量模型");
         ComboBox<String> modelCombo = new ComboBox<>();
         modelCombo.setPrefWidth(400);
         Map<String, String> models = embedder.listModels();
@@ -1144,6 +1222,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
         Button applyModelBtn = styledButton("Apply Model", "#6C63FF");
         applyModelBtn.setOnAction(e -> {
+            if (busy()) return;
             String selected = modelCombo.getValue();
             if (selected == null) return;
             config.setEmbeddingModelName(selected);
@@ -1152,8 +1231,8 @@ public class MaaKnowledgeBuilderApp extends Application {
             if (selected.equals(loaded)) {
                 status = "Applied: " + loaded + " (will take effect on next Build)";
                 modelStatus.setTextFill(Color.web("#10b981"));
-            } else if ("none".equals(loaded)) {
-                status = "Using: n-gram TF-IDF (place model files in models/ folder first)";
+            } else if ("hash-ngram-v2".equals(loaded)) {
+                status = "Using: stable hash n-gram (place model files in models/ folder first)";
                 modelStatus.setTextFill(Color.web("#f59e0b"));
             } else {
                 status = "Active: " + loaded;
@@ -1164,7 +1243,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         // Show current status on page load
         updateModelStatus(modelStatus, modelCombo);
 
-        VBox embedCard = card("Vectorization",
+        VBox embedCard = card("向量化设置",
                 new VBox(6,
                         new Label("ONNX model: all-MiniLM-L6-v2 (bundled, 384-dim)"),
                         new HBox(8, modelCombo, applyModelBtn), modelStatus));
@@ -1177,7 +1256,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     private Label pageTitle(String text) {
         Label l = new Label(text);
-        l.setFont(Font.font("Segoe UI", FontWeight.BOLD, 18));
+        l.getStyleClass().add("page-title");
         l.setTextFill(Color.web("#1f2937"));
         l.setPadding(new Insets(0, 0, 4, 0));
         return l;
@@ -1185,10 +1264,9 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     private VBox card(String title, javafx.scene.Node content) {
         VBox card = new VBox(8);
-        card.setStyle("-fx-background-color: #ffffff; -fx-border-color: #e5e7eb; -fx-border-radius: 8; "
-                + "-fx-background-radius: 8; -fx-padding: 14;");
-        card.setEffect(new javafx.scene.effect.DropShadow(2, 2, 2, Color.web("#00000018")));
+        card.getStyleClass().add("card");
         Label t = new Label(title);
+        t.getStyleClass().add("card-title");
         t.setFont(Font.font("Segoe UI", FontWeight.BOLD, 13));
         t.setTextFill(Color.web("#374151"));
         card.getChildren().addAll(t, content);
@@ -1197,24 +1275,50 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     private Button styledButton(String text, String color) {
         Button b = new Button(text);
-        b.setStyle("-fx-background-color: " + color + "; -fx-text-fill: white; -fx-padding: 8 16; "
-                + "-fx-background-radius: 6; -fx-cursor: hand; -fx-font-size: 13px;");
+        b.getStyleClass().add("#10b981".equals(color)?"success-button":"primary-button");
         return b;
+    }
+
+    private void submitOperation(Runnable operation) {
+        worker.submit(()->{
+            activeWorker=Thread.currentThread();
+            Platform.runLater(()->cancelButton.setDisable(false));
+            try { operation.run(); }
+            finally { activeWorker=null; Thread.interrupted(); Platform.runLater(()->cancelButton.setDisable(true)); }
+        });
+    }
+
+    private void appendEvidence(QaPipeline.QaResult result) {
+        StringBuilder text=new StringBuilder();
+        if(result.catalogEvidence!=null) text.append(result.catalogEvidence).append("\n\n");
+        result.subPageUrls.forEach((label,url)->text.append(label).append("\n").append(url).append("\n\n"));
+        if(result.metrics!=null) text.append(result.metrics.toUiSummary());
+        var detail=new TextArea(text.toString()); detail.setEditable(false); detail.setWrapText(true); detail.setPrefRowCount(8);
+        var evidence=new TitledPane("来源、覆盖范围与性能",detail); evidence.setExpanded(false);
+        chatHistory.getChildren().add(evidence);
     }
 
     private void logText(String msg) {
         builderLog.appendText(msg + "\n");
     }
 
+    private boolean busy() {
+        if (!qaInFlight && !operationInFlight) return false;
+        setStatus("请等待当前任务完成", true);
+        return true;
+    }
+
     private void setStatus(String msg, boolean showProgress) {
         statusText.setText(msg);
         progressBar.setVisible(showProgress);
+        progressBar.setManaged(showProgress);
+        if(showProgress && progressBar.getProgress()==0) progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         if (!showProgress) progressBar.setProgress(0);
     }
 
     private void showError(String msg) {
         Alert a = new Alert(Alert.AlertType.ERROR);
-        a.setTitle("Error");
+        a.setTitle("失败");
         a.setHeaderText(null);
         a.setContentText(msg);
         a.showAndWait();
@@ -1243,7 +1347,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         slugField.setPrefWidth(350);
         root.getChildren().add(new HBox(8, new Label("Slug:"), slugField));
 
-        Button openModrinth = new Button("Open Modrinth Page");
+        Button openModrinth = new Button("打开 Modrinth 页面");
         openModrinth.setStyle("-fx-text-fill: #6C63FF; -fx-background-color: transparent;");
         openModrinth.setOnAction(ev -> {
             String slug = slugField.getText().trim();
@@ -1257,7 +1361,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         root.getChildren().add(openModrinth);
 
         HBox btns = new HBox(8);
-        Button save = styledButton("Save", "#10b981");
+        Button save = styledButton("保存", "#10b981");
         save.setOnAction(ev -> {
             String newSlug = slugField.getText().trim();
             entry.setSlug(newSlug.isEmpty() ? null : newSlug);
@@ -1271,7 +1375,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             if (idx >= 0) modListView.getItems().set(idx, formatEntry(entry));
             d.close();
         });
-        Button cancel = new Button("Cancel");
+        Button cancel = new Button("取消");
         cancel.setOnAction(ev -> d.close());
         btns.getChildren().addAll(save, cancel);
         root.getChildren().add(btns);
@@ -1298,16 +1402,18 @@ public class MaaKnowledgeBuilderApp extends Application {
                     + (info.isBase() ? " [base]" : "");
             CheckBox cb = new CheckBox(label);
             cb.setSelected(info.enabled());
-            cb.setFont(Font.font(10));
+            cb.setFont(Font.font(12));
             cb.setOnAction(ev -> {
+                if (busy()) { cb.setSelected(info.enabled()); return; }
                 dbManager.setEnabled(info.filename(), cb.isSelected());
             });
             // Add delete button for non-base DBs
             if (!info.isBase()) {
-                Button delBtn = new Button("Del");
+                Button delBtn = new Button("删除");
                 delBtn.setFont(Font.font(9));
                 delBtn.setStyle("-fx-text-fill: #ef4444; -fx-background-color: transparent; -fx-padding: 0 4;");
                 delBtn.setOnAction(ev -> {
+                    if (busy()) return;
                     dbManager.delete(info.filename());
                     refreshDBCheckboxes(list);
                 });
@@ -1333,6 +1439,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     }
 
     public static void main(String[] args) {
+        yagen.waitmydawn.kb.config.NetworkBootstrap.configure();
         // Check for headless mode before launching JavaFX
         boolean headless = false;
         for (String arg : args) {

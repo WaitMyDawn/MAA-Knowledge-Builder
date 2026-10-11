@@ -14,6 +14,7 @@ public enum QuestionType {
     DIM("维度"),
     MECHANISM("游戏机制"),
     PLAYING("游戏玩法"),
+    ENUMERATE("枚举"),
     GENERAL("其他");
 
     private final String name;

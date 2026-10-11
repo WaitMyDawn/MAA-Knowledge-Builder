@@ -30,13 +30,38 @@ public class AutoTestService {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     private final QaPipeline pipeline;
+    private final ChatHistoryService chatHistory;
+    private final MultiDBManager dbManager;
+    private final int embeddingDim;
+    private final boolean sessionEnabled;
 
     public AutoTestService(QaPipeline pipeline) {
-        this.pipeline = pipeline;
+        this(pipeline, null, null, 0);
     }
 
-    /** Run all conversations from a test file */
+    /**
+     * @param sessionEnabled 由 chatHistory/dbManager 非空决定：为 true 时每个对话
+     *                       模拟一个 GUI 新会话（写 sessions/*.json 并建会话增量库）。
+     */
+    public AutoTestService(QaPipeline pipeline, ChatHistoryService chatHistory,
+                           MultiDBManager dbManager, int embeddingDim) {
+        this.pipeline = pipeline;
+        this.chatHistory = chatHistory;
+        this.dbManager = dbManager;
+        this.embeddingDim = embeddingDim;
+        this.sessionEnabled = chatHistory != null && dbManager != null && embeddingDim > 0;
+    }
+
+    /** Run all conversations from a test file (kept for backward compatibility). */
     public TestReport runFromFile(Path testFile) throws IOException {
+        return runFromFile(testFile, null);
+    }
+
+    /**
+     * Run conversations from a test file, optionally restricted to 1-based dialogue indexes
+     * (e.g. {4,5} runs the 4th and 5th conversations only). null/empty set means all.
+     */
+    public TestReport runFromFile(Path testFile, Set<Integer> dialogueIndexes) throws IOException {
         @SuppressWarnings("unchecked")
         Map<String, Object> config = mapper.readValue(testFile.toFile(), Map.class);
 
@@ -45,16 +70,37 @@ public class AutoTestService {
         if (conversations == null || conversations.isEmpty()) {
             throw new IllegalArgumentException("Test file must contain a 'conversations' array");
         }
+        boolean restrictDialogues = dialogueIndexes != null && !dialogueIndexes.isEmpty();
 
         TestReport report = new TestReport();
         report.testFile = testFile.getFileName().toString();
         report.startTime = Instant.now();
 
+        int convIdx = 0;
         for (Map<String, Object> conv : conversations) {
+            convIdx++;
             String name = (String) conv.get("name");
             @SuppressWarnings("unchecked")
             List<String> turns = (List<String>) conv.get("turns");
             if (turns == null || turns.isEmpty()) continue;
+            if (restrictDialogues && !dialogueIndexes.contains(convIdx)) {
+                log.info("=== Skipping dialogue #{}: {} (not in --dialogue {}) ===",
+                        convIdx, name, dialogueIndexes);
+                continue;
+            }
+
+            // 模拟 GUI 新会话：会话 JSON + 独立增量库，问答后逐条落盘
+            ChatHistoryService.ChatSession session = null;
+            IncrementalDB incDb = null;
+            if (sessionEnabled) {
+                session = chatHistory.newSession("AutoTest: " + name, chatHistory.getCacheDir());
+                incDb = dbManager.createIncrementalDB(session.sessionId, embeddingDim);
+                dbManager.setCurrentSessionId(session.sessionId);
+                pipeline.setIncrementalDB(incDb);
+                log.info("=== AutoTest session created: {} (incremental DB: {}) ===",
+                        session.sessionId, incDb.getDbFile().getFileName());
+                System.out.println("  Session: " + session.sessionId);
+            }
 
             log.info("=== Conversation: {} ({} turns) ===", name, turns.size());
             System.out.println("\n══════════════════════════════════════════");
@@ -66,6 +112,7 @@ public class AutoTestService {
 
             for (int i = 0; i < turns.size(); i++) {
                 String question = turns.get(i);
+                if (sessionEnabled) chatHistory.addMessage(session, "user", question);
                 System.out.println("\n[Turn " + (i + 1) + "/" + turns.size() + "] Q: " + question);
 
                 long start = System.currentTimeMillis();
@@ -92,13 +139,30 @@ public class AutoTestService {
                     if (lines.length > 3) System.out.println("     ... (" + lines.length + " lines total)");
                 }
 
+                if (sessionEnabled && result.answer != null) {
+                    chatHistory.addMessage(session, "maa", result.answer);
+                    try {
+                        chatHistory.save(session);
+                    } catch (Exception e) {
+                        log.warn("AutoTest session save failed for {}: {}",
+                                session.sessionId, e.getMessage());
+                    }
+                }
+
                 // Brief pause between turns to avoid API rate limits
                 if (i < turns.size() - 1) {
                     try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
                 }
             }
 
-            report.conversationResults.add(new ConversationResult(name, convMetrics));
+            report.conversationResults.add(new ConversationResult(
+                    name, convMetrics, session != null ? session.sessionId : null));
+        }
+
+        if (report.conversationResults.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "No matching dialogue for --dialogue " + dialogueIndexes
+                            + "; test file has " + conversations.size() + " conversations (1-based index)");
         }
 
         report.endTime = Instant.now();
@@ -183,7 +247,9 @@ public class AutoTestService {
                 long avgMs = metrics.isEmpty() ? 0 :
                         (long) metrics.stream().mapToLong(m -> m.totalTimeMs).average().orElse(0);
                 int hits = (int) metrics.stream().filter(m -> m.retrievalHit).count();
-                sb.append(String.format("\n  [%s] %d turns, %d hits, avg %dms\n", cr.name, metrics.size(), hits, avgMs));
+                sb.append(String.format("\n  [%s] %d turns, %d hits, avg %dms%s\n",
+                        cr.name, metrics.size(), hits, avgMs,
+                        cr.sessionId != null ? " | session=" + cr.sessionId : ""));
                 for (int i = 0; i < metrics.size(); i++) {
                     QaMetrics m = metrics.get(i);
                     sb.append(String.format("    Turn %d: tier=%s hit=%s ttft=%dms total=%dms vecMax=%.3f entities=%d recipes=%d\n",
@@ -217,5 +283,5 @@ public class AutoTestService {
         }
     }
 
-    public record ConversationResult(String name, List<QaMetrics> metrics) {}
+    public record ConversationResult(String name, List<QaMetrics> metrics, String sessionId) {}
 }

@@ -94,12 +94,23 @@ public class ChatHistoryService {
     public void save(ChatSession session) throws IOException {
         Path dir = cacheDir.resolve("sessions");
         Files.createDirectories(dir);
-        File file = dir.resolve(session.sessionId + ".json").toFile();
-        mapper.writeValue(file, session);
+        validateSessionId(session.sessionId);
+        Path file = dir.resolve(session.sessionId + ".json");
+        Path temporary = Files.createTempFile(dir, "session-", ".tmp");
+        try {
+            mapper.writeValue(temporary.toFile(), session);
+            try { Files.move(temporary, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING); }
+            catch (java.nio.file.AtomicMoveNotSupportedException e) { Files.move(temporary, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING); }
+        } finally { Files.deleteIfExists(temporary); }
+    }
+
+    private static void validateSessionId(String id) {
+        if (id == null || !id.matches("[a-zA-Z0-9_-]+")) throw new IllegalArgumentException("Invalid session ID");
     }
 
     /** Load session from file */
     public ChatSession load(String sessionId) throws IOException {
+        validateSessionId(sessionId);
         File file = cacheDir.resolve("sessions").resolve(sessionId + ".json").toFile();
         if (!file.exists()) return null;
         return mapper.readValue(file, ChatSession.class);
@@ -114,7 +125,10 @@ public class ChatHistoryService {
         if (files == null) return list;
         for (File f : files) {
             try {
-                list.add(mapper.readValue(f, ChatSession.class));
+                var session = mapper.readValue(f, ChatSession.class);
+                validateSessionId(session.sessionId);
+                if (!f.getName().equals(session.sessionId + ".json")) throw new IOException("Session identity mismatch");
+                list.add(session);
             } catch (Exception e) { log.warn("Failed to load session: {}", f.getName()); }
         }
         list.sort((a, b) -> b.createdAt.compareTo(a.createdAt));

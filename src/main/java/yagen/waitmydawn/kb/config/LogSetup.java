@@ -39,7 +39,9 @@ public class LogSetup {
 
             PatternLayoutEncoder encoder = new PatternLayoutEncoder();
             encoder.setContext(lc);
-            encoder.setPattern("%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n");
+            // 与 logback.xml 保持一致：评测/自动化场景用 MDC 的 runId/dialogueId/turnId 串联一问的全部日志
+            encoder.setPattern("%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level "
+                    + "[%X{runId:--}/%X{dialogueId:--}/%X{turnId:--}] %logger{36} - %msg%n");
             encoder.setCharset(java.nio.charset.StandardCharsets.UTF_8);
             encoder.start();
 

@@ -13,6 +13,7 @@ public class IncrementalDB implements AutoCloseable {
 
     private final String id;
     private final Path dbFile;
+    private final Path dbPath;
     private final VectorStore vectorStore;
     private final DatabaseBuilder db;
 
@@ -20,13 +21,15 @@ public class IncrementalDB implements AutoCloseable {
         this.id = dbName;
         // Strip .mv.db if present in name
         String cleanName = dbName.replace(".mv.db", "");
-        this.dbFile = storageDir.resolve(cleanName);
+        if (!cleanName.matches("rag_data_[a-zA-Z0-9_-]+")) throw new IllegalArgumentException("Invalid incremental database name");
+        this.dbPath = storageDir.resolve(cleanName);
+        this.dbFile = storageDir.resolve(cleanName + ".mv.db");
 
         this.db = new DatabaseBuilder(null) {
             @Override
             public String getJdbcUrl() {
-                return "jdbc:h2:file:" + dbFile.toString().replace('\\', '/')
-                        + ";DATABASE_TO_LOWER=TRUE";
+                return "jdbc:h2:file:" + dbPath.toString().replace('\\', '/')
+                        + ";DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
             }
         };
         this.db.initIncDatabase();
@@ -42,7 +45,7 @@ public class IncrementalDB implements AutoCloseable {
     public DatabaseBuilder getDb() { return db; }
 
     public void close() {
-        try { vectorStore.clear(); } catch (Exception ignored) {}
+        db.shutdown();
     }
 
     @Override
