@@ -6,7 +6,6 @@ import javafx.scene.Node;
 import javafx.scene.control.Label;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.VBox;
-import javafx.scene.paint.Color;
 import javafx.scene.text.*;
 
 import java.io.File;
@@ -23,9 +22,6 @@ import java.util.regex.Pattern;
  */
 public class MarkdownRenderer {
 
-    private static final Color TEXT_COLOR = Color.web("#1f2937");
-    private static final Color HEADER_COLOR = Color.web("#111827");
-    private static final Color CODE_BG = Color.web("#f3f4f6");
     private static final Pattern IMAGE_PATTERN = Pattern.compile("!\\[([^\\]]*)\\]\\(([^)]+)\\)");
     private static final int IMAGE_FIT_WIDTH = 260;
 
@@ -52,6 +48,7 @@ public class MarkdownRenderer {
                 String text = line.replaceAll("^#+\\s*", "");
                 TextFlow h = buildCellFlow(text, true);
                 h.setPadding(new javafx.geometry.Insets(8, 0, 2, 0));
+                h.getStyleClass().add("markdown-heading");
                 container.getChildren().add(h);
                 continue;
             }
@@ -123,9 +120,9 @@ public class MarkdownRenderer {
                 TextFlow cellFlow = buildCellFlow(cells.get(c), header);
                 cellFlow.setMaxWidth(cellMax);
                 VBox cell = new VBox(cellFlow);
-                cell.setStyle("-fx-padding: 6 10; -fx-border-color: #d1d5db; -fx-border-width: 0.5;");
+                cell.getStyleClass().add("markdown-cell");
                 if (header) {
-                    cell.setStyle(cell.getStyle() + " -fx-background-color: #f3f4f6;");
+                    cell.getStyleClass().add("markdown-header");
                 }
                 grid.add(cell, c, r > 1 ? r - 1 : r);
             }
@@ -163,7 +160,7 @@ public class MarkdownRenderer {
         if (flow.getChildren().isEmpty()) {
             Text t = new Text(text);
             t.setFont(Font.font("Segoe UI", 13));
-            t.setFill(TEXT_COLOR);
+            t.getStyleClass().add("markdown-text");
             flow.getChildren().add(t);
         }
         return flow;
@@ -196,7 +193,7 @@ public class MarkdownRenderer {
         if (flow.getChildren().isEmpty()) {
             Text t = new Text(text);
             t.setFont(Font.font("Segoe UI", 13));
-            t.setFill(TEXT_COLOR);
+            t.getStyleClass().add("markdown-text");
             flow.getChildren().add(t);
         }
 
@@ -214,12 +211,8 @@ public class MarkdownRenderer {
             String url = links.group(2);
             String label = links.group(1).replace("**", "").replace("`", "");
             if (yagen.waitmydawn.kb.service.AnswerSourceLinks.safeUrl(url)) {
-                var link = new javafx.scene.control.Hyperlink(label);
+                var link = SourceLinks.create(label, url);
                 link.setPadding(javafx.geometry.Insets.EMPTY);
-                link.setOnAction(event -> {
-                    try { if (java.awt.Desktop.isDesktopSupported()) java.awt.Desktop.getDesktop().browse(URI.create(url)); }
-                    catch (Exception failure) { link.setTooltip(new javafx.scene.control.Tooltip("无法打开链接：" + url)); }
-                });
                 flow.getChildren().add(link);
             } else appendStyled(flow, label);
             end = links.end();
@@ -237,18 +230,18 @@ public class MarkdownRenderer {
                 // **bold**
                 Text t = new Text(m.group(2));
                 t.setFont(Font.font("Segoe UI", FontWeight.BOLD, 13));
-                t.setFill(TEXT_COLOR);
+                t.getStyleClass().add("markdown-text");
                 flow.getChildren().add(t);
             } else if (m.group(3) != null) {
                 // `code`
                 Text t = new Text(m.group(4));
                 t.setFont(Font.font("Consolas", 12));
-                t.setFill(Color.web("#dc2626"));
+                t.getStyleClass().add("markdown-code");
                 flow.getChildren().add(t);
             } else if (m.group(5) != null) {
                 Text t = new Text(m.group(5));
                 t.setFont(Font.font("Segoe UI", 13));
-                t.setFill(TEXT_COLOR);
+                t.getStyleClass().add("markdown-text");
                 flow.getChildren().add(t);
             }
         }
@@ -296,7 +289,7 @@ public class MarkdownRenderer {
 
         Text fallback = new Text(alt == null || alt.isBlank() ? path : alt);
         fallback.setFont(Font.font("Segoe UI", 12));
-        fallback.setFill(Color.web("#9ca3af"));
+        fallback.getStyleClass().add("markdown-muted");
         flow.getChildren().add(fallback);
     }
 

@@ -18,8 +18,15 @@
             <includes>
                 <include>run.bat</include>
                 <include>run.sh</include>
+                <include>README.md</include>
+                <include>LICENSE.md</include>
             </includes>
             <fileMode>0755</fileMode>
+        </fileSet>
+
+        <fileSet>
+            <directory>${project.basedir}/src/main/resources/licenses</directory>
+            <outputDirectory>licenses</outputDirectory>
         </fileSet>
 
         <!-- 项目 JAR -->

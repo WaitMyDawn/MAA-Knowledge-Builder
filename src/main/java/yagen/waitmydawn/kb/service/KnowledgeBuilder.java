@@ -113,6 +113,7 @@ public class KnowledgeBuilder {
     }
 
     private BuildResult buildInto(Path modFolder, ProgressCallback progressCallback) {
+        final int warmLimit=Math.max(0,Math.min(30,Integer.getInteger("maa.build.prewarmPages",config.getPrewarmPages())));
         BuildResult result = new BuildResult();
         long timeStamp0 = System.currentTimeMillis();
 
@@ -292,7 +293,6 @@ public class KnowledgeBuilder {
                 }
             }
             // 小预算预热覆盖不同子分类的生物；完整目录仍保留，不把预热范围当成全部。
-            int warmLimit=Math.max(0,Math.min(30,Integer.getInteger("maa.build.prewarmPages",6)));
             var warmed=new LinkedHashMap<String,WebCatalogStore.Entry>();
             var hintUrls=KnowledgeHints.forMod(modEntry.getModId()).stream().map(KnowledgeHints.Relation::url).toList();
             var paths=new HashSet<List<String>>();
@@ -305,18 +305,20 @@ public class KnowledgeBuilder {
                 for(var category:WikiScraperService.McmodCategory.values()) for(var entry:new WebCatalogStore(db).entries(modEntry.getModId(),category.getId()))
                     if(hint.url().equals(entry.url())) warmed.putIfAbsent(entry.url(),entry);
             }
-            int warm=0;
+            int warm=0, prepared=0, skipped=0;
             if(warmLimit==0) warmed.clear();
             for(var entry:warmed.values()) {
                 if(warm++>=warmLimit+hintUrls.size()) break;
                 checkCancelled();
-                report(progressCallback,"prewarm",warm,warmed.size(),"详情预热："+entry.label());
+                report(progressCallback,"prewarm",warm,warmed.size(),"预取常用详情（"+warm+"/"+warmed.size()+"）："+entry.label());
                 var fetched=wikiScraper.fetchPageWithRegistries(entry.url(),"mcmod");
-                if(fetched==null) continue;
+                if(fetched==null) { skipped++; continue; }
+                prepared++;
                 var chunks=chunker.fromWebPage(fetched.page().content(),modEntry.getModId(),modEntry.getDisplayName(),"mcmod",entry.url());
                 vectorStore.storeBatch(chunks,publicCache.embeddings(chunks,embedder),embedder.profile());
                 result.embeddings+=chunks.size();
             }
+            report(progressCallback,"prewarm",warmed.size(),warmed.size(),warmLimit==0?"已关闭常用详情预取":"详情预取完成：成功 "+prepared+" 页，跳过/失败 "+skipped+" 页（站点冷却期间不继续访问）");
             try { Thread.sleep(500); } catch (Exception ignored) {}
         }
 

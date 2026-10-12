@@ -35,6 +35,13 @@
             <version>${javafx.version}</version>
         </dependency>
 
+        <!-- Windows 原生主题适配 -->
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna</artifactId>
+            <version>5.17.0</version>
+        </dependency>
+
         <!-- H2 嵌入式数据库 -->
         <dependency>
             <groupId>com.h2database</groupId>

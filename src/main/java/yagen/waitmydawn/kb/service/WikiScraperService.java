@@ -23,13 +23,13 @@ import java.util.regex.Pattern;
  *
  * <p>安全机制（防限流 / 防 ban IP）：
  * <ul>
- *   <li>每域名最小请求间隔 + 随机抖动（politeWait），所有实例共享</li>
- *   <li>403/429/5xx 指数退避 + 抖动，并尊重 Retry-After 响应头</li>
+ *   <li>每站点最小请求间隔 + 随机抖动，所有实例共享</li>
+ *   <li>403/429 全实例共享冷却，5xx 有界退避，并尊重 Retry-After 响应头</li>
  *   <li>每域名单次运行请求预算，超限主动放弃，避免触发封禁</li>
  *   <li>响应缓存（TTL + 容量上限），同一 URL 不重复抓取</li>
  *   <li>反爬页面识别（短响应 / Cloudflare 质询 / 验证码特征），命中即丢弃</li>
  *   <li>浏览器头 / Cookie 会话复用 / Referer 伪装</li>
- *   <li>可选 HTTP 代理：-Dmaa.scraper.proxy=host:port（IP 被封时的逃生通道）</li>
+ *   <li>可选 HTTP 代理：-Dmaa.scraper.proxy=host:port（用于网络连接配置）</li>
  * </ul>
  */
 public class WikiScraperService {
@@ -62,9 +62,9 @@ public class WikiScraperService {
     private static final long CACHE_TTL_MS = 30 * 60 * 1000L;        // 响应缓存 TTL
     private static final int CACHE_MAX_ENTRIES = 256;                // 响应缓存容量
 
-    /** 每域名最小请求间隔（可 -Dmaa.scraper.minIntervalMs=... 覆盖） */
+    /** 每站点最小请求间隔（可 -Dmaa.scraper.minIntervalMs=... 覆盖） */
     private static final long MIN_REQUEST_INTERVAL_MS;
-    /** 单次运行每域名请求预算（可 -Dmaa.scraper.maxRequestsPerHost=... 覆盖） */
+    /** 进程内每站点请求预算（可 -Dmaa.scraper.maxRequestsPerHost=... 覆盖） */
     private static final int MAX_REQUESTS_PER_HOST;
     /** 随机抖动上限 */
     private static final long JITTER_MAX_MS = 400;
@@ -88,8 +88,8 @@ public class WikiScraperService {
             budget = Integer.parseInt(System.getProperty("maa.scraper.maxRequestsPerHost", "2000"));
         } catch (NumberFormatException ignored) {
         }
-        MIN_REQUEST_INTERVAL_MS = minInterval;
-        MAX_REQUESTS_PER_HOST = budget;
+        MIN_REQUEST_INTERVAL_MS = Math.max(800,minInterval);
+        MAX_REQUESTS_PER_HOST = Math.max(0,budget);
 
         String proxy = System.getProperty("maa.scraper.proxy");
         if (proxy == null || proxy.isBlank()) proxy = System.getenv("MAA_SCRAPER_PROXY");
@@ -111,8 +111,7 @@ public class WikiScraperService {
 
     // ==================== 全实例共享的限流/缓存状态 ====================
 
-    private static final Object RATE_LOCK = new Object();
-    private static final Map<String, Long> HOST_NEXT_ALLOWED = new ConcurrentHashMap<>();
+    private static final HostRequestGate REQUEST_GATE = new HostRequestGate();
     private static final Map<String, Integer> HOST_REQUEST_COUNT = new ConcurrentHashMap<>();
     private static final Map<String, CacheEntry> FETCH_CACHE = new ConcurrentHashMap<>();
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -487,6 +486,7 @@ public class WikiScraperService {
             return null;
         }
         if (looksBlocked(out.body())) {
+            REQUEST_GATE.coolDown(url,300_000L);
             log.warn("Possible anti-bot page for {} ({} chars), ignored", url, out.body().length());
             return null;
         }
@@ -536,10 +536,7 @@ public class WikiScraperService {
         FetchOutcome(int status,String body,int attempts) { this(status,body,attempts,null,null); }
     }
 
-    /**
-     * 统一请求执行器：每域名限速 → 请求预算 → 浏览器头 → Cookie 会话 → 指数退避+抖动。
-     * 403/429 按 Retry-After（若提供）或 1s*2^n 退避；5xx 短退避；404 不重试。
-     */
+    /** 限定 HTTPS 知识来源，拒绝目录和重定向中的任意外部地址。 */
     static void validateFetchUrl(String url) {
         java.net.URI uri = java.net.URI.create(url);
         String host = uri.getHost();
@@ -568,7 +565,10 @@ public class WikiScraperService {
         int lastBodyLen = -1;
         for (int attempt = 0; attempt < maxRetries; attempt++) {
             checkCancelled();
-            politeWait(url);
+            if (!REQUEST_GATE.await(url, MIN_REQUEST_INTERVAL_MS + jitter())) {
+                log.debug("Knowledge site cooling down: {}", HostRequestGate.site(url));
+                return new FetchOutcome(429,null,attempt);
+            }
             checkCancelled();
             if (overBudget(url)) {
                 log.warn("Request budget exceeded for {} — skip further requests", hostOf(url));
@@ -629,12 +629,14 @@ public class WikiScraperService {
 
                 long delay;
                 if (status == 403 || status == 429) {
-                    long retryAfter = parseRetryAfter(resp.header("Retry-After"));
-                    delay = (retryAfter > 0 ? retryAfter * 1000L
-                            : (long) RETRY_BASE_DELAY_MS * (1L << attempt)) + jitter();
-                    log.warn("HTTP {} for {} (attempt {}/{}) — backing off {}ms",
-                            status, url, attempt + 1, maxRetries, delay);
+                    long retryAfter=HostRequestGate.retryAfterMillis(resp.header("Retry-After"),java.time.Instant.now());
+                    delay=Math.max(status==403?300_000L:30_000L,retryAfter)+jitter();
+                    REQUEST_GATE.coolDown(url,delay);
+                    log.warn("HTTP {} for {} — site requests suspended for {}ms",status,url,delay);
+                    return new FetchOutcome(status,null,attempt+1);
                 } else if (status >= 500) {
+                    long retryAfter=HostRequestGate.retryAfterMillis(resp.header("Retry-After"),java.time.Instant.now());
+                    if(retryAfter>0) { REQUEST_GATE.coolDown(url,retryAfter); return new FetchOutcome(status,null,attempt+1); }
                     delay = (long) RETRY_BASE_DELAY_MS * (attempt + 1) + jitter();
                     log.warn("HTTP {} for {} (attempt {}/{}) — backing off {}ms",
                             status, url, attempt + 1, maxRetries, delay);
@@ -659,15 +661,6 @@ public class WikiScraperService {
         return new FetchOutcome(lastStatus, null, maxRetries);
     }
 
-    private static long parseRetryAfter(String header) {
-        if (header == null || header.isBlank()) return -1;
-        try {
-            return Long.parseLong(header.trim());
-        } catch (NumberFormatException ignored) {
-            return -1;
-        }
-    }
-
     private static long jitter() {
         return ThreadLocalRandom.current().nextLong(0, JITTER_MAX_MS + 1);
     }
@@ -682,26 +675,9 @@ public class WikiScraperService {
         }
     }
 
-    /** 每域名最小请求间隔（含抖动），所有实例共享，避免突发请求触发限流。 */
-    private void politeWait(String url) {
-        String host = hostOf(url);
-        synchronized (RATE_LOCK) {
-            long now = System.currentTimeMillis();
-            long wait = HOST_NEXT_ALLOWED.getOrDefault(host, 0L) - now;
-            if (wait > 0) {
-                try {
-                    Thread.sleep(wait);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-            HOST_NEXT_ALLOWED.put(host, System.currentTimeMillis() + MIN_REQUEST_INTERVAL_MS + jitter());
-        }
-    }
-
-    /** 每域名请求预算（单次运行），超限返回 true 并停止该域后续请求。 */
+    /** 每站点请求预算（进程内），超限返回 true 并停止该域后续请求。 */
     private boolean overBudget(String url) {
-        String host = hostOf(url);
+        String host = HostRequestGate.site(url);
         int count = HOST_REQUEST_COUNT.merge(host, 1, Integer::sum);
         return count > MAX_REQUESTS_PER_HOST;
     }
@@ -820,6 +796,7 @@ public class WikiScraperService {
             return null;
         }
         if (looksBlocked(out.body())) {
+            REQUEST_GATE.coolDown(url,300_000L);
             log.warn("Possible anti-bot page for {} ({} chars), ignored", url, out.body().length());
             return null;
         }

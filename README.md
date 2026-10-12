@@ -33,8 +33,8 @@ MAA Knowledge Builder 是一款 Java 21 桌面应用：从你本地的 Minecraft
 
 面向 Minecraft 模组玩家与整合包作者，提供：
 
-- **离线知识库构建**：扫描本地 JAR（Minecraft 本体 + NeoForge/Forge/Fabric 模组），自动提取纹理、配方、多语言文本并向量化，全程本地完成
-- **Agentic RAG 中文问答**：四 Agent 协作管道（分类 → 实体解析 → URL 匹配 → 答案合成），自动推断物品注册名、按需增量抓取网页知识
+- **本地优先的知识库构建**：扫描本地 JAR（Minecraft 本体 + NeoForge/Forge/Fabric 模组），自动提取纹理、配方、多语言文本并向量化，JAR 提取与向量化在本地完成；模组身份绑定和网页知识获取需要联网
+- **Agentic RAG 中文问答**：规划、实体解析、正文检索与答案合成协作管道，自动推断物品注册名、按需增量抓取网页知识
 - **图文混合渲染**：根据配方 JSON 动态生成合成图、熔炉图、锻造图、多方块图，以 Markdown 内联图片展示
 - **种子分享**：导出/导入 `.maa-seed.json`，跨机器复现同一套知识库构建方案
 
@@ -45,8 +45,8 @@ MAA Knowledge Builder 是一款 Java 21 桌面应用：从你本地的 Minecraft
 ## 3. 功能特性
 
 - **本地知识库构建（离线可用）**：JAR 元数据解析 → 纹理/实体/配方/语言包提取 → 384 维语义向量入库；Modrinth API 精确绑定模组 slug；中文 Minecraft Wiki 镜像与 MC 百科按需抓取
-- **Agentic RAG 中文问答**：ClassifyAgent → EntityAgent → UrlAgent → AnswerAgent 四步管道；别名向量库 + 离散等级匹配解决“冰火传说/龙”类中文实体识别；多轮对话上下文记忆
-- **图文混合渲染**：配方 JSON → 合成/熔炉/锻造/多方块图，只渲染与问题最相关的 Top-3 配方
+- **Agentic RAG 中文问答**：合并规划器优先，保留分类回退；实体目录与别名检索 → 缓存优先的正文检索 → 答案合成与必要的覆盖检查；别名向量库 + 离散等级匹配解决“冰火传说/龙”类中文实体识别；多轮对话上下文记忆
+- **图文混合渲染**：配方 JSON → 合成/熔炉/锻造/多方块图，最多渲染与问题相关的 4 个配方
 - **全链路可观测**：每次问答的延迟、实体数、向量命中数、真实 Token 用量全程记账，指标按日持久化，日志落盘 `logs/yyyy-MM-dd-x.log`
 - **种子导入/导出**：`.maa-seed.json` 记录模组 slug 与网页资源引用，可分享、可复现
 
@@ -79,6 +79,10 @@ cd MAA-Knowledge-Builder
 .\mvnw javafx:run
 ```
 
+Maven 的 `./mvnw.cmd package -Prelease` 另行生成 `target/MAA-Knowledge-Builder-1.0.0-SNAPSHOT-dist.zip`，包含应用 JAR 与依赖，不包含 JRE；运行需要 Java 21。此 ZIP 与上述 `package.bat` 的 Windows 应用目录是两种不同产物。
+
+源码运行前，按文末“数据兼容与构建验证”安装与锁文件匹配的 ONNX 和词表资源。
+
 ### 最简运行三步
 
 1. 启动后选择数据目录（所有知识库数据存储于此，自动初始化 H2 数据库与 ONNX 嵌入模型）
@@ -94,10 +98,12 @@ cd MAA-Knowledge-Builder
 | **Builder** | 选择模组文件夹 → Scan 解析 JAR 并绑定 Modrinth slug → Build 提取纹理/配方/语言包并构建向量库 |
 | **Q&A** | 中文提问；支持“介绍一下它们”这类代词追问；命中配方时自动渲染合成/熔炉/锻造图 |
 | **Seed** | 导出/导入 `.maa-seed.json` 训练种子 |
-| **Settings** | API Key、嵌入模型名、默认 MC 版本/加载器、用户名 |
-| **Metrics** | 查看每次问答的延迟、Token、命中数与历史指标 |
+| **设置** | 跟随系统/浅色/深色主题、详情预取预算、数据目录、API Key、本地模型与作者署名 |
+| **性能统计** | 查看每次问答的延迟、Token、命中数与历史指标 |
+| **知识目录** | 按网站原分类浏览条目、打开/复制来源网址、查看本地正文及缓存时间；浏览条目不抓取网站 |
+| **评测与复核** | 浏览规则判分、模型裁判、失败案例与人工复核报告 |
 
-**注意**：Build 是覆盖模式，会清空基础库重新构建，但不会影响 Q&A 阶段生成的会话增量库（`sessions/incremental/`）。
+**注意**：Build 在临时库完成构建和校验后原子替换基础数据；失败或取消时保留原库，但不会影响 Q&A 阶段生成的会话增量库（`sessions/incremental/`）。
 
 ### 5.2 命令行快速上手
 
@@ -117,7 +123,7 @@ Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
 ### 5.3 自动化测试
 
 - `--test`：读取 `test-questions.json`（多轮对话数组），每个对话模拟一个 GUI 会话（写 `sessions/*.json` 与会话增量库 `sessions/incremental/`，可被 GUI 加载回放），逐轮走完整 QA 管道并输出 Tier/命中/TF 指标
-- `--eval`：读取 `golden-set.json`（黄金评测集 v6：标准答案要点 + 规则断言 + 裁判细则），做规则判分（主判）与 LLM 裁判（复核），产物隔离在 `{dataDir}/eval-runs/{runId}/`（turns.jsonl / summary.json / report.md / bad-cases.md / disagreements.md）
+- `--eval`：读取 `golden-set.json`（黄金评测集 v8：标准答案要点 + 规则断言 + 裁判细则），做规则判分（主判）与 LLM 裁判（复核），产物隔离在 `{dataDir}/eval-runs/{runId}/`（turns.jsonl / summary.json / report.md / bad-cases.md / disagreements.md）
 - `--compare <runA> <runB>`：对比两次评测的主指标与逐题回归/修复清单，用于版本消融表与 CI 门禁
 - `--testweb`：读取 `test-web.json`（URL 列表），独立建库验证“网页抓取 → 正文清洗 → 分块 → 向量化”全链路
 
@@ -135,12 +141,12 @@ Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
 ┌─────────────────────────────────────────────────────────┐
 │                    MAA Knowledge Builder                │
 ├─────────────────────────────────────────────────────────┤
-│  UI Layer (JavaFX): Builder / Q&A / Seed / Settings / Metrics │
+│  UI Layer (JavaFX): 构建 / 问答 / 种子 / 设置 / 统计 / 目录 / 评测 │
 ├─────────────────────────────────────────────────────────┤
 │  Agent Layer (agent/)                                   │
-│  ├── ClassifyAgent ── LLM 问题分类 (McmodCategory)      │
+│  ├── ClassifyAgent ── 规划失败时回退分类                 │
 │  ├── EntityAgent   ── 实体解析 + 别名多线路检索          │
-│  ├── UrlAgent      ── LLM 子网页 URL 匹配 + 增量抓取     │
+│  ├── UrlAgent      ── 目录匹配与缓存优先的正文获取     │
 │  └── AnswerAgent   ── Tier A/B/C/D 分层答案合成          │
 ├─────────────────────────────────────────────────────────┤
 │  Service Layer (service/)                               │
@@ -160,14 +166,14 @@ Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
 
 ```
 用户提问
-  → ClassifyAgent（分类）
+  → 合并规划器（问题意图、分类、实体候选；失败时分类回退）
   → EntityAgent（实体注册名推断 + 别名向量/字面检索）
-  → UrlAgent（LLM 匹配 MC百科子网页 URL / Wiki 镜像主题）
+  → UrlAgent（目录匹配 MC百科子网页 / Wiki 主题，优先复用公共缓存）
   → IncrementalKnowledgeService（按需抓取 → 分块 → 增量库）
   → VectorStore.searchAcross(base, inc)（双库向量检索）
   → Recipe SQL 精确查询 + 配方相关性评分
-  → LLM Reranker（相关度重排）
-  → AnswerAgent（Tier 分层合成 Markdown）
+  → 制作/获取问题按需追溯一轮材料；缺少定向来源且候选超过 10 条时可选 LLM 重排
+  → AnswerAgent（Tier 分层合成 Markdown，宽泛玩法按需检查覆盖）
   → RendererService（配方图渲染）→ UI 展示
 ```
 
@@ -185,6 +191,8 @@ Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
 | `username` | `MAA_xxxxxx` | 会话标识（首次生成 UUID 前缀） |
 | `defaultMcVersion` | `1.21.1` | 默认 MC 版本 |
 | `defaultLoader` | `neoforge` | 默认模组加载器 |
+| `themeMode` | `SYSTEM` | 跟随系统；也支持 `LIGHT`、`DARK` |
+| `prewarmPages` | `6` | 每模组不同生物子分类的详情预取预算，0–30，0 关闭 |
 
 ### 7.2 爬虫安全参数（防限流 / 防 ban IP）
 
@@ -192,11 +200,11 @@ Windows 下通过 Maven exec 插件调用 `HeadlessRunner`：
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `-Dmaa.scraper.minIntervalMs` | `800` | 每域名最小请求间隔（毫秒），含随机抖动 |
-| `-Dmaa.scraper.maxRequestsPerHost` | `2000` | 单次运行每域名请求预算，超限自动停止该域请求 |
-| `-Dmaa.scraper.proxy=host:port` | 无 | HTTP 代理逃生通道（IP 被封时使用）；也可用环境变量 `MAA_SCRAPER_PROXY` |
+| `-Dmaa.scraper.minIntervalMs` | `800` | 每站点最小请求间隔（毫秒），最低 800，另加随机抖动 |
+| `-Dmaa.scraper.maxRequestsPerHost` | `2000` | 进程内每站点请求预算，超限停止该站点请求 |
+| `-Dmaa.scraper.proxy=host:port` | 无 | HTTP 代理连接配置；也可用环境变量 `MAA_SCRAPER_PROXY` |
 
-内置防护：403/429/5xx 指数退避 + 抖动并尊重 `Retry-After`；响应缓存（30 分钟 TTL）；反爬页识别（Cloudflare 质询/验证码特征命中即丢弃）；Cookie 会话复用；404 不重试。
+内置防护：403/429 和反爬质询页面触发全实例共享站点冷却，遵循秒数或 HTTP 日期格式的 `Retry-After`；5xx 有界退避；公共正文缓存 7 天，进程内响应缓存 30 分钟；Cookie 会话复用；404 不重试。冷却期间使用已有有效缓存并跳过该站点网络访问，不绕过网站限制。
 
 ### 7.3 打包参数
 
@@ -292,7 +300,7 @@ Operations:
 
 ```
 src/main/java/yagen/waitmydawn/kb/
-├── MaaKnowledgeBuilderApp.java     # JavaFX 主入口（5 个页面）
+├── MaaKnowledgeBuilderApp.java     # JavaFX 主入口（7 个页面）
 ├── HeadlessRunner.java             # CLI 入口（scan/build/test/testweb）
 ├── agent/                          # 四个 Agent
 │   ├── ClassifyAgent.java          # LLM 问题分类
@@ -417,7 +425,7 @@ Copyright (c) 2026 Yagen. All Rights Reserved.
 
 数据目录变更在重启后生效。后台扫描、构建、问答串行执行，运行期间禁止切换或删除会话和数据库。退出时请求中断任务，网络请求仍可能等到超时返回。勾选其他会话数据库表示显式允许跨会话检索。
 
-模型资源因体积未纳入 Git。发布者须取得与 `src/main/resources/embedding-model-lock.json` 一致的 ONNX 导出和词表，并执行：
+模型资源保持不纳入 Git（`src/main/resources/models/` 被忽略）。默认模型 all-MiniLM-L6-v2 的上游许可为 Apache-2.0，固定 ONNX 文件见 [官方来源](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/blob/main/onnx/model.onnx)。源码检出后需要安装资源，发布包可以携带模型及其第三方许可。发布者须取得与 `src/main/resources/embedding-model-lock.json` 一致的 ONNX 导出和词表，并执行：
 
 ```powershell
 ./scripts/install-embedding-model.ps1 -SourceDirectory <模型文件目录>
@@ -452,6 +460,15 @@ Modrinth 绑定优先使用 JAR SHA-512 对应的版本 API，再解析项目 sl
 
 `ENUMERATE` 检索计划记录模组、对象类型、筛选条件、数量和完整清单意图。名称举例使用目录证据；驯服、骑乘等属性问题在目录内选择候选并抓取详情，默认最多核验 12 页（`-Dmaa.enumeration.maxPages`，硬上限 30）。回答必须披露未覆盖范围，不能将候选名称当成属性证明。实体检索保留当前操作诉求，按页面来源和模组约束正文；配方检索只保留目标产物，不使用同模组弱关联配方兜底。
 
-黄金集 v6 增加关系匹配及实际列表成员计数规则。裁判接收本轮检索证据并区分核心答案缺失与正确补充；参考答案不构成封闭事实全集。报告中的检索命中和数据 Tier 表示检索数据可用性，不能单独证明答案正确或枚举完整。不同题集版本的通过率不能直接作为同口径提升幅度。
+黄金集 v8 包含关系匹配及实际列表成员计数规则。裁判接收本轮检索证据并区分核心答案缺失与正确补充；参考答案不构成封闭事实全集。报告中的检索命中和数据 Tier 表示检索数据可用性，不能单独证明答案正确或枚举完整。不同题集版本的通过率不能直接作为同口径提升幅度。
 
 页面内排序结合向量相似度与操作关键词，分值归一到 0–1；它不等同于纯向量余弦相似度。主条目、名称待确认候选、机制支撑页及跨模组纠偏候选在检索上下文中标明不同用途。原版枚举继续使用 Wiki 正文和表格，不依赖模组分类目录。
+
+
+### 界面主题与常用详情预取
+
+设置提供“跟随系统 / 浅色 / 深色”，默认跟随系统应用配色，并即时更新主界面、弹窗和历史回答。Windows 上每两秒检查一次应用配色；支持的系统同步原生标题栏颜色，旧系统保留可用的原生窗口行为。
+
+Build 默认每模组预取 6 个不同生物子分类的详情页，另补充已配置关系对应的目录页面。设置中可调整 0–30 页，0 关闭；CLI 的 `-Dmaa.build.prewarmPages=N` 优先于该设置。预取保留完整目录，并复用正文/向量缓存，不代表所有目录条目均已下载。
+
+所有百科、Wiki 的真实网络请求（包括预取、搜索、分类页、重定向与重试）共享站点限速：默认至少 800ms 加 0–400ms 抖动；`maa.scraper.minIntervalMs` 可提高间隔，不能低于 800ms。MC 百科的主站和搜索子域共享限速与预算。收到 429 后至少冷却 30 秒，403 或识别人机验证页面后至少冷却 5 分钟；服务器 `Retry-After` 指定更长时间时遵循服务器要求，支持秒数和 HTTP 日期。冷却期间跳过该站点网络抓取，已有有效缓存仍可用。默认每站点进程内请求预算为 2000，可用 `maa.scraper.maxRequestsPerHost` 调整。

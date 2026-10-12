@@ -30,11 +30,13 @@ public final class PublicKnowledgeCache {
     }
     public WikiScraperService.FetchedPage find(String url) {
         var snapshot=snapshot(url);
-        if(snapshot==null || clock.millis()-snapshot.fetchedAt()>=TTL) return null;
+        if(snapshot==null || snapshot.expiredAt(clock.millis())) return null;
         RetrievalTelemetry.pageHit(true);
         return snapshot.page();
     }
-    public record Snapshot(WikiScraperService.FetchedPage page,long fetchedAt,String etag,String lastModified) {}
+    public record Snapshot(WikiScraperService.FetchedPage page,long fetchedAt,String etag,String lastModified) {
+        public boolean expiredAt(long timeMillis) { return timeMillis-fetchedAt>=TTL; }
+    }
     /** 过期快照仅用于条件请求，不能无提示地当成当前机制事实。 */
     public Snapshot snapshot(String url) {
         try (var c = db.getConnection(); var p = c.prepareStatement("SELECT payload,fetched_at,extraction_version,etag,last_modified FROM rag_public_page WHERE url=?")) {

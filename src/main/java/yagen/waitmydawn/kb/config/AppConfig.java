@@ -28,6 +28,8 @@ public class AppConfig {
     private String username = "";
     private String defaultMcVersion = "1.21.1";
     private String defaultLoader = "neoforge";
+    private yagen.waitmydawn.kb.ui.ThemeMode themeMode = yagen.waitmydawn.kb.ui.ThemeMode.SYSTEM;
+    private int prewarmPages = 6;
 
     private boolean initialized = false;
     private boolean persistenceEnabled = true;
@@ -114,6 +116,11 @@ public class AppConfig {
     public String getDefaultMcVersion() { return defaultMcVersion; }
     public String getDefaultLoader() { return defaultLoader; }
 
+    public yagen.waitmydawn.kb.ui.ThemeMode getThemeMode() { return themeMode; }
+    public void setThemeMode(yagen.waitmydawn.kb.ui.ThemeMode mode) { themeMode = java.util.Objects.requireNonNull(mode); save(); }
+    public int getPrewarmPages() { return prewarmPages; }
+    public void setPrewarmPages(int pages) { prewarmPages = Math.max(0, Math.min(30, pages)); save(); }
+
     // --- derived paths ---
 
     public Path getTemplatesDir() { return resolve("templates"); }
@@ -154,6 +161,9 @@ public class AppConfig {
                 // Initialize file logging on load (not just on setDataDir)
                 LogSetup.init(dataDir);
             }
+            themeMode = yagen.waitmydawn.kb.ui.ThemeMode.parse(props.getProperty("themeMode"));
+            try { prewarmPages = Math.max(0, Math.min(30, Integer.parseInt(props.getProperty("prewarmPages", "6")))); }
+            catch (NumberFormatException ignored) { prewarmPages = 6; }
             this.apiKey = props.getProperty("apiKey", "");
             this.embeddingModelName = props.getProperty("embeddingModelName", "all-MiniLM-L6-v2");
             String savedUser = props.getProperty("username", "");
@@ -185,6 +195,8 @@ public class AppConfig {
         props.setProperty("username", username);
         props.setProperty("defaultMcVersion", defaultMcVersion);
         props.setProperty("defaultLoader", defaultLoader);
+        props.setProperty("themeMode", themeMode.name());
+        props.setProperty("prewarmPages", Integer.toString(prewarmPages));
 
         try (Writer w = Files.newBufferedWriter(SETTINGS_FILE)) {
             props.store(w, "MAA Knowledge Builder Settings");

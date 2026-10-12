@@ -7,7 +7,6 @@ import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
-import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.DirectoryChooser;
@@ -41,6 +40,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     private static final Logger log = LoggerFactory.getLogger(MaaKnowledgeBuilderApp.class);
 
     private AppConfig config;
+    private yagen.waitmydawn.kb.ui.ThemeService themes;
     private final java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "knowledge-worker");
         thread.setDaemon(true);
@@ -94,6 +94,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     @Override
     public void start(Stage stage) {
+        themes = new yagen.waitmydawn.kb.ui.ThemeService(config);
         if (!config.isInitialized()) {
             showSetupDialog(stage);
             if (!config.isInitialized()) {
@@ -153,6 +154,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     @Override
     public void stop() {
+        if (themes != null) themes.close();
         worker.shutdownNow();
         boolean terminated = false;
         try { terminated = worker.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS); }
@@ -180,14 +182,13 @@ public class MaaKnowledgeBuilderApp extends Application {
         VBox root = new VBox(16);
         root.setPadding(new Insets(30));
         root.setAlignment(Pos.CENTER);
-        root.setStyle("-fx-background-color: #f5f3ff;");
+        root.getStyleClass().add("workspace-page");
 
-        Label title = new Label("Welcome to MAA Knowledge Builder");
+        Label title = new Label("欢迎使用 MAA 知识库");
         title.setFont(Font.font("Segoe UI", FontWeight.BOLD, 20));
-        title.setTextFill(Color.web("#6C63FF"));
+        title.getStyleClass().add("page-title");
 
-        Label desc = new Label("Choose a folder to store all knowledge base data.\n"
-                + "This includes the database, textures, generated images, and settings.");
+        Label desc = new Label("请选择知识库数据目录，用于保存数据库、纹理及生成的图片。");
         desc.setWrapText(true);
         desc.setFont(Font.font(14));
 
@@ -197,7 +198,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         Button browse = new Button("浏览…");
         browse.setOnAction(e -> {
             DirectoryChooser dc = new DirectoryChooser();
-            dc.setTitle("Select Data Directory");
+            dc.setTitle("选择数据目录");
             File f = dc.showDialog(dialog);
             if (f != null) dirField.setText(f.getAbsolutePath());
         });
@@ -206,7 +207,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         dirRow.setAlignment(Pos.CENTER);
 
         Button confirm = new Button("开始");
-        confirm.setStyle("-fx-background-color: #6C63FF; -fx-text-fill: white; -fx-font-size: 14px; -fx-padding: 8 30;");
+        confirm.getStyleClass().add("primary-button");
         confirm.setOnAction(e -> {
             Path p = Path.of(dirField.getText().trim());
             try {
@@ -221,6 +222,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         root.getChildren().addAll(title, desc, dirRow, confirm);
 
         Scene scene = new Scene(root, 500, 300);
+        themes.prepare(scene);
         dialog.setScene(scene);
         dialog.showAndWait();
     }
@@ -263,7 +265,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         root.setBottom(statusBar);
 
         Scene scene = new Scene(root, 1280, 800);
-        scene.getStylesheets().add(java.util.Objects.requireNonNull(getClass().getResource("/ui/workspace.css")).toExternalForm());
+        themes.prepare(scene);
         stage.setMinWidth(1060); stage.setMinHeight(680);
         stage.setTitle("MAA Knowledge Builder");
         stage.setScene(scene);
@@ -282,7 +284,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         // Logo
         Label logo = new Label("MAA 知识库");
         logo.setFont(Font.font("Segoe UI", FontWeight.BOLD, 20));
-        logo.setTextFill(Color.WHITE);
+
         logo.setPadding(new Insets(20, 16, 20, 16));
         logo.setMaxWidth(Double.MAX_VALUE);
         logo.getStyleClass().add("sidebar-brand");
@@ -308,7 +310,10 @@ public class MaaKnowledgeBuilderApp extends Application {
     }
 
     private void switchPage(VBox page, int index) {
-        contentArea.getChildren().setAll(page);
+        if (page == settingsPage) {
+            var scroll = new ScrollPane(page); scroll.setFitToWidth(true);
+            contentArea.getChildren().setAll(scroll);
+        } else contentArea.getChildren().setAll(page);
         setActiveNav(index);
     }
 
@@ -536,11 +541,11 @@ public class MaaKnowledgeBuilderApp extends Application {
         VBox historySidebar = new VBox(8);
         historySidebar.setPrefWidth(240);
         historySidebar.setPadding(new Insets(12));
-        historySidebar.setStyle("-fx-background-color: #ffffff; -fx-border-color: #e5e7eb; -fx-border-width: 0 1 0 0;");
+        historySidebar.getStyleClass().add("history-sidebar");
 
         qaDataDirLabel = new Label("DB: " + config.getDataDir().getFileName());
         qaDataDirLabel.setFont(Font.font(10));
-        qaDataDirLabel.setTextFill(Color.web("#9ca3af"));
+        qaDataDirLabel.getStyleClass().add("muted");
 
         Button newChatBtn = styledButton("+ 新对话", "#6C63FF");
         newChatBtn.setMaxWidth(Double.MAX_VALUE);
@@ -554,7 +559,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         });
 
         Button clearBtn = new Button("清空对话");
-        clearBtn.setStyle("-fx-text-fill: #ef4444; -fx-background-color: transparent; -fx-font-size: 11px;");
+        clearBtn.getStyleClass().addAll("link-button", "danger-text");
         clearBtn.setOnAction(e -> {
             if (busy()) return;
             try {
@@ -593,7 +598,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         dbScroll.setPrefHeight(100);
         Button refreshDbBtn = new Button("刷新知识库");
         refreshDbBtn.setFont(Font.font(10));
-        refreshDbBtn.setStyle("-fx-background-color: transparent; -fx-text-fill: #6C63FF;");
+        refreshDbBtn.getStyleClass().add("link-button");
         refreshDbBtn.setOnAction(ev -> refreshDBCheckboxes(dbCheckboxList));
 
         historySidebar.getChildren().addAll(qaDataDirLabel, newChatBtn, clearBtn,
@@ -609,7 +614,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         ScrollPane chatScroll = new ScrollPane(chatHistory);
         chatScroll.setFitToWidth(true);
         chatScroll.setPrefHeight(440);
-        chatScroll.setStyle("-fx-background: #ffffff; -fx-border-color: #e5e7eb; -fx-border-radius: 8;");
+        chatScroll.getStyleClass().add("chat-scroll");
 
         questionField = new TextArea();
         questionField.setWrapText(true); questionField.setPrefRowCount(2); questionField.setMaxHeight(100);
@@ -651,7 +656,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             for (ChatHistoryService.ChatSession sess : sessions) {
                 HBox row = new HBox(4);
                 row.setPadding(new Insets(4));
-                row.setStyle("-fx-background-color: #f9fafb; -fx-background-radius: 4; -fx-cursor: hand;");
+                row.getStyleClass().add("history-row");
 
                 String labelText = sess.title + " (" + sess.messages.size() + " msgs)";
                 if (labelText.length() > 28) labelText = labelText.substring(0, 28) + "...";
@@ -660,7 +665,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
                 Button delBtn = new Button("X");
                 delBtn.setFont(Font.font(9));
-                delBtn.setStyle("-fx-text-fill: #ef4444; -fx-background-color: transparent; -fx-padding: 0 4;");
+                delBtn.getStyleClass().addAll("link-button", "danger-text");
                 delBtn.setOnAction(ev -> {
                     if (busy()) return;
                     try {
@@ -834,12 +839,12 @@ public class MaaKnowledgeBuilderApp extends Application {
             // Copy button for MAA responses
             Button copyBtn = new Button("复制");
             copyBtn.setFont(Font.font(10));
-            copyBtn.setStyle("-fx-text-fill: #6b7280; -fx-background-color: #e5e7eb; -fx-padding: 2 6; -fx-background-radius: 3;");
+            copyBtn.getStyleClass().add("copy-button");
             String raw = msg;
             copyBtn.setOnAction(ev -> {
                 javafx.scene.input.Clipboard.getSystemClipboard()
                         .setContent(Map.of(javafx.scene.input.DataFormat.PLAIN_TEXT, raw));
-                copyBtn.setText("Copied!");
+                copyBtn.setText("已复制");
                 var delay = new javafx.animation.PauseTransition(javafx.util.Duration.seconds(1.5));
                 delay.setOnFinished(event -> copyBtn.setText("复制"));
                 delay.play();
@@ -977,7 +982,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         refreshBtn.setOnAction(e -> refreshMetricsDisplay());
 
         Button exportCsvBtn = new Button("导出 CSV");
-        exportCsvBtn.setStyle("-fx-text-fill: #6C63FF; -fx-background-color: transparent;");
+        exportCsvBtn.getStyleClass().add("link-button");
         exportCsvBtn.setOnAction(e -> exportMetricsCsv());
 
         HBox filterRow = new HBox(8, filterLabel, metricsFilterMode, metricsFilterValue, refreshBtn, exportCsvBtn);
@@ -1020,13 +1025,12 @@ public class MaaKnowledgeBuilderApp extends Application {
     private VBox metricCard(String label, Label valueLabel, String color) {
         VBox card = new VBox(4);
         card.setPadding(new Insets(10));
-        card.setStyle("-fx-background-color: #ffffff; -fx-border-color: #e5e7eb; -fx-border-radius: 8; "
-                + "-fx-background-radius: 8; -fx-min-width: 140;");
+        card.getStyleClass().add("metric-card");
         valueLabel.setFont(Font.font("Segoe UI", FontWeight.BOLD, 22));
-        valueLabel.setTextFill(Color.web(color));
+        valueLabel.getStyleClass().add("link-button");
         Label descLabel = new Label(label);
         descLabel.setFont(Font.font(11));
-        descLabel.setTextFill(Color.web("#6b7280"));
+        descLabel.getStyleClass().add("muted");
         card.getChildren().addAll(valueLabel, descLabel);
         return card;
     }
@@ -1160,7 +1164,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         changeDir.setOnAction(e -> {
             if (busy()) return;
             DirectoryChooser dc = new DirectoryChooser();
-            dc.setTitle("Select New Data Directory");
+            dc.setTitle("选择新的数据目录");
             File f = dc.showDialog(stage);
             if (f != null) {
                 Path newDir = Path.of(f.getAbsolutePath());
@@ -1169,12 +1173,12 @@ public class MaaKnowledgeBuilderApp extends Application {
             }
         });
         HBox dirRow = new HBox(8, dataDirField, changeDir);
+        dirRow.setAlignment(Pos.CENTER_LEFT); HBox.setHgrow(dataDirField, Priority.ALWAYS);
         VBox dirCard = card("存储位置", dirRow);
-        Label dirNote = new Label("All data (database, textures, generated images) is stored in this folder. "
-                + "You can move this folder to another computer.");
+        Label dirNote = new Label("数据库、纹理及生成图片保存在此目录，可将整个目录迁移到其他电脑。更换目录后需重启应用。");
         dirNote.setWrapText(true);
         dirNote.setFont(Font.font(12));
-        dirNote.setTextFill(Color.web("#6b7280"));
+        dirNote.getStyleClass().add("muted");
 
         // Author
         Label authorTitle = pageTitle("个人信息");
@@ -1182,6 +1186,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         authorField.setPrefWidth(200);
         authorField.textProperty().addListener((o, old, val) -> config.setUsername(val));
         HBox authorRow = new HBox(8, new Label("署名："), authorField);
+        authorRow.setAlignment(Pos.CENTER_LEFT);
+        ((Label) authorRow.getChildren().getFirst()).setMinWidth(108);
         VBox authorCard = card("种子作者", authorRow);
 
         // API Key
@@ -1191,13 +1197,15 @@ public class MaaKnowledgeBuilderApp extends Application {
         apiKeyField.setPrefWidth(400);
         if (config.getApiKey() != null) apiKeyField.setText(config.getApiKey());
         apiKeyField.textProperty().addListener((o, old, val) -> config.setApiKey(val));
-        HBox apiRow = new HBox(8, new Label("DeepSeek Key:"), apiKeyField);
+        HBox apiRow = new HBox(8, new Label("DeepSeek Key："), apiKeyField);
+        apiRow.setAlignment(Pos.CENTER_LEFT);
+        ((Label) apiRow.getChildren().getFirst()).setMinWidth(108);
+        HBox.setHgrow(apiKeyField, Priority.ALWAYS);
         VBox apiCard = card("模型连接", apiRow);
-        Label apiNote = new Label("API key is stored in %USERPROFILE%/.maa_kb/settings.properties. "
-                + "Without a key, the Q&A will use offline mode showing raw retrieval results.");
+        Label apiNote = new Label("Key 保存在本机设置文件中。未配置时，问答显示本地检索结果。");
         apiNote.setWrapText(true);
         apiNote.setFont(Font.font(12));
-        apiNote.setTextFill(Color.web("#6b7280"));
+        apiNote.getStyleClass().add("muted");
 
         // Embedding model selector
         Label embedLabel = pageTitle("本地向量模型");
@@ -1220,7 +1228,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         Label modelStatus = new Label("");
         modelStatus.setFont(Font.font(12));
 
-        Button applyModelBtn = styledButton("Apply Model", "#6C63FF");
+        Button applyModelBtn = styledButton("应用模型", "#6C63FF");
         applyModelBtn.setOnAction(e -> {
             if (busy()) return;
             String selected = modelCombo.getValue();
@@ -1229,14 +1237,14 @@ public class MaaKnowledgeBuilderApp extends Application {
             String loaded = embedder.initModel(selected);
             String status;
             if (selected.equals(loaded)) {
-                status = "Applied: " + loaded + " (will take effect on next Build)";
-                modelStatus.setTextFill(Color.web("#10b981"));
+                status = "已应用：" + loaded + "（下次构建时使用）";
+                modelStatus.getStyleClass().removeAll("muted", "warning-text"); modelStatus.getStyleClass().add("success-text");
             } else if ("hash-ngram-v2".equals(loaded)) {
-                status = "Using: stable hash n-gram (place model files in models/ folder first)";
-                modelStatus.setTextFill(Color.web("#f59e0b"));
+                status = "正在使用稳定哈希向量，请先安装本地模型资源。";
+                modelStatus.getStyleClass().removeAll("muted", "success-text"); modelStatus.getStyleClass().add("warning-text");
             } else {
-                status = "Active: " + loaded;
-                modelStatus.setTextFill(Color.web("#10b981"));
+                status = "当前模型：" + loaded;
+                modelStatus.getStyleClass().removeAll("muted", "warning-text"); modelStatus.getStyleClass().add("success-text");
             }
             modelStatus.setText(status);
         });
@@ -1245,8 +1253,23 @@ public class MaaKnowledgeBuilderApp extends Application {
 
         VBox embedCard = card("向量化设置",
                 new VBox(6,
-                        new Label("ONNX model: all-MiniLM-L6-v2 (bundled, 384-dim)"),
+                        new Label("本地模型：all-MiniLM-L6-v2（384 维）"),
                         new HBox(8, modelCombo, applyModelBtn), modelStatus));
+        var themeChoice = new ComboBox<yagen.waitmydawn.kb.ui.ThemeMode>();
+        themeChoice.getItems().setAll(yagen.waitmydawn.kb.ui.ThemeMode.values());
+        themeChoice.setValue(config.getThemeMode());
+        themeChoice.valueProperty().addListener((o, previous, mode) -> { if (mode != null) themes.setMode(mode); });
+        var themeRow = new HBox(8, new Label("色彩主题："), themeChoice);
+        themeRow.setAlignment(Pos.CENTER_LEFT);
+        var prewarm = new Spinner<Integer>(0, 30, config.getPrewarmPages());
+        prewarm.setPrefWidth(108);
+        prewarm.valueProperty().addListener((o, previous, value) -> config.setPrewarmPages(value));
+        var prewarmRow = new HBox(8, new Label("每模组预取页数："), prewarm);
+        prewarmRow.setAlignment(Pos.CENTER_LEFT);
+        var prewarmNote = new Label("建库时预取不同生物分类的少量正文，并补充已配置的关系页面，减少首次问答的请求。0 为关闭；所有请求共享站点限速与冷却。设置从下次构建生效。");
+        prewarmNote.setWrapText(true); prewarmNote.getStyleClass().add("muted");
+        page.getChildren().addAll(pageTitle("外观"), card("主题设置", themeRow),
+                pageTitle("构建准备"), card("预取常用详情", new VBox(10, prewarmRow, prewarmNote)));
         page.getChildren().addAll(dirTitle, dirCard, dirNote, authorTitle, authorCard,
                 apiTitle, apiCard, apiNote, embedLabel, embedCard);
         return page;
@@ -1257,7 +1280,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     private Label pageTitle(String text) {
         Label l = new Label(text);
         l.getStyleClass().add("page-title");
-        l.setTextFill(Color.web("#1f2937"));
+
         l.setPadding(new Insets(0, 0, 4, 0));
         return l;
     }
@@ -1268,7 +1291,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         Label t = new Label(title);
         t.getStyleClass().add("card-title");
         t.setFont(Font.font("Segoe UI", FontWeight.BOLD, 13));
-        t.setTextFill(Color.web("#374151"));
+
         card.getChildren().addAll(t, content);
         return card;
     }
@@ -1321,6 +1344,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         a.setTitle("失败");
         a.setHeaderText(null);
         a.setContentText(msg);
+        if (themes != null) themes.prepare(a.getDialogPane().getScene());
         a.showAndWait();
     }
 
@@ -1348,7 +1372,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         root.getChildren().add(new HBox(8, new Label("Slug:"), slugField));
 
         Button openModrinth = new Button("打开 Modrinth 页面");
-        openModrinth.setStyle("-fx-text-fill: #6C63FF; -fx-background-color: transparent;");
+        openModrinth.getStyleClass().add("link-button");
         openModrinth.setOnAction(ev -> {
             String slug = slugField.getText().trim();
             if (!slug.isEmpty()) {
@@ -1380,7 +1404,9 @@ public class MaaKnowledgeBuilderApp extends Application {
         btns.getChildren().addAll(save, cancel);
         root.getChildren().add(btns);
 
-        d.setScene(new Scene(root, 420, 200));
+        var scene = new Scene(root, 420, 200);
+        themes.prepare(scene);
+        d.setScene(scene);
         d.showAndWait();
     }
 
@@ -1411,7 +1437,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             if (!info.isBase()) {
                 Button delBtn = new Button("删除");
                 delBtn.setFont(Font.font(9));
-                delBtn.setStyle("-fx-text-fill: #ef4444; -fx-background-color: transparent; -fx-padding: 0 4;");
+                delBtn.getStyleClass().addAll("link-button", "danger-text");
                 delBtn.setOnAction(ev -> {
                     if (busy()) return;
                     dbManager.delete(info.filename());
@@ -1430,11 +1456,11 @@ public class MaaKnowledgeBuilderApp extends Application {
         String active = embedder.activeModel();
         int vecCount = (vectorStore != null) ? vectorStore.count() : 0;
         if ("none".equals(active)) {
-            status.setText("Using: built-in n-gram TF-IDF | " + vecCount + " vectors in DB");
-            status.setTextFill(Color.web("#6b7280"));
+            status.setText("使用本地哈希向量 · 库中 " + vecCount + " 条向量");
+            status.getStyleClass().removeAll("success-text", "warning-text"); status.getStyleClass().add("muted");
         } else {
-            status.setText("Active: " + active + " | " + vecCount + " vectors in DB");
-            status.setTextFill(Color.web("#10b981"));
+            status.setText("当前：" + active + " · 库中 " + vecCount + " 条向量");
+            status.getStyleClass().removeAll("muted", "warning-text"); status.getStyleClass().add("success-text");
         }
     }
 
