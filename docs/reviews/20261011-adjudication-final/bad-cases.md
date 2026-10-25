@@ -1,3 +1,0 @@
-# Bad Cases
-
-无

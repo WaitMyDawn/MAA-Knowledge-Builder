@@ -14,15 +14,14 @@ src/main/resources/models/
 *.trace.db
 .DS_Store
 Thumbs.db
-docs/
 
+docs/
 run.bat
 run.sh
 RAG-project.md
 Command.md
 workflow.md
 MKB-QA.md
-intro.md
 test-questions.json
 test-web.json
 dependency-reduced-pom.xml
