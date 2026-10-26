@@ -25,8 +25,7 @@ public class RecipeExtractor {
         List<ParsedRecipe> recipes = new ArrayList<>();
 
         try (JarFile jar = new JarFile(jarPath.toFile())) {
-            String recipesPrefix = "data/" + modId + "/recipe/";
-            String legacyPrefix = "data/" + modId + "/recipes/";
+            var recipePath = java.util.regex.Pattern.compile("data/([^/]+)/recipes?/(.+)\\.json");
 
             Enumeration<JarEntry> entries = jar.entries();
             while (entries.hasMoreElements()) {
@@ -34,11 +33,12 @@ public class RecipeExtractor {
                 String name = entry.getName();
 
                 if (!name.endsWith(".json")) continue;
-                if (!name.startsWith(recipesPrefix) && !name.startsWith(legacyPrefix)) continue;
+                if (!recipePath.matcher(name).matches()) continue;
 
                 try (InputStream is = jar.getInputStream(entry)) {
-                    String json = new String(is.readNBytes(2 * 1024 * 1024 + 1), java.nio.charset.StandardCharsets.UTF_8);
-                    if (json.length() > 2 * 1024 * 1024) throw new IOException("Recipe exceeds size limit");
+                    byte[] bytes = is.readNBytes(2 * 1024 * 1024 + 1);
+                    if (bytes.length > 2 * 1024 * 1024) throw new IOException("Recipe exceeds size limit");
+                    String json = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
                     ParsedRecipe pr = parseRecipeJson(json, modId, name);
                     if (pr != null) {
                         recipes.add(pr);
@@ -76,6 +76,7 @@ public class RecipeExtractor {
                 } else if (result.isTextual()) {
                     // 1.19-: "result":"modid:item"
                     outputItem = result.asText();
+                    outputCount = root.path("count").asInt(1);
                 } else if (result.isInt() || result.isNumber()) {
                     // numeric result is a count, item name from elsewhere
                     outputCount = result.asInt(1);
@@ -83,7 +84,8 @@ public class RecipeExtractor {
             }
 
             String resource = fullPath.replaceFirst("^data/[^/]+/recipes?/", "").replaceFirst("\\.json$", "");
-            return new ParsedRecipe(recipeType, outputItem, outputCount, json, modId, modId + ":" + resource,
+            String namespace = fullPath.split("/", 3)[1];
+            return new ParsedRecipe(recipeType, outputItem, outputCount, json, modId, namespace + ":" + resource,
                     type, outputItem == null || outputItem.isBlank() ? "UNKNOWN_OUTPUT" : "PARSED");
         } catch (Exception e) {
             log.debug("Failed to parse recipe JSON: {} - {}", fullPath, e.getMessage());
@@ -92,15 +94,17 @@ public class RecipeExtractor {
     }
 
     private String mapRecipeType(String type) {
-        if (type.contains("crafting")) return "crafting";
-        if (type.contains("smelting")) return "furnace";
-        if (type.contains("blasting")) return "blasting";
-        if (type.contains("smoking")) return "smoking";
-        if (type.contains("smithing")) return "smithing";
-        if (type.contains("stonecutting")) return "stonecutting";
-        if (type.contains("campfire")) return "campfire_cooking";
-        if (type.contains("brewing")) return "brewing";
-        return type;
+        String normalized = type.contains(":") ? type : "minecraft:" + type;
+        return switch (normalized) {
+            case "minecraft:crafting_shaped", "minecraft:crafting_shapeless" -> "crafting";
+            case "minecraft:smelting" -> "furnace";
+            case "minecraft:blasting" -> "blasting";
+            case "minecraft:smoking" -> "smoking";
+            case "minecraft:smithing_transform", "minecraft:smithing_trim" -> "smithing";
+            case "minecraft:stonecutting" -> "stonecutting";
+            case "minecraft:campfire_cooking" -> "campfire_cooking";
+            default -> type;
+        };
     }
 
     public record ParsedRecipe(

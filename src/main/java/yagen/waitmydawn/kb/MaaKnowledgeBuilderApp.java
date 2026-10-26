@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class MaaKnowledgeBuilderApp extends Application {
 
@@ -392,7 +393,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         buildUrlsField.setPromptText("每行一个网址；支持百科模组、整合包和普通网页");
         buildUrlsField.setPrefRowCount(2);
         buildDocumentsField = new TextArea();
-        buildDocumentsField.setPromptText("每行一个资料目录；支持 TXT、DOC、DOCX、PDF 和图片，默认使用本地 OCR");
+        buildDocumentsField.setPromptText("每行一个目录；支持 TXT、DOC、DOCX、PDF、图片，或含 manifest.json 的 MKB-Export 图标包");
         buildDocumentsField.setPrefRowCount(2);
         Button browseDocuments = new Button("添加资料目录");
         browseDocuments.setOnAction(e -> {
@@ -611,6 +612,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             if (currentSession != null) qaPipeline.restoreHistory(currentSession.messages);
             Platform.runLater(() -> {
                 refreshKnowledgeScopes();
+                refreshIconProfiles();
                 logBuildResult(r);
                 setStatus("就绪", false);
             });
@@ -623,6 +625,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     private void logBuildResult(KnowledgeBuilder.BuildResult result) {
         logText("构建完成；新增模组："+result.parsed+"，跳过JAR："+result.skipped+"，冲突："+result.conflicts);
         logText("新增文档："+result.documents+"，复用文档："+result.reusedDocuments+"，跳过网址："+result.reusedSources);
+        logText("图标包："+result.nativeIconPacks+"，新增图标："+result.nativeIcons+"，失败记录："+result.failedNativeIcons+"，复用图标包："+result.reusedIconPacks);
         logText("新增向量："+result.addedEmbeddings+"，总向量："+result.embeddings+"，配方："+result.recipes);
         logText("教程："+result.tutorials+"，网页图片："+result.webImages+"，未缓存图片："+result.deferredWebImages);
         logText("本地图片："+result.localImages+"，OCR："+result.ocrImages+"，视觉描述："+result.visionImages);
@@ -633,6 +636,8 @@ public class MaaKnowledgeBuilderApp extends Application {
     // =================== QA Page ===================
 
     private VBox sessionListView; // for refreshSessionList
+    private ComboBox<ItemIconStore.Profile> iconProfileChoice;
+    private boolean refreshingIconProfiles;
 
     private VBox buildQAPage() {
         HBox page = new HBox(0);
@@ -645,6 +650,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         historySidebar.getStyleClass().add("history-sidebar");
 
         qaDataDirLabel = new Label("DB: " + config.getDataDir().getFileName());
+        qaDataDirLabel.setTooltip(new Tooltip(config.getDataDir().toString()));
         qaDataDirLabel.setFont(Font.font(10));
         qaDataDirLabel.getStyleClass().add("muted");
 
@@ -703,7 +709,23 @@ public class MaaKnowledgeBuilderApp extends Application {
         refreshDbBtn.getStyleClass().add("link-button");
         refreshDbBtn.setOnAction(ev -> refreshDBCheckboxes(dbCheckboxList));
 
-        historySidebar.getChildren().addAll(qaDataDirLabel, newChatBtn, clearBtn,
+        var refreshHistory=new Button("刷新对话");refreshHistory.setOnAction(e -> {if(!busy())refreshSessionList(historySidebar);});
+        var importHistory=new Button("导入评测会话…");importHistory.setMaxWidth(Double.MAX_VALUE);
+        importHistory.setOnAction(e -> {
+            if(busy())return;
+            var chooser=new DirectoryChooser();chooser.setTitle("选择包含 sessions 的评测运行目录");
+            Path runs=config.getDataDir().resolve("eval-runs");chooser.setInitialDirectory((Files.isDirectory(runs)?runs:config.getDataDir()).toFile());
+            var selected=chooser.showDialog(importHistory.getScene().getWindow());if(selected==null)return;
+            operationInFlight=true;setStatus("正在导入评测会话…",true);
+            submitOperation(()->{
+                try {
+                    var imported=new EvaluationSessionImporter().importRun(selected.toPath(),config.getDataDir(),"评测回放");
+                    Platform.runLater(()->{refreshSessionList(historySidebar);qaLog.appendText("已导入/复用 "+imported.sessions().size()+" 个会话，图片资产 "+imported.imageAssets()+"；请在左侧最近对话中选择“评测回放”。\n");});
+                } catch(Exception failure) {Platform.runLater(()->showError("评测会话导入失败："+failure.getMessage()));}
+                finally {Platform.runLater(()->{operationInFlight=false;setStatus("就绪",false);});}
+            });
+        });
+        historySidebar.getChildren().addAll(qaDataDirLabel, newChatBtn, importHistory,refreshHistory,clearBtn,
                 new Separator(), new Label("检索数据库："), dbScroll, refreshDbBtn,
                 new Separator(), new Label("最近对话："), sessionScroll);
 
@@ -726,6 +748,21 @@ public class MaaKnowledgeBuilderApp extends Application {
         fetchKnowledgeImages.setSelected(true);
         HBox scopeRow = new HBox(8, new Label("资料范围："), knowledgeScopeChoice, fetchKnowledgeImages);
         HBox.setHgrow(knowledgeScopeChoice, Priority.ALWAYS);
+        iconProfileChoice=new ComboBox<>();iconProfileChoice.setMaxWidth(Double.MAX_VALUE);
+        iconProfileChoice.setOnAction(event -> {
+            if(refreshingIconProfiles)return;
+            if(busy()){refreshIconProfiles();return;}
+            var selected=iconProfileChoice.getValue();if(selected==null)return;
+            try {
+                new ItemIconStore(db).selectProfile(selected.id());
+                if(rendererService!=null)rendererService.clearCache();
+                if(qaLog!=null)qaLog.appendText("配方图标环境："+selected+"；仅用于默认物品状态，不确认整合包配方规则。\n");
+                iconProfileChoice.setTooltip(new Tooltip(Objects.toString(selected.location(),"仅使用当前库的平面候选或缺失占位")));
+            }catch(Exception failure){showError(failure.getMessage());refreshIconProfiles();}
+        });
+        var refreshIcons=new Button("刷新图标环境");refreshIcons.setOnAction(event -> {if(!busy())refreshIconProfiles();});
+        HBox iconRow=new HBox(8,new Label("配方图标："),iconProfileChoice,refreshIcons);HBox.setHgrow(iconProfileChoice,Priority.ALWAYS);
+        refreshIconProfiles();
 
         questionField = new TextArea();
         questionField.setWrapText(true); questionField.setPrefRowCount(2); questionField.setMaxHeight(100);
@@ -742,7 +779,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         qaLog.setPrefRowCount(3);
         qaLog.setStyle("-fx-font-family: 'Consolas'; -fx-font-size: 11px;");
 
-        VBox chatSection = new VBox(4, chatScroll, scopeRow, inputRow);
+        VBox chatSection = new VBox(4, chatScroll, scopeRow,iconRow, inputRow);
         VBox.setVgrow(chatScroll, Priority.ALWAYS);
         var detailSection = new TitledPane("检索与性能详情",qaLog); detailSection.setExpanded(false);
         VBox qaLayout = new VBox(12,chatSection,detailSection); VBox.setVgrow(chatSection,Priority.ALWAYS);
@@ -772,6 +809,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                 String labelText = sess.title + " (" + sess.messages.size() + " msgs)";
                 if (labelText.length() > 28) labelText = labelText.substring(0, 28) + "...";
                 Label lbl = new Label(labelText);
+                lbl.setTooltip(new Tooltip(sess.title+"\n"+sess.dataDir));
                 lbl.setFont(Font.font(11));
 
                 Button delBtn = new Button("X");
@@ -863,7 +901,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         submitOperation(() -> {
             try {
                 QaPipeline.QaResult result = submittedPipeline.process(q, submittedScope);
-                var recipeImages = result.recipesToRender.isEmpty() ? Map.<String,String>of() : rendererService.renderRecipes(result.recipesToRender);
+                var recipeImages = rendererService.renderDetailed(result.recipesToRender);
                 AnswerMedia.attachRecipes(result, recipeImages, config.getDataDir());
                 final var media=AnswerMedia.assess(result.answer,result.artifacts,config.getDataDir());
                 final String answerWithImages = result.answer;
@@ -871,6 +909,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                 Platform.runLater(() -> {
                     addChatBubble("MAA", answerWithImages, "#f0fdf4", result.artifacts);
                     appendEvidence(result,media);
+                    for(String diagnostic:recipeImages.diagnostics())qaLog.appendText("配方图："+diagnostic+"\n");
                     if (result.metrics != null) {
                         log.info("QA Metrics: total={}ms answers={} imgs={}",
                                 result.metrics.totalTimeMs, result.metrics.answerLength,
@@ -897,6 +936,17 @@ public class MaaKnowledgeBuilderApp extends Application {
         });
     }
 
+    private void refreshIconProfiles() {
+        if(iconProfileChoice==null||db==null)return;
+        refreshingIconProfiles=true;
+        try {
+            var store=new ItemIconStore(db);String active=store.activeProfileId();
+            var choices=new java.util.ArrayList<ItemIconStore.Profile>();choices.add(ItemIconStore.Profile.none());choices.addAll(store.profiles());
+            iconProfileChoice.getItems().setAll(choices);
+            iconProfileChoice.setValue(choices.stream().filter(p -> java.util.Objects.equals(p.id(),active)).findFirst().orElse(choices.getFirst()));
+            iconProfileChoice.setTooltip(new Tooltip(Objects.toString(iconProfileChoice.getValue().location(),"显式选择实机导出环境；未选择时不自动借用其他包图标。")));
+        }finally{refreshingIconProfiles=false;}
+    }
     private void refreshKnowledgeScopes() {
         if (knowledgeScopeChoice == null || qaPipeline == null) return;
         String selected = knowledgeScopeChoice.getValue() == null ? null : knowledgeScopeChoice.getValue().id();

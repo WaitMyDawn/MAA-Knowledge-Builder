@@ -27,6 +27,9 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
 
     @Override public void process(BuildRequest.Source source, Context context) throws Exception {
         Path selected = Path.of(source.location());
+        if(NativeIconPack.detected(selected)) {
+            new ItemIconStore(context.database()).importPack(source,NativeIconPack.read(selected),context);return;
+        }
         Path root = selected.toRealPath(), output = dataDir.toRealPath();
         if (!Files.isDirectory(root) || Files.isSymbolicLink(selected) || root.startsWith(output) || sensitive(root))
             throw new IllegalArgumentException("资料目录不能是敏感目录、符号链接或应用数据目录");
@@ -37,6 +40,7 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
             @Override public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) throws IOException {
                 context.checkCancelled();
                 if (!directory.equals(root) && (excluded(root, directory) || directory.toRealPath().startsWith(output))) return FileVisitResult.SKIP_SUBTREE;
+                if(!directory.equals(root) && NativeIconPack.detected(directory))throw new IOException("发现嵌套导出包，请直接选择该包目录，避免将图标作为普通知识导入："+directory.getFileName());
                 return FileVisitResult.CONTINUE;
             }
             @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {

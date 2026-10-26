@@ -1,325 +1,125 @@
 package yagen.waitmydawn.kb.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.slf4j.*;
 import yagen.waitmydawn.kb.config.AppConfig;
-import yagen.waitmydawn.kb.model.DatabaseBuilder;
-import yagen.waitmydawn.kb.renderer.*;
-
+import yagen.waitmydawn.kb.model.*;
+import yagen.waitmydawn.kb.renderer.RecipeCardRenderer;
 import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
+import java.nio.file.*;
 import java.util.*;
 
-/**
- * 配方图片渲染调度器 — 按需生成合成图/熔炉图/锻造图。
- *
- * 工作流:
- *   1. 从 rag_texture_cache 构建注册名→纹理路径映射
- *   2. 通过 TemplateManager 获取裁剪后的基底模板
- *   3. 解析配方 JSON, 按类型分发给对应渲染器
- *   4. 输出 2x 放大图片到 generated/{crafting|furnace|smithing}/
- *
- * 缓存策略: 如果目标文件已存在则跳过渲染。
- */
+/** 配方语义、显式环境图标和不可变回答图片之间的编排；缓存独立于文本向量代次。 */
 public class RendererService {
-
-    private static final Logger log = LoggerFactory.getLogger(RendererService.class);
-    private static final ObjectMapper mapper = new ObjectMapper();
-
+    private static final Logger LOG=LoggerFactory.getLogger(RendererService.class);
+    private static final ObjectMapper JSON=new ObjectMapper();
     private final AppConfig config;
     private final DatabaseBuilder db;
-    private final TemplateManager templateManager;
-    private final CraftingRenderer craftingRenderer;
-    private final FurnaceRenderer furnaceRenderer;
-    private final SmithingRenderer smithingRenderer;
-
-    // registryName → local file path (lazily loaded from rag_texture_cache)
-    private Map<String, String> registryPathMap;
-    private String registryGeneration;
-
-    public RendererService(AppConfig config, DatabaseBuilder db) {
-        this.config = config;
-        this.db = db;
-        this.templateManager = new TemplateManager(config, db);
-        this.craftingRenderer = new CraftingRenderer();
-        this.furnaceRenderer = new FurnaceRenderer();
-        this.smithingRenderer = new SmithingRenderer();
+    public record IconEvidence(String itemId,String assetId,String source,String detail) {}
+    public record SlotEvidence(int index,String role,int count,List<RecipePlan.Alternative> alternatives,
+                               List<String> candidates,IconEvidence preview,List<String> warnings) {}
+    public record RenderedRecipe(String key,String path,String fingerprint,String recipeId,String recipeJson,
+                                 String sourceMod,String sourceType,String profileId,RecipePlan plan,
+                                 List<SlotEvidence> slots,IconEvidence output,List<String> metadata,List<String> notes,String pngHash) {
+        public String summary() {
+            String text=String.join("\n",metadata)+"\n"+String.join("\n",notes)+"\n"+slots.stream().map(s -> s.role()+" ×"+s.count()+" "+s.alternatives()+"；预览 "+s.preview().itemId()+"；"+s.preview().source()+"；"+s.preview().detail()).collect(java.util.stream.Collectors.joining("\n"));
+            return text.substring(0,Math.min(text.length(),16000));
+        }
     }
-
-    // ==================== Main API ====================
-
-    /**
-     * Render recipe images for a list of recipe matches.
-     * Skips rendering if the output file already exists.
-     *
-     * @param recipeMatches list of (recipeJson, outputItem, sourceMod)
-     * @return map of outputItem#contentFingerprint → absolute image file path
-     */
-    public Map<String, String> renderRecipes(List<QaPipeline.RecipeMatch> recipeMatches) {
-        Map<String, String> rendered = new LinkedHashMap<>();
-        if (recipeMatches.isEmpty()) return rendered;
-
-        // Ensure texture map is fresh
-        ensureRegistryMap();
-
-        // Pre-load template images (null if vanilla textures unavailable)
-        BufferedImage craftingTpl = templateManager.getOrCreateTemplate("crafting_table");
-        BufferedImage furnaceTpl = templateManager.getOrCreateTemplate("furnace");
-        BufferedImage smithingTpl = templateManager.getOrCreateTemplate("smithing");
-
-        // Load all available textures into memory for this batch
-        Map<String, BufferedImage> textureCache = new HashMap<>();
-
-        for (QaPipeline.RecipeMatch match : recipeMatches) {
-            String recipeJson = match.recipeJson();
-            String outputItem = match.outputItem();
-            String sourceMod = match.sourceMod();
-
-            if (recipeJson == null || outputItem == null) continue;
-
-            String type = detectRecipeType(recipeJson);
-            if (type == null) {
-                // 只渲染 Minecraft 原版标准配方类型；自定义类型（如 iceandfire:dragonforge、
-                // farmersdelight:cooking）没有对应模板，直接跳过并告警，
-                // 避免用错误模板硬渲染出无意义图片（2026-09-07 修复）。
-                String head = recipeJson.replace('\n', ' ');
-                if (head.length() > 120) head = head.substring(0, 120) + "...";
-                log.warn("Unsupported recipe type, skipping {} (recipe: {})", outputItem, head);
-                continue;
-            }
-            BufferedImage template = switch (type) {
-                case "crafting" -> craftingTpl;
-                case "furnace" -> furnaceTpl;
-                case "smithing" -> smithingTpl;
-                default -> null;
-            };
-
-            // Skip if template unavailable (vanilla GUI texture not extracted)
-            if (template == null) {
-                log.warn("No template available for type={}, skipping {}", type, outputItem);
-                continue;
-            }
-
-            // Check if output file already exists
-            String safeName = outputItem.replaceAll("[^a-zA-Z0-9_-]", "_") + "_" + cacheFingerprint(recipeJson);
-            Path outDir = config.getGeneratedDir().resolve(type);
-            Path outFile = outDir.resolve(safeName + ".png");
-
-            if (Files.exists(outFile) && outFile.toFile().length() > 0) {
-                rendered.put(outputItem + "#" + cacheFingerprint(recipeJson), outFile.toAbsolutePath().toString());
-                continue;
-            }
-
-            // Render
+    public record RenderBatch(Map<String,String> images,List<RenderedRecipe> cards,List<String> diagnostics) {
+        public RenderBatch {images=Collections.unmodifiableMap(new LinkedHashMap<>(images));cards=List.copyOf(cards);diagnostics=List.copyOf(diagnostics);}
+    }
+    private record RecipeMeta(String id,String loader,String version,String minecraftVersion) {}
+    public RendererService(AppConfig config,DatabaseBuilder db) {this.config=config;this.db=db;}
+    public Map<String,String> renderRecipes(List<QaPipeline.RecipeMatch> matches) {return renderDetailed(matches).images();}
+    public RenderBatch renderDetailed(List<QaPipeline.RecipeMatch> matches) {
+        var images=new LinkedHashMap<String,String>();var cards=new ArrayList<RenderedRecipe>();var diagnostics=new ArrayList<String>();
+        if(matches==null||matches.isEmpty())return new RenderBatch(images,cards,diagnostics);
+        var icons=new ItemIconService(db,config.getDataDir()).snapshot();
+        for(var match:matches) {
+            if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("Recipe rendering cancelled");
             try {
-                Files.createDirectories(outDir);
-
-                // Build texture map for this recipe's ingredients
-                Map<String, BufferedImage> texMap = buildTextureMap(recipeJson, textureCache, registryPathMap);
-
-                BufferedImage image = switch (type) {
-                    case "crafting" -> craftingRenderer.render(recipeJson, template, texMap);
-                    case "furnace" -> furnaceRenderer.render(recipeJson, template, texMap);
-                    case "smithing" -> smithingRenderer.render(recipeJson, template, texMap);
-                    default -> null;
-                };
-
-                if (image != null) {
-                    ImageIO.write(image, "PNG", outFile.toFile());
-                    rendered.put(outputItem + "#" + cacheFingerprint(recipeJson), outFile.toAbsolutePath().toString());
-                    log.info("Rendered {}: {} ({}x{})", type, safeName, image.getWidth(), image.getHeight());
+                if("SEED".equals(match.sourceType()))throw new IllegalArgumentException("内置示例配方未核对版本，请先导入真实 JAR 配方");
+                var plan=RecipePlan.parse(match.recipeJson());
+                if(!plan.output().dynamic()&&match.outputItem()!=null&&!match.outputItem().equals(plan.output().itemId()))throw new IllegalArgumentException("配方产物与检索结果不一致");
+                var meta=metadata(match);var inputs=new ArrayList<RecipeCardRenderer.Input>();var evidence=new ArrayList<SlotEvidence>();
+                var notes=new LinkedHashSet<String>(plan.notes());var metadata=new ArrayList<String>();
+                String sourceType=Objects.toString(match.sourceType(),"UNKNOWN");
+                metadata.add("来源："+(sourceType.equals("JAR_PARSE")?"JAR 默认配方，未确认运行时修改":sourceType));
+                metadata.add("配方："+meta.id());
+                metadata.add("来源模组："+Objects.toString(match.sourceMod(),"未知")+" "+Objects.toString(meta.version(),""));
+                var profile=icons.profile();
+                if(profile!=null && (meta.minecraftVersion()!=null && meta.minecraftVersion().matches("[0-9]+\\.[0-9]+(?:\\.[0-9]+)?") && !meta.minecraftVersion().equals(profile.minecraftVersion())
+                        || meta.loader()!=null && !meta.loader().isBlank() && !meta.loader().equals("vanilla") && !meta.loader().equals(profile.loader())))throw new IllegalArgumentException("配方版本与所选图标环境不符");
+                metadata.add("配方版本："+Objects.toString(meta.minecraftVersion(),"未知")+" · "+Objects.toString(meta.loader(),"未知加载器"));
+                metadata.add(profile==null?"图标环境：仅静态回退 / 缺失占位":"图标环境："+profile.loader()+" "+profile.minecraftVersion()+" · "+profile.origin());
+                if(profile!=null)metadata.add("环境确认："+profile.compatibility()+" · "+profile.id().substring(0,8));
+                else notes.add("未选择实机图标环境；不会自动挑选或跨包借用图标。");
+                if(profile!=null&&!profile.compatibility().equals("DECLARED_MATCH"))notes.add("环境未完整验证或存在冲突；已知冲突的实机包不会用于绘图。");
+                if(profile!=null&&profile.origin().equals("FIXTURE"))notes.add("当前为模拟图标环境，不能作为实机效果验收。");
+                for(var slot:plan.slots()) {
+                    var selected=icons.ingredient(slot.ingredient());var icon=selected.icon();
+                    var warnings=new ArrayList<>(selected.warnings());
+                    if(!icon.source().equals("NATIVE"))warnings.add(Objects.toString(icon.itemId(),slot.role())+"："+icon.detail());
+                    notes.addAll(warnings);
+                    String constraints=slot.ingredient().unsupported()!=null?slot.ingredient().unsupported():slot.ingredient().alternatives().stream().map(RecipePlan.Alternative::label).collect(java.util.stream.Collectors.joining(" / "));
+                    String preview=icon.itemId()==null?"未确定":icon.name()+" ("+icon.itemId()+")";
+                    String description=constraints+"；预览："+preview+"；"+origin(icon.source());
+                    if(selected.candidates().size()>1)description+="；已知候选 "+selected.candidates().size()+" 种";
+                    inputs.add(new RecipeCardRenderer.Input(slot,visual(icon),description));
+                    evidence.add(new SlotEvidence(slot.index(),slot.role(),slot.ingredient().count(),slot.ingredient().alternatives(),selected.candidates(),proof(icon),warnings));
                 }
-            } catch (Exception e) {
-                log.warn("Render failed for {}: {}", outputItem, e.getMessage());
+                var output=icons.item(plan.output().itemId(),plan.output().stateful()||plan.output().dynamic());
+                if(!output.source().equals("NATIVE"))notes.add("产物："+output.detail());
+                var counts=new TreeMap<String,Integer>();inputs.forEach(i->counts.merge(origin(i.visual().source()),1,Integer::sum));counts.merge(origin(output.source()),1,Integer::sum);
+                metadata.add("图标槽位："+counts);
+                String fingerprint=BuildRequest.fingerprint(RecipeCardRenderer.VERSION+"\n"+icons.revision()+"\n"+match.recipeJson()+"\n"+metadata+"\n"+JSON.writeValueAsString(evidence)+"\n"+proof(output));
+                String outputKey=plan.output().dynamic()?"minecraft:smithing_trim":plan.output().itemId();
+                String key=outputKey+"#"+fingerprint.substring(0,24);
+                String family=switch(plan.kind()){case SHAPED,SHAPELESS->"crafting";case SMITHING_TRANSFORM,SMITHING_TRIM->"smithing";case STONECUTTING->"stonecutting";default->"furnace";};
+                Path directory=config.getGeneratedDir().resolve(family);Files.createDirectories(directory);
+                String safe=outputKey.replaceAll("[^a-zA-Z0-9_-]","_");if(safe.length()>80)safe=safe.substring(0,80);
+                Path file=directory.resolve(safe+"_"+fingerprint.substring(0,24)+".png");Path sidecar=directory.resolve(file.getFileName()+".json");
+                String pngHash=cachedHash(file,sidecar,fingerprint);
+                if(pngHash==null) {
+                    var image=RecipeCardRenderer.render(new RecipeCardRenderer.Card(plan,inputs,visual(output),metadata,List.copyOf(notes)));
+                    Path temp=Files.createTempFile(directory,"recipe-",".png");
+                    try {ImageIO.write(image,"PNG",temp.toFile());pngHash=ArtifactFingerprint.sha256(temp);move(temp,file);}finally{Files.deleteIfExists(temp);}
+                }
+                var rendered=new RenderedRecipe(key,file.toAbsolutePath().toString(),fingerprint,meta.id(),match.recipeJson(),match.sourceMod(),sourceType,profile==null?null:profile.id(),plan,evidence,proof(output),metadata,List.copyOf(notes),pngHash);
+                byte[] report=JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(rendered);if(report.length>16*1024*1024)throw new IllegalArgumentException("配方说明超过归档预算");
+                Path temp=Files.createTempFile(directory,"recipe-",".json");try{Files.write(temp,report);move(temp,sidecar);}finally{Files.deleteIfExists(temp);}
+                images.put(key,rendered.path());cards.add(rendered);
+            } catch(Exception e) {
+                String message=Objects.toString(match.outputItem(),"未知产物")+"："+e.getMessage();diagnostics.add(message);LOG.warn("Recipe rendering skipped: {}",message);
             }
         }
-
-        return rendered;
+        return new RenderBatch(images,cards,diagnostics);
     }
-
-    private String cacheFingerprint(String recipeJson) {
+    private RecipeMeta metadata(QaPipeline.RecipeMatch match) {
+        String id=Objects.toString(match.sourceMod(),"unknown")+":recipe/"+BuildRequest.fingerprint(match.recipeJson()).substring(0,12),loader=null,version=null,mc=null;
+        var mod=match.sourceMod()==null?null:db.findModEntry(match.sourceMod());if(mod!=null){loader=mod.getLoader();version=mod.getVersion();mc=mod.getMcVersion();}
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT recipe_id,recipe_data,loader,mod_version FROM rag_recipe WHERE source_mod=? AND "+(match.outputItem()==null?"output_item IS NULL":"output_item=?")+" ORDER BY id")) {
+            p.setString(1,match.sourceMod());if(match.outputItem()!=null)p.setString(2,match.outputItem());p.setMaxRows(1000);
+            try(var r=p.executeQuery()){while(r.next())if(Objects.equals(r.getString(2),match.recipeJson())){id=Objects.toString(r.getString(1),id);loader=r.getString(3);version=r.getString(4);break;}}
+        }catch(Exception e){LOG.debug("Recipe metadata lookup unavailable",e);}
+        return new RecipeMeta(id,loader,version,mc);
+    }
+    private static RecipeCardRenderer.Visual visual(ItemIconService.Icon icon){return new RecipeCardRenderer.Visual(icon.itemId(),icon.name(),icon.image(),icon.source(),icon.detail());}
+    private static IconEvidence proof(ItemIconService.Icon icon){return new IconEvidence(icon.itemId(),icon.assetId(),icon.source(),icon.detail());}
+    private static String origin(String value){return switch(value){case "NATIVE"->"实机";case "JAR_FLAT"->"JAR 平面";default->"缺失/动态";};}
+    private static String cachedHash(Path file,Path sidecar,String fingerprint) {
         try {
-            return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-                    .digest((db.buildGeneration() + "\n" + recipeJson).getBytes(java.nio.charset.StandardCharsets.UTF_8))).substring(0, 20);
-        } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+            if(!Files.isRegularFile(file,LinkOption.NOFOLLOW_LINKS)||!Files.isRegularFile(sidecar,LinkOption.NOFOLLOW_LINKS)||Files.size(sidecar)>16*1024*1024)return null;
+            var metadata=JSON.readTree(sidecar.toFile());String expected=metadata.path("pngHash").asText();
+            return metadata.path("fingerprint").asText().equals(fingerprint)&&expected.equals(ArtifactFingerprint.sha256(file))?expected:null;
+        }catch(Exception ignored){return null;}
     }
-
-    // ==================== Recipe Type Detection ====================
-
-    private String detectRecipeType(String recipeJson) {
-        try {
-            JsonNode recipe = mapper.readTree(recipeJson);
-            String type = recipe.path("type").asText("").toLowerCase();
-            // 去掉命名空间：minecraft:crafting_shaped 与 crafting_shaped 等价
-            int colon = type.indexOf(':');
-            String simple = colon >= 0 ? type.substring(colon + 1) : type;
-            switch (simple) {
-                case "crafting_shaped":
-                case "crafting_shapeless":
-                    return "crafting";
-                case "smelting":
-                case "blasting":
-                case "smoking":
-                case "campfire_cooking":
-                    return "furnace";
-                case "smithing_transform":
-                case "smithing_trim":
-                    return "smithing";
-                default:
-                    return null;
-            }
-        } catch (Exception ignored) {}
-        return null;
+    private static void move(Path source,Path target)throws java.io.IOException {
+        try{Files.move(source,target,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);}
+        catch(AtomicMoveNotSupportedException e){Files.move(source,target,StandardCopyOption.REPLACE_EXISTING);}
     }
-
-    // ==================== Texture Lookup ====================
-
-    /** Build registryName → localPath map from rag_texture_cache */
-    private void ensureRegistryMap() {
-        String generation = db.buildGeneration();
-        if (registryPathMap != null && Objects.equals(registryGeneration, generation)) return;
-        registryPathMap = new LinkedHashMap<>();
-        try (Connection c = db.getConnection();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT registry_name, local_path FROM rag_texture_cache");
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                String reg = rs.getString("registry_name");
-                String path = rs.getString("local_path");
-                if (reg != null && path != null) {
-                    registryPathMap.putIfAbsent(reg, path);
-                }
-            }
-            log.debug("Registry map built: {} entries", registryPathMap.size());
-        } catch (Exception e) {
-            log.warn("Failed to build registry map: {}", e.getMessage());
-        }
-        registryGeneration = generation;
-    }
-
-    /**
-     * Build a BufferedImage map for all ingredients referenced in a recipe.
-     * Lazily loads images from disk and caches them in textureCache.
-     */
-    private Map<String, BufferedImage> buildTextureMap(String recipeJson,
-                                                        Map<String, BufferedImage> textureCache,
-                                                        Map<String, String> pathMap) {
-        Map<String, BufferedImage> result = new LinkedHashMap<>();
-        Set<String> needed = extractIngredientItems(recipeJson);
-        String outputItem = extractOutputItem(recipeJson);
-        if (outputItem != null) needed.add(outputItem);
-
-        for (String item : needed) {
-            if (textureCache.containsKey(item)) {
-                result.put(item, textureCache.get(item));
-                continue;
-            }
-            BufferedImage img = loadItemTexture(item, pathMap);
-            if (img != null) {
-                textureCache.put(item, img);
-                result.put(item, img);
-            }
-        }
-        return result;
-    }
-
-    /** Load a single item texture by registry name */
-    private BufferedImage loadItemTexture(String registryName, Map<String, String> pathMap) {
-        // Exact match
-        String path = pathMap.get(registryName);
-        if (path != null) {
-            BufferedImage img = ImageUtils.loadImage(path);
-            if (img != null) return img;
-        }
-        // Try short name match
-        String shortName = registryName.contains(":") ?
-                registryName.substring(registryName.indexOf(':') + 1) : registryName;
-        for (var e : pathMap.entrySet()) {
-            if (e.getKey().endsWith(":" + shortName)) {
-                BufferedImage img = ImageUtils.loadImage(e.getValue());
-                if (img != null) return img;
-            }
-        }
-        return null;
-    }
-
-    /** Extract all ingredient item names from a recipe JSON */
-    private Set<String> extractIngredientItems(String recipeJson) {
-        Set<String> items = new LinkedHashSet<>();
-        try {
-            JsonNode recipe = mapper.readTree(recipeJson);
-            // From "key" map
-            JsonNode key = recipe.path("key");
-            if (key.isObject()) {
-                var it = key.fields();
-                while (it.hasNext()) {
-                    var entry = it.next();
-                    JsonNode val = entry.getValue();
-                    String id = val.path("id").asText(val.path("item").asText(null));
-                    if (id != null) items.add(id);
-                }
-            }
-            // From "ingredients" array
-            JsonNode ings = recipe.path("ingredients");
-            if (ings.isArray()) {
-                for (JsonNode ing : ings) {
-                    String id = ing.path("id").asText(ing.path("item").asText(null));
-                    if (id != null) items.add(id);
-                }
-            }
-            // Single ingredient
-            JsonNode ing = recipe.path("ingredient");
-            if (ing.isObject()) {
-                String id = ing.path("id").asText(ing.path("item").asText(null));
-                if (id != null) items.add(id);
-            }
-            // Smithing
-            for (String k : new String[]{"template", "base", "addition"}) {
-                JsonNode n = recipe.path(k);
-                if (n.isObject()) {
-                    String id = n.path("id").asText(n.path("item").asText(null));
-                    if (id != null) items.add(id);
-                }
-            }
-        } catch (Exception ignored) {}
-        return items;
-    }
-
-    private String extractOutputItem(String recipeJson) {
-        try {
-            JsonNode recipe = mapper.readTree(recipeJson);
-            JsonNode result = recipe.path("result");
-            String id = result.path("id").asText(null);
-            if (id != null) return id;
-            id = result.path("item").asText(null);
-            if (id != null) return id;
-            return result.asText(null);
-        } catch (Exception e) { return null; }
-    }
-
-    // ==================== Helpers ====================
-
-    /** Generate the markdown image reference for a rendered recipe image */
-    public String imageMarkdown(String outputItem, String imagePath) {
-        outputItem = outputItem.split("#", 2)[0];
-        String name = outputItem.contains(":") ? outputItem.substring(outputItem.indexOf(':') + 1) : outputItem;
-        return "![recipe:" + name + "](" + imagePath.replace('\\', '/') + ")";
-    }
-
-    /** 清除与当前知识库代次关联的纹理及模板缓存。 */
-    public void clearCache() {
-        registryPathMap = null;
-        templateManager.clearCache();
-    }
-
-
+    public String imageMarkdown(String outputItem,String path){return "![recipe:"+outputItem.split("#",2)[0]+"]("+path.replace('\\','/')+")";}
+    /** 图标和资源在每批读取快照，接口保留以兼容既有生命周期调用。 */
+    public void clearCache() {}
 }

@@ -425,7 +425,7 @@ public class AnswerAgent {
     }
 
     private void analyzeRecipe(RecipeMatch rm, StringBuilder ctx, int idx) {
-        ctx.append("Verified recipe summary #").append(idx).append(":\n")
+        ctx.append("Structured recipe summary (JSON structure only; not runtime validation) #").append(idx).append(":\n")
                 .append(yagen.waitmydawn.kb.service.RecipeSummary.describe(rm.recipeJson(),rm.outputItem())).append('\n');
     }
 

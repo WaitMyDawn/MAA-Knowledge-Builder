@@ -158,6 +158,37 @@ class AppendBuildTest {
         } finally {db.shutdown();}
     }
 
+    @Test void duplicateJarBackfillsRecipeResourcesWithoutChangingTextCorpus() throws Exception {
+        var config=config();var db=database(config);
+        Path directory=Files.createDirectory(temp.resolve("mods")),file=directory.resolve("sample.jar");
+        try(var out=new JarOutputStream(Files.newOutputStream(file))) {
+            for(var entry:Map.of("fabric.mod.json","{\"schemaVersion\":1,\"id\":\"sample\",\"version\":\"1\",\"name\":\"Sample\"}",
+                    "data/sample/tags/items/materials.json","{\"values\":[\"sample:ingot\"]}",
+                    "assets/sample/lang/zh_cn.json","{\"item.sample.ingot\":\"示例锭\"}").entrySet()) {
+                out.putNextEntry(new JarEntry(entry.getKey()));out.write(entry.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8));out.closeEntry();
+            }
+        }
+        try(var embedder=new EmbeddingService(null)) {
+            var entry=new ModMetadataParser().parse(file);db.saveModEntry(entry);new JarBuildIndex(db).save(entry,JarBuildIndex.hash(file));
+            var vectors=new VectorStore(db,384);
+            vectors.storeBatch(List.of(new TextChunker.TextChunk("retained","既有配方说明","sample","示例","recipe","old")),embedder);
+            db.setBuildGeneration("existing-corpus");
+            try(var forbidden=new EmbeddingService(null) {
+                @Override public float[] embed(String text){throw new AssertionError("Resource backfill must not embed");}
+                @Override public List<float[]> embedBatch(List<String> texts){throw new AssertionError("Resource backfill must not embed");}
+            }) {
+                var request=new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,directory.toString())),BuildRequest.Mode.APPEND);
+                var builder=new KnowledgeBuilder(config,db,forbidden);
+                var result=builder.build(request,null);
+                assertEquals(0,result.parsed);assertEquals(1,result.skipped);assertEquals(1,result.itemTagFiles);assertEquals(1,result.itemNames);
+                assertEquals(1,vectors.count());assertEquals("existing-corpus",db.buildGeneration());
+                String fingerprint=db.contentFingerprint();
+                result=builder.build(request,null);
+                assertEquals(0,result.itemTagFiles);assertEquals(0,result.itemNames);assertEquals(fingerprint,db.contentFingerprint());
+            }
+        } finally {db.shutdown();}
+    }
+
     private void jar(Path path,String id,String version) throws Exception {
         try(var jar=new JarOutputStream(Files.newOutputStream(path))) {
             var entry=new JarEntry("fabric.mod.json");entry.setTime(0);jar.putNextEntry(entry);

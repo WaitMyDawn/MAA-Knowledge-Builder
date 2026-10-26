@@ -53,7 +53,8 @@ public class DatabaseBuilder {
     private static final List<String> BUILD_TABLES = List.of("rag_mod_info", "rag_recipe",
             "rag_texture_cache", "rag_entity_registry", "rag_web_cache", "rag_web_category", "rag_web_category_member", "rag_vectors", "rag_vector_profile", "rag_build_metadata",
             "rag_knowledge_source", "rag_document", "rag_content_chunk", "rag_image_asset", "rag_image_occurrence", "rag_chunk_image",
-            "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block");
+            "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block","rag_item_icon_profile","rag_item_icon",
+            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import");
 
     /** 网络与解析工作在临时库完成，发布事务只包含已校验的数据复制。 */
     public void replaceBuildDataFrom(DatabaseBuilder staging) {
@@ -434,6 +435,7 @@ public class DatabaseBuilder {
             stmt.execute("DELETE FROM rag_web_category_member");
             stmt.execute("DELETE FROM rag_web_category");
             stmt.execute("DELETE FROM rag_vector_profile");
+            stmt.execute("DELETE FROM rag_build_metadata WHERE name='icon_profile'");
             log.info("Build data cleared (overwrite mode)");
         } catch (SQLException e) {
             log.error("Clear build data failed", e);

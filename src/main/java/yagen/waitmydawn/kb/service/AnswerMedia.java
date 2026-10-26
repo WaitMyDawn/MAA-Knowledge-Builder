@@ -143,6 +143,21 @@ public final class AnswerMedia {
         return store.resolve(image.assetId(),image.relativePath());
     }
 
+    public static void attachRecipes(QaPipeline.QaResult result, RendererService.RenderBatch batch, Path dataDir) throws java.io.IOException {
+        attachRecipes(result,batch.images(),dataDir);
+        if(result.artifacts==null)return;
+        var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<AnswerArtifacts.Picture>();
+        var cards=new HashMap<String,RendererService.RenderedRecipe>();
+        for(var card:batch.cards())cards.put("i"+BuildRequest.fingerprint(card.key()).substring(0,20),card);
+        for(var picture:result.artifacts.pictures()) {
+            var card=cards.get(picture.id());if(card==null){pictures.add(picture);continue;}
+            String sourceId="s"+BuildRequest.fingerprint("recipe:"+card.key()).substring(0,20);
+            String evidence=card.summary()+"\n原始配方：\n"+card.recipeJson();if(evidence.length()>24000)evidence=evidence.substring(0,24000);
+            if(sources.stream().noneMatch(s -> s.id().equals(sourceId)))sources.add(new AnswerArtifacts.Source(sourceId,"recipe:"+card.fingerprint(),card.recipeId(),"jar:"+card.sourceMod()+"!/"+card.recipeId(),card.plan().kind().label,null,card.sourceType(),evidence));
+            pictures.add(new AnswerArtifacts.Picture(picture.id(),picture.assetId(),picture.relativePath(),card.plan().kind().station+" · "+picture.caption(),sourceId,"RECIPE",List.of(),card.summary()));
+        }
+        result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
+    }
     public static void attachRecipes(QaPipeline.QaResult result, Map<String,String> rendered, Path dataDir) throws java.io.IOException {
         if (rendered.isEmpty()) return;
         var artifacts = result.artifacts == null ? AnswerArtifacts.empty() : result.artifacts;

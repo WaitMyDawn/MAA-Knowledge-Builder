@@ -14,13 +14,16 @@ import java.util.Optional;
 public final class KnowledgeContentStore {
     public static final List<String> BUILD_TABLES = List.of("rag_knowledge_source", "rag_document",
             "rag_content_chunk", "rag_image_asset", "rag_image_occurrence", "rag_chunk_image",
-            "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block");
+            "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block","rag_item_icon_profile","rag_item_icon",
+            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import");
     private final DatabaseBuilder db;
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public KnowledgeContentStore(DatabaseBuilder db) { this.db = db; }
 
     public static void init(Connection connection) throws SQLException {
+        ItemIconStore.init(connection);
+        RecipeResourceStore.init(connection);
         try (var s = connection.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS rag_jar_import (id VARCHAR(255) PRIMARY KEY, content_hash VARCHAR(64) NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS rag_content_block(id VARCHAR(500) PRIMARY KEY,document_id VARCHAR(200) NOT NULL,heading_path VARCHAR(2000),lineage VARCHAR(2000),ordinal INT NOT NULL,page_number INT,kind VARCHAR(40),table_id VARCHAR(200),content CLOB NOT NULL,extraction_method VARCHAR(40))");
@@ -180,6 +183,9 @@ public final class KnowledgeContentStore {
     /** 发布前检查引用，避免把暂存期间尚未补全的内容关系发布给问答。 */
     public void validate() {
         var queries = List.of(
+                "SELECT COUNT(*) FROM rag_item_static_icon i LEFT JOIN rag_image_asset a ON a.id=i.image_id WHERE i.status='FLAT_MODEL' AND a.id IS NULL",
+                "SELECT COUNT(*) FROM rag_item_icon_profile p LEFT JOIN rag_knowledge_source s ON s.id=p.source_id WHERE s.id IS NULL",
+                "SELECT COUNT(*) FROM rag_item_icon i LEFT JOIN rag_item_icon_profile p ON p.id=i.profile_id LEFT JOIN rag_image_asset a ON a.id=i.image_id WHERE p.id IS NULL OR (i.status='OK' AND a.id IS NULL) OR (i.status<>'OK' AND i.image_id IS NOT NULL)",
                 "SELECT COUNT(*) FROM rag_content_block b LEFT JOIN rag_document d ON d.id=b.document_id WHERE d.id IS NULL",
                 "SELECT COUNT(*) FROM rag_content_block WHERE heading_path IS NULL OR lineage IS NULL OR kind IS NULL OR extraction_method IS NULL OR ordinal<0",
                 "SELECT COUNT(*) FROM rag_chunk_block l LEFT JOIN rag_content_chunk c ON c.id=l.chunk_id LEFT JOIN rag_content_block b ON b.id=l.block_id WHERE c.id IS NULL OR b.id IS NULL OR c.document_id<>b.document_id",

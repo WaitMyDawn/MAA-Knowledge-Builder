@@ -101,8 +101,14 @@ public class KnowledgeBuilder {
     public BuildResult build(BuildRequest request, ProgressCallback progressCallback) {
         Objects.requireNonNull(request);
         checkCancelled();
+        var iconPacks=new LinkedHashMap<String,NativeIconPack.Pack>();
+        for(var source:request.sources()) if(source.kind()==BuildRequest.Kind.DOCUMENT_DIRECTORY && NativeIconPack.detected(Path.of(source.location()))) {
+            try {iconPacks.put(source.id(),NativeIconPack.read(Path.of(source.location())));}
+            catch(java.io.IOException e){throw new IllegalArgumentException("MKB-Export 预检查失败，原库保留："+e.getMessage(),e);}
+        }
         boolean append=request.mode()==BuildRequest.Mode.APPEND;
-        if(append) VectorStore.verifyProfile(db,embedder.profile(),false);
+        boolean iconsOnly=iconPacks.size()==request.sources().size();
+        if(append && !iconsOnly) VectorStore.verifyProfile(db,embedder.profile(),false);
         String targetFingerprint=append?db.contentFingerprint():null;
         for (var source : request.sources()) {
             if (source.kind() == BuildRequest.Kind.JAR_DIRECTORY) {
@@ -151,13 +157,17 @@ public class KnowledgeBuilder {
                     continue;
                 }
                 content.saveSource(source);
+                if(iconPacks.containsKey(source.id())) {
+                    new ItemIconStore(staging).importPack(source,iconPacks.get(source.id()),new BuildSourceProcessor.Context(staging,content,images,candidate.vectorStore,embedder,progressCallback,result));
+                    continue;
+                }
                 if (source.kind() != BuildRequest.Kind.JAR_DIRECTORY) {
                     var processor = sourceProcessors.stream().filter(p -> p.supports(source.kind())).findFirst().orElseThrow();
                     processor.process(source, new BuildSourceProcessor.Context(staging, content, images,
                             candidate.vectorStore, embedder, progressCallback, result));
                 }
             }
-            if (candidate.vectorStore.count() == 0 && result.parsed == 0)
+            if (candidate.vectorStore.count() == 0 && result.parsed == 0 && !new ItemIconStore(staging).hasUsableIcons())
                 throw new IllegalStateException("没有可发布的有效内容；原基础库保留");
             try(var c=staging.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT COUNT(*) FROM rag_document d WHERE EXISTS(SELECT 1 FROM rag_content_chunk c WHERE c.document_id=d.id) AND NOT EXISTS(SELECT 1 FROM rag_content_block b WHERE b.document_id=d.id)")) {
                 r.next();if(r.getInt(1)>0) result.warnings.add("复用了 "+r.getInt(1)+" 篇旧分块资料；完整标题与段落扩展需要对目标基础库执行完整重建。");
@@ -175,13 +185,13 @@ public class KnowledgeBuilder {
                 report(progressCallback,"done",1,1,"没有新增内容，基础库保持不变");
                 return result;
             }
-            staging.setBuildGeneration(generation);
+            if(!append || !iconsOnly && (result.parsed>0 || result.addedEmbeddings!=0 || result.documents>0 || result.tutorials>0))staging.setBuildGeneration(generation);
             if(append && !targetFingerprint.equals(db.contentFingerprint()))
                 throw new IllegalStateException("构建期间目标基础库发生变化，请重新执行补充构建");
             db.replaceBuildDataFrom(staging);
             result.durationMs = System.currentTimeMillis() - started;
             try {
-                report(progressCallback, "done", request.sources().size(), request.sources().size(), "Build published: " + result.embeddings + " vectors");
+                report(progressCallback, "done", request.sources().size(), request.sources().size(), "Build published: " + result.embeddings + " vectors, "+result.nativeIcons+" imported icons");
             } catch (RuntimeException e) { log.warn("Build published, but progress listener failed", e); }
             return result;
         } catch (java.util.concurrent.CancellationException e) {
@@ -227,6 +237,12 @@ public class KnowledgeBuilder {
             if (entry == null) { result.skipped++; continue; }
             var status=jarIndex.inspect(entry,jarHash);
             if(status!=JarBuildIndex.Status.NEW) {
+                if(status==JarBuildIndex.Status.DUPLICATE) {
+                    try {
+                        var resources=new RecipeResourceStore(db).importJar(jar,entry.getModId(),config.getDataDir());
+                        result.itemTagFiles+=resources.tags();result.itemNames+=resources.names();result.staticItemIcons+=resources.flatIcons();
+                    }catch(Exception failure){throw new IllegalStateException("已有 JAR 的配方资源补建失败",failure);}
+                }
                 if(!append && status==JarBuildIndex.Status.CONFLICT)
                     throw new IllegalStateException("同一构建包含不同版本的模组："+entry.getModId());
                 result.skipped++;
@@ -260,6 +276,10 @@ public class KnowledgeBuilder {
             report(progressCallback, "recipe", i + 1, jars.size(), "Recipes: " + modId);
             List<RecipeExtractor.ParsedRecipe> recipes = recipeExtractor.extract(jar, modId);
             result.recipes += recipes.size();
+            try {
+                var resources = new RecipeResourceStore(db).importJar(jar, modId, config.getDataDir());
+                result.itemTagFiles += resources.tags(); result.itemNames += resources.names(); result.staticItemIcons += resources.flatIcons();
+            } catch (Exception failure) { throw new IllegalStateException("配方标签与图标资源解析失败：" + modId, failure); }
 
             // Text chunks
             List<TextChunker.TextChunk> chunks = new ArrayList<>();
@@ -524,6 +544,8 @@ public class KnowledgeBuilder {
         public int reusedSources, reusedDocuments, conflicts, addedEmbeddings;
         public int documents, tutorials, webImages, webImageAttempts, deferredWebImages;
         public int localImages, ocrAttempts, ocrImages, visionAttempts, visionImages;
+        public int nativeIconPacks,nativeIcons,failedNativeIcons,reusedIconPacks;
+        public int itemTagFiles,itemNames,staticItemIcons;
         public final List<String> warnings = new ArrayList<>();
         public int textures, entities, recipes, textChunks, embeddings;
         public long durationMs;

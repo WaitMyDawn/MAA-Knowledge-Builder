@@ -1,0 +1,43 @@
+{
+  "format" : "mkb-export",
+  "schemaVersion" : 1,
+  "origin" : "FIXTURE",
+  "exporter" : {
+    "id" : "mkb_export",
+    "version" : "fixture-1"
+  },
+  "environment" : {
+    "minecraftVersion" : "1.21.1",
+    "loader" : "neoforge",
+    "loaderVersion" : "21.1",
+    "mods" : [ {
+      "id" : "mkb_fixture",
+      "version" : "1.0"
+    } ],
+    "resourcePacks" : [ ]
+  },
+  "rendering" : {
+    "context" : "GUI",
+    "width" : 32,
+    "height" : 32,
+    "background" : "transparent"
+  },
+  "icons" : [ {
+    "itemId" : "mkb_fixture:sample_a",
+    "variant" : "default",
+    "status" : "OK",
+    "file" : "icons/mkb_fixture/sample_a.png",
+    "sha256" : "e89df317ee2ebee13282b915a41a89075abb559ab803c54239cfb55f62fbb156"
+  }, {
+    "itemId" : "mkb_fixture:sample_b",
+    "variant" : "default",
+    "status" : "OK",
+    "file" : "icons/mkb_fixture/sample_b.png",
+    "sha256" : "d36cb2685870427c774181737bba785d64373827c07b3997e4709392173547f8"
+  }, {
+    "itemId" : "mkb_fixture:requires_game_context",
+    "variant" : "default",
+    "status" : "UNSUPPORTED",
+    "error" : "fixture: requires game context"
+  } ]
+}

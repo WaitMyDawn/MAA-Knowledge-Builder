@@ -757,7 +757,7 @@ public class QaPipeline {
     private void collectScoredRecipes(ResolvedEntity entity, String where, String[] params,
                                       int baseScore, Map<String, ScoredRecipe> best) {
         String sql = "SELECT recipe_data, output_item, source_mod, source_type FROM rag_recipe WHERE " + where
-                + " ORDER BY CASE WHEN source_mod=? THEN 0 ELSE 1 END, id LIMIT 20";
+                + " AND COALESCE(source_type,'UNKNOWN')<>'SEED' ORDER BY CASE WHEN source_mod=? THEN 0 ELSE 1 END, id LIMIT 20";
         try (Connection c = baseDb.getConnection();
              PreparedStatement ps = c.prepareStatement(sql)) {
             for (int i = 0; i < params.length; i++) ps.setString(i + 1, params[i]);
@@ -820,6 +820,8 @@ public class QaPipeline {
     private List<RecipeMatch> findRecipesByText(String question) {
         Set<String> foundOutputs = new LinkedHashSet<>();
         List<RecipeMatch> matches = new ArrayList<>();
+        for(String id:new RecipeResourceStore(baseDb).findItemIds(question))searchRecipe("output_item=?",new String[]{id},foundOutputs,matches);
+        if(!matches.isEmpty())return matches;
         List<String> keywords = extractKeywords(question);
 
         for (String kw : keywords) {
@@ -828,6 +830,7 @@ public class QaPipeline {
         }
         for (String en : new String[]{"compass", "sword", "pickaxe", "axe", "shovel", "hoe",
                 "helmet", "chestplate", "leggings", "boots", "dragon", "ghost"}) {
+            if(!question.toLowerCase(java.util.Locale.ROOT).contains(en))continue;
             searchRecipe(LIKE_WHERE_OR,
                     new String[]{likeParam(en), likeParam(en)}, foundOutputs, matches);
         }
@@ -894,7 +897,7 @@ public class QaPipeline {
     }
 
     private void searchRecipe(String where, String[] params, Set<String> found, List<RecipeMatch> matches) {
-        String sql = "SELECT recipe_data, output_item, source_mod FROM rag_recipe WHERE " + where + " LIMIT 20";
+        String sql = "SELECT recipe_data, output_item, source_mod,source_type FROM rag_recipe WHERE " + where + " AND COALESCE(source_type,'UNKNOWN')<>'SEED' LIMIT 20";
         try (Connection c = baseDb.getConnection();
              PreparedStatement ps = c.prepareStatement(sql)) {
             for (int i = 0; i < params.length; i++) ps.setString(i + 1, params[i]);
@@ -902,7 +905,7 @@ public class QaPipeline {
                 while (rs.next()) {
                     String out = rs.getString("output_item");
                     if (out != null && found.add(rs.getString("source_mod") + "\n" + rs.getString("recipe_data"))) {
-                        matches.add(new RecipeMatch(rs.getString("recipe_data"), out, rs.getString("source_mod")));
+                        matches.add(new RecipeMatch(rs.getString("recipe_data"), out, rs.getString("source_mod"),rs.getString("source_type")));
                     }
                 }
             }

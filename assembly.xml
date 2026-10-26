@@ -35,7 +35,15 @@
         <fileSet>
             <directory>${project.basedir}/docs</directory>
             <outputDirectory>docs</outputDirectory>
-            <includes><include>retrieval-diagnostics.md</include></includes>
+            <includes><include>retrieval-diagnostics.md</include><include>mkb-export-v1.md</include><include>recipes-r3.md</include></includes>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/examples/MKB-Export</directory>
+            <outputDirectory>examples/MKB-Export</outputDirectory>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/src/main/resources/mkb-export</directory>
+            <outputDirectory>schemas/mkb-export</outputDirectory>
         </fileSet>
         <fileSet>
             <directory>${project.basedir}/src/test/resources/embedding</directory>
