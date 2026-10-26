@@ -98,6 +98,10 @@ public class LocalEmbeddingModel {
     public int getDimension() { return loadedDim; }
     public String getActiveModel() { return loadedModel; }
     public String profile() { return modelProfile; }
+    public int tokenCount(String text) {
+        if(!ready) throw new IllegalStateException("模型分词器尚未加载");
+        return tokenizer.encode(text,Integer.MAX_VALUE).length;
+    }
 
     public float[] embed(String text) {
         if (!ready) return null;

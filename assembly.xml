@@ -19,6 +19,9 @@
                 <include>run.bat</include>
                 <include>run.sh</include>
                 <include>README.md</include>
+                <include>golden-set.json</include>
+                <include>golden-set-modpack.json</include>
+                <include>golden-set-modpack-regression.json</include>
                 <include>LICENSE.md</include>
             </includes>
             <fileMode>0755</fileMode>
@@ -27,6 +30,22 @@
         <fileSet>
             <directory>${project.basedir}/src/main/resources/licenses</directory>
             <outputDirectory>licenses</outputDirectory>
+        </fileSet>
+
+        <fileSet>
+            <directory>${project.basedir}/docs</directory>
+            <outputDirectory>docs</outputDirectory>
+            <includes><include>retrieval-diagnostics.md</include></includes>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/src/test/resources/embedding</directory>
+            <outputDirectory>diagnostics</outputDirectory>
+            <includes><include>minilm-tokenizer-reference.json</include></includes>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/src/test/resources/retrieval</directory>
+            <outputDirectory>diagnostics</outputDirectory>
+            <includes><include>modpack-737-relevance.json</include></includes>
         </fileSet>
 
         <!-- 项目 JAR -->

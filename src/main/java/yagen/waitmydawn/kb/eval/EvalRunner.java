@@ -19,6 +19,7 @@ import yagen.waitmydawn.kb.service.QaPipeline;
 import yagen.waitmydawn.kb.service.RagAgentService;
 import yagen.waitmydawn.kb.service.RendererService;
 import yagen.waitmydawn.kb.service.VectorStore;
+import yagen.waitmydawn.kb.service.AnswerMedia;
 
 import javax.imageio.ImageIO;
 import java.io.IOException;
@@ -50,7 +51,12 @@ public final class EvalRunner {
     private static final DateTimeFormatter RUN_ID_FMT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     public record Config(Path dataDir, Path goldenSetFile, Set<Integer> dialogueIndexes,
-                         String tag, int defaultRepeat, boolean judgeEnabled) {}
+                         String tag, int defaultRepeat, boolean judgeEnabled) {
+        public Config {
+            dataDir=dataDir.toAbsolutePath().normalize();
+            goldenSetFile=goldenSetFile.toAbsolutePath().normalize();
+        }
+    }
 
     public record Outcome(String runId, Path runDir, int totalTurns, int passedTurns,
                           double passRate, String reportMarkdown, Map<String, Object> summary) {}
@@ -94,7 +100,7 @@ public final class EvalRunner {
         AnswerAgent answerAgent = new AnswerAgent(llm);
         RendererService renderer = new RendererService(appConfig, baseDb);
         QaPipeline pipeline = new QaPipeline(classifyAgent, entityAgent, urlAgent, answerAgent,
-                llm, baseVectorStore, embedder, baseDb, evalDbManager, runDir);
+                llm, baseVectorStore, embedder, baseDb, evalDbManager, runDir,cfg.dataDir());
 
         ChatModel judgeModel = cfg.judgeEnabled() ? llm.getJudgeModel() : null;
         List<Map<String, Object>> records = new ArrayList<>();
@@ -145,7 +151,7 @@ public final class EvalRunner {
         if (turns.isEmpty()) return;
 
         // Pass 1：按会话顺序跑一遍（多轮上下文真实生效），记录每轮结果
-        ChatHistoryService.ChatSession session = chatHistory.newSession("Eval: " + conv.name(), cfg.dataDir());
+        ChatHistoryService.ChatSession session = chatHistory.newSession("Eval: " + conv.name(), store.runDir());
         startSession(evalDbManager, pipeline, session);
         for (GoldenSet.Turn turn : turns) {
             Map<String, Object> rec = executeTurn(pipeline, chatHistory, session, turn, conv,
@@ -160,7 +166,7 @@ public final class EvalRunner {
             int runs = turn.effectiveRepeat(cfg.defaultRepeat());
             for (int r = 2; r <= runs; r++) {
                 ChatHistoryService.ChatSession repSession =
-                        chatHistory.newSession("Eval: " + conv.name(), cfg.dataDir());
+                        chatHistory.newSession("Eval: " + conv.name(), store.runDir());
                 startSession(evalDbManager, pipeline, repSession);
                 for (int k = 0; k <= i; k++) {
                     GoldenSet.Turn current = turns.get(k);
@@ -229,20 +235,25 @@ public final class EvalRunner {
             log.error("Eval turn failed: {} {}", turn.id(), errorMessage, e);
         }
         long elapsed = System.currentTimeMillis() - t0;
+        String generation=result==null || result.metrics==null?"NOT_RECORDED":result.metrics.answerGeneration;
+        if(appConfig.hasUsableApiKey() && ("MODEL_ERROR".equals(generation) || "OFFLINE".equals(generation))) {
+            error=true;errorMessage="回答模型未成功完成，已回退到本地摘录";
+        }
 
         long renderStart = System.nanoTime();
         List<RuleJudge.RenderedImage> renderedImages = renderIfNeeded(result, renderer, store.runDir());
+        var assetErrors=EvalAssets.archive(result==null?null:result.artifacts,cfg.dataDir(),store.runDir());
         long renderMs = (System.nanoTime() - renderStart) / 1_000_000;
         RuleJudge.Observation observation = toObservation(result, error, errorMessage, elapsed,
-                renderedImages, webCacheHits(turn, conv));
+                renderedImages, webCacheHits(turn, conv),result==null?AnswerMedia.Assessment.empty():AnswerMedia.assess(result.answer,result.artifacts,store.runDir()));
         RuleJudge.Verdict verdict = RuleJudge.judge(turn, observation);
         long judgeStart = System.nanoTime();
-        LlmJudge.Outcome judgeOutcome = judgeModel != null
+        LlmJudge.Outcome judgeOutcome = judgeModel != null && !error
                 ? LlmJudge.judge(judgeModel, turn, observation.answer(), retrievalEvidence(result)) : null;
         long judgeMs = (System.nanoTime() - judgeStart) / 1_000_000;
 
         if (result != null) {
-            chatHistory.addMessage(session, "maa", result.answer == null ? "" : result.answer);
+            chatHistory.addMessage(session, "maa", result.answer == null ? "" : result.answer, result.artifacts);
             try {
                 chatHistory.save(session);
             } catch (Exception e) {
@@ -253,8 +264,10 @@ public final class EvalRunner {
         rec.put("answer", observation.answer());
         rec.put("error", error);
         rec.put("errorMessage", errorMessage);
+        rec.put("answerGeneration",generation);
         rec.put("elapsedMs", elapsed);
         rec.put("renderMs", renderMs);
+        rec.put("assetArchiveErrors",assetErrors);
         rec.put("judgeMs", judgeMs);
         // 端到端耗时：管道 + 渲染 + 裁判（评测口径），与纯管道 metrics.totalTimeMs 区分
         rec.put("evalTotalMs", elapsed + renderMs + judgeMs);
@@ -283,11 +296,17 @@ public final class EvalRunner {
         return rec;
     }
 
-    private static String retrievalEvidence(QaPipeline.QaResult result) {
+    static String retrievalEvidence(QaPipeline.QaResult result) {
         if (result == null) return "本轮没有可用检索结果";
         StringBuilder evidence = new StringBuilder("检索计划：" + result.retrievalPlan + "\n");
         evidence.append("JAR 版本范围：\n").append(result.sourceScope).append('\n');
+        if(result.artifacts!=null && !result.artifacts.sources().isEmpty()) {
+            evidence.append("本轮实际提供的导入原文与图片文字（图片像素未交给文本裁判）：\n");
+            for(var source:result.artifacts.sources()) evidence.append("[[source:").append(source.id()).append("]] → ").append(source.location()).append('\n');
+            evidence.append(yagen.waitmydawn.kb.service.KnowledgeRetrievalService.evidence(result.artifacts,result.metrics==null?null:result.metrics.knowledgeRetrieval));
+        }
         if (result.vectorResults != null) for (var item : result.vectorResults) {
+            if("web".equals(item.type()) || "local_document".equals(item.type())) continue;
             String text = item.chunkText();
             int limit = "category_catalog".equals(item.type()) ? 12000 : 1800;
             evidence.append("\n来源：").append(item.sourcePath()).append("；模组：")
@@ -304,7 +323,7 @@ public final class EvalRunner {
     private static RuleJudge.Observation toObservation(QaPipeline.QaResult result, boolean error,
                                                         String errorMessage, long elapsedMs,
                                                         List<RuleJudge.RenderedImage> renderedImages,
-                                                        List<String> webCacheHitLabels) {
+                                                        List<String> webCacheHitLabels,AnswerMedia.Assessment media) {
         if (result == null) return RuleJudge.Observation.error(errorMessage);
         QaMetrics m = result.metrics;
         List<String> recipeOutputs = result.recipeResults == null ? List.of()
@@ -325,7 +344,7 @@ public final class EvalRunner {
                 m == null ? elapsedMs : m.totalTimeMs,
                 m == null ? 0 : m.tokenEstimateInput,
                 m == null ? 0 : m.tokenEstimateOutput,
-                m != null && m.retrievalHit, catalogMembers(result.catalogEvidence));
+                m != null && m.retrievalHit, catalogMembers(result.catalogEvidence),result.artifacts,media);
     }
 
     private static Map<String,String> catalogMembers(String evidence) {
@@ -397,6 +416,8 @@ public final class EvalRunner {
             log.warn("Eval render failed for {} recipes: {}", result.recipesToRender.size(), e.getMessage());
             return List.of();
         }
+        try {AnswerMedia.attachRecipes(result,paths,cfg.dataDir());}
+        catch(IOException e) {log.warn("Eval recipe attachment failed: {}",e.getMessage());}
         List<RuleJudge.RenderedImage> images = new ArrayList<>();
         Path archiveDir = runDir.resolve("rendered");
         for (Map.Entry<String, String> e : paths.entrySet()) {
@@ -463,6 +484,8 @@ public final class EvalRunner {
         map.put("refusalCorrect", r.refusalCorrect());
         map.put("reasons", r.reasons());
         map.put("error", r.error());
+        map.put("tokenIn",outcome.tokenIn());map.put("tokenOut",outcome.tokenOut());
+        map.put("usageReported",outcome.tokenIn()!=null && outcome.tokenOut()!=null);
         return map;
     }
 
@@ -488,6 +511,10 @@ public final class EvalRunner {
         map.put("resolvedRegistries", obs.resolvedRegistries());
         map.put("subPageLabels", obs.subPageLabels());
         map.put("subPageUrls", obs.subPageUrls());
+        map.put("artifacts",obs.artifacts());
+        var media=obs.media()==null?AnswerMedia.Assessment.empty():obs.media();
+        map.put("media",Map.of("candidates",media.candidates(),"displayed",media.displayed(),"valid",media.valid(),
+                "validIllustrations",media.validIllustrations(),"unavailable",media.unavailable(),"citedSources",media.citedSources(),"invalidReferences",media.invalidReferences()));
         map.put("webCacheHitLabels", obs.webCacheHitLabels());
         map.put("catalogMembers", obs.catalogMembers());
         return map;
@@ -523,6 +550,9 @@ public final class EvalRunner {
         map.put("subPageUrlCount", m.subPageUrlCount);
         map.put("contextChunksUsed", m.contextChunksUsed);
         map.put("contextUtilization", m.contextUtilization);
+        map.put("knowledgeRetrieval",m.knowledgeRetrieval);
+        map.put("knowledgeContextChunkIds",m.knowledgeContextChunkIds);
+        map.put("knowledgeCitedSourceIds",m.knowledgeCitedSourceIds);
         map.put("llmCallCount", m.llmCallCount);
         map.put("tokenIn", m.tokenEstimateInput);
         map.put("tokenOut", m.tokenEstimateOutput);
@@ -530,6 +560,7 @@ public final class EvalRunner {
         map.put("tokenUsageSource", m.unknownUsageCalls > 0 ? "partial-provider-usage" : "provider-usage");
         map.put("ttftObserved", false);
         map.put("fallbackUsed", m.fallbackUsed);
+        map.put("answerGeneration",m.answerGeneration);
         map.put("classifyCategory", m.classifyCategory);
         map.put("classifySource", m.classifySource);
         map.put("answerLength", m.answerLength);
@@ -555,6 +586,8 @@ public final class EvalRunner {
         map.put("judgeEnabled", cfg.judgeEnabled());
         map.put("embeddingModel", appConfig.getEmbeddingModelName());
         map.put("embeddingProfile", embedder.profile());
+        map.put("answerModel","deepseek-chat");map.put("judgeModel",cfg.judgeEnabled()?"deepseek-chat":null);
+        map.put("assetPolicy","base-assets-read-and-cache; immutable-run-snapshots-v1");
         map.put("baseBuildGeneration", baseDb.buildGeneration());
         map.put("baseContentSha256", baseDb.contentFingerprint());
         map.put("cachePolicy", "session-isolated-knowledge; shared-http-response-cache-30min");

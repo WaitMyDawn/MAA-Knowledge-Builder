@@ -25,6 +25,18 @@ class EvalReportTest {
     @TempDir
     Path tempDir;
 
+    @Test void summarizesDisplayedMediaWithoutTreatingLegacyRecordsAsObserved() {
+        var modern=record("M1","basic","guide","sample",true,"pass",false);
+        modern.put("observation",Map.of("media",Map.of("candidates",4,"displayed",2,"valid",1,"validIllustrations",1,"unavailable",1,"citedSources",2,"invalidReferences",0)));
+        var legacy=record("M2","basic","guide","sample",true,"pass",false);
+        var cfg=new EvalRunner.Config(tempDir,tempDir.resolve("spec.json"),Set.of(),"media",1,false);
+        var summary=EvalReport.summarize("run-media",new GoldenSet.Spec("3","unit",List.of()),List.of(modern,legacy),cfg,tempDir);
+        var media=mapOf(summary.get("media"));
+        assertEquals(1,media.get("observedTurns"));assertEquals(4,media.get("candidates"));assertEquals(2,media.get("displayed"));
+        assertEquals(1,media.get("valid"));assertEquals(1,media.get("unavailable"));
+        assertTrue(EvalReport.markdown(summary,List.of(modern,legacy)).contains("候选图片 / 实际引用 / 有效图片"));
+    }
+
     @Test
     void summarizesPassRateGroupsAndJudgeStats() {
         List<Map<String, Object>> records = List.of(

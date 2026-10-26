@@ -22,6 +22,11 @@ import java.util.Locale;
  *   <li>length_bounds（min/max 字符数）</li>
  *   <li>latency_under_ms（value 为毫秒上限）</li>
  *   <li>no_error（本轮是否无异常）</li>
+ *   <li>knowledge_scope（资料快照的范围身份）</li>
+ *   <li>source_url_any（回答实际引用的受控来源网址）</li>
+ *   <li>answer_illustration_valid（实际展示且缓存有效的资料插图）</li>
+ *   <li>answer_media_refs_valid（实际展示的图文引用均有效）</li>
+ *   <li>answer_images_absent（本轮正文不展示图片）</li>
  * </ul>
  */
 public final class RuleJudge {
@@ -39,7 +44,24 @@ public final class RuleJudge {
                               List<String> subPageLabels, List<String> subPageUrls,
                               List<String> webCacheHitLabels,
                               String tier, long totalTimeMs,
-                              int tokenIn, int tokenOut, boolean retrievalHit, java.util.Map<String,String> catalogMembers) {
+                              int tokenIn, int tokenOut, boolean retrievalHit, java.util.Map<String,String> catalogMembers,
+                              yagen.waitmydawn.kb.model.AnswerArtifacts artifacts,
+                              yagen.waitmydawn.kb.service.AnswerMedia.Assessment media) {
+        public Observation(String answer,boolean error,String errorMessage,List<String> recipeOutputs,List<String> resolvedRegistries,
+                           int renderCount,List<RenderedImage> renderedImages,List<String> subPageLabels,List<String> subPageUrls,
+                           List<String> webCacheHitLabels,String tier,long totalTimeMs,int tokenIn,int tokenOut,boolean retrievalHit,
+                           java.util.Map<String,String> catalogMembers,yagen.waitmydawn.kb.model.AnswerArtifacts artifacts) {
+            this(answer,error,errorMessage,recipeOutputs,resolvedRegistries,renderCount,renderedImages,subPageLabels,subPageUrls,
+                    webCacheHitLabels,tier,totalTimeMs,tokenIn,tokenOut,retrievalHit,catalogMembers,artifacts,
+                    yagen.waitmydawn.kb.service.AnswerMedia.Assessment.empty());
+        }
+        public Observation(String answer,boolean error,String errorMessage,List<String> recipeOutputs,List<String> resolvedRegistries,
+                           int renderCount,List<RenderedImage> renderedImages,List<String> subPageLabels,List<String> subPageUrls,
+                           List<String> webCacheHitLabels,String tier,long totalTimeMs,int tokenIn,int tokenOut,boolean retrievalHit,
+                           java.util.Map<String,String> catalogMembers) {
+            this(answer,error,errorMessage,recipeOutputs,resolvedRegistries,renderCount,renderedImages,subPageLabels,subPageUrls,
+                    webCacheHitLabels,tier,totalTimeMs,tokenIn,tokenOut,retrievalHit,catalogMembers,yagen.waitmydawn.kb.model.AnswerArtifacts.empty());
+        }
         public Observation(String answer,boolean error,String errorMessage,List<String> recipeOutputs,List<String> resolvedRegistries,
                            int renderCount,List<RenderedImage> renderedImages,List<String> subPageLabels,List<String> subPageUrls,
                            List<String> webCacheHitLabels,String tier,long totalTimeMs,int tokenIn,int tokenOut,boolean retrievalHit) {
@@ -94,6 +116,10 @@ public final class RuleJudge {
             if (outcome.passed()) passedWeight += w;
             if (a.required() && !outcome.passed()) allRequiredPassed = false;
         }
+        if(obs.error()) {
+            outcomes.add(new Outcome("execution_error",false,1,true,"error="+obs.errorMessage()));
+            totalWeight++;allRequiredPassed=false;
+        }
         double score = totalWeight > 0 ? passedWeight / totalWeight : 0;
         var coverage = outcomes.stream().filter(o -> isCoverage(o.kind()) && o.required()).toList();
         boolean coveragePassed = coverage.size() > 5
@@ -116,6 +142,25 @@ public final class RuleJudge {
         String detail;
 
         switch (a.kind()) {
+            case "knowledge_scope" -> {
+                String scope=obs.artifacts()==null?null:obs.artifacts().scopeId();
+                ok=scope!=null && (values.contains(scope) || scope.equals(a.value()));
+                detail="scope="+scope;
+            }
+            case "source_url_any" -> {
+                ok=obs.artifacts()!=null && obs.artifacts().sources().stream().anyMatch(source ->
+                        values.contains(source.location()) && yagen.waitmydawn.kb.service.AnswerMedia.citedSourceIds(obs.answer(),obs.artifacts()).contains(source.id()));
+                detail="expected cited source="+values;
+            }
+            case "answer_illustration_valid" -> {
+                int actual=obs.media()==null?0:obs.media().validIllustrations();
+                int minimum=a.min()==null?1:a.min();
+                ok=actual>=minimum;detail="valid illustrations="+actual+", min="+minimum;
+            }
+            case "answer_media_refs_valid" -> {
+                ok=obs.media()!=null && obs.media().invalidReferences()==0 && obs.media().unavailable()==0;
+                detail=String.valueOf(obs.media());
+            }
             case "answer_matches_at_least" -> {
                 int need = a.min() == null ? values.size() : a.min();
                 long hits = values.stream().filter(v -> java.util.regex.Pattern.compile(v,
@@ -229,6 +274,10 @@ public final class RuleJudge {
                 String fabricated = values.isEmpty() ? null : firstHit(plainAnswer, values);
                 ok = refused && fabricated == null;
                 detail = "refused=" + refused + (fabricated == null ? "" : ", fabricated=" + fabricated);
+            }
+            case "answer_images_absent" -> {
+                ok=obs.media()!=null && obs.media().displayed()==0;
+                detail="displayedImages="+(obs.media()==null?"unobserved":obs.media().displayed());
             }
             case "length_bounds" -> {
                 int len = answer.length();

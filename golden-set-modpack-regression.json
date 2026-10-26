@@ -1,0 +1,703 @@
+{
+  "version": "2",
+  "name": "龙之冒险：新征程同义问法、前提纠偏与缺失证据回归",
+  "conversations": [
+    {
+      "id": "MP737-S01",
+      "name": "龙之冒险：新征程到了 T3 阶段，盔甲、武器、饰品分别选什么？",
+      "turns": [
+        {
+          "id": "MP737-S01",
+          "question": "龙之冒险：新征程到了 T3 阶段，盔甲、武器、饰品分别选什么？",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ],
+          "type": "modpack",
+          "category": "paraphrase",
+          "expected": {
+            "answerPoints": [
+              "覆盖装备、武器和饰品推荐",
+              "区分流程阶段与装备强度梯度"
+            ]
+          },
+          "judgeRubric": [
+            "分别覆盖装备、武器与饰品；区分适用定位和获得条件，不把其他整合包的推荐混入。",
+            "引用已入库的本整合包教程；缺少证据时明确说明。",
+            "配图必须来自检索到的图文关联，不能编造图片或引用地址。",
+            "依据本包v2.4a教程核对；允许合理同义表达，不能仅凭关键词出现认定事实正确。",
+            "区分T3流程阶段与表格中的装备强度梯度；T3章节推荐T1/T2梯度装备并不自动构成跨阶段错误。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "source_url_any",
+              "values": [
+                "https://www.mcmod.cn/post/5454.html"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "龙炎钢",
+                "龙霜钢",
+                "下界合金"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "寒冰剑",
+                "魂祸战刃"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "神龙之心",
+                "比干的认可"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "weight": 1,
+              "required": true,
+              "kind": "answer_media_refs_valid"
+            }
+          ],
+          "referenceAnswer": "按教程T3流程章节，可选龙炎钢或龙霜钢护甲，过渡可用下界合金；武器可选寒冰剑或魂祸战刃；饰品可考虑神龙之心、比干的认可。注意流程阶段与表内强度梯度不同。"
+        }
+      ]
+    },
+    {
+      "id": "MP737-S02",
+      "name": "龙之冒险：新征程的傀儡先怎样装配，之后怎么强化和扩展槽位？",
+      "turns": [
+        {
+          "id": "MP737-S02",
+          "question": "龙之冒险：新征程的傀儡先怎样装配，之后怎么强化和扩展槽位？",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ],
+          "type": "modpack",
+          "category": "paraphrase",
+          "expected": {
+            "answerPoints": [
+              "说明胚料加工与部件组装",
+              "说明部件替换和升级槽位"
+            ]
+          },
+          "judgeRubric": [
+            "给出组装与升级的操作顺序、必要材料或条件；有相关示意图时将图放在对应步骤旁。",
+            "引用已入库的本整合包教程；缺少证据时明确说明。",
+            "配图必须来自检索到的图文关联，不能编造图片或引用地址。",
+            "依据本包v2.4a教程核对；允许合理同义表达，不能仅凭关键词出现认定事实正确。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "source_url_any",
+              "values": [
+                "https://www.mcmod.cn/post/5454.html"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "胚料"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "身体"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "手臂"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "升级"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "扩充",
+                "槽位"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "weight": 1,
+              "required": true,
+              "kind": "answer_media_refs_valid"
+            }
+          ],
+          "referenceAnswer": "将傀儡胚料切成身体、双腿和两个手臂模型，再加工成材料部件并组装；可单独替换部件。升级可选钟升级、友伤免疫和回收升级，用钻石或下界合金扩充模版增加槽位。"
+        }
+      ]
+    },
+    {
+      "id": "MP737-S03",
+      "name": "龙之冒险：新征程中带女仆能帮忙做哪些事，战斗之外还有用途吗？",
+      "turns": [
+        {
+          "id": "MP737-S03",
+          "question": "龙之冒险：新征程中带女仆能帮忙做哪些事，战斗之外还有用途吗？",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ],
+          "type": "modpack",
+          "category": "paraphrase",
+          "expected": {
+            "answerPoints": [
+              "说明生活工作与战斗用途",
+              "说明傀儡师模式及工作设置"
+            ]
+          },
+          "judgeRubric": [
+            "依据教程说明用途、交互方式与限制，不以其他模组版本的通用知识代替来源。",
+            "引用已入库的本整合包教程；缺少证据时明确说明。",
+            "配图必须来自检索到的图文关联，不能编造图片或引用地址。",
+            "依据本包v2.4a教程核对；允许合理同义表达，不能仅凭关键词出现认定事实正确。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "source_url_any",
+              "values": [
+                "https://www.mcmod.cn/post/5454.html"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "钓鱼"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "烹饪",
+                "做饭"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "战斗",
+                "攻击"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "傀儡"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "weight": 1,
+              "required": true,
+              "kind": "answer_media_refs_valid"
+            }
+          ],
+          "referenceAnswer": "女仆能钓鱼、烹饪和战斗；傀儡师模式可自动召唤与回收傀儡。须设置工作模式和时间，好感影响血量。"
+        }
+      ]
+    },
+    {
+      "id": "MP737-S04",
+      "name": "龙之冒险：新征程里诡厄巫法怎么入门？第一根魔杖、仪式与灵魂能量如何衔接？",
+      "turns": [
+        {
+          "id": "MP737-S04",
+          "question": "龙之冒险：新征程里诡厄巫法怎么入门？第一根魔杖、仪式与灵魂能量如何衔接？",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ],
+          "type": "modpack",
+          "category": "paraphrase",
+          "expected": {
+            "answerPoints": [
+              "说明魔杖入门和材料获取",
+              "说明仪式及灵魂能量的作用"
+            ]
+          },
+          "judgeRubric": [
+            "依据本整合包教程组织入门流程、关键机制与可执行步骤，附上对应来源。",
+            "引用已入库的本整合包教程；缺少证据时明确说明。",
+            "配图必须来自检索到的图文关联，不能编造图片或引用地址。",
+            "依据本包v2.4a教程核对；允许合理同义表达，不能仅凭关键词出现认定事实正确。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "source_url_any",
+              "values": [
+                "https://www.mcmod.cn/post/5454.html"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "缠魂木"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "黑暗魔杖"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "诅咒注入器",
+                "根之图腾"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "灵魂",
+                "仪式"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "weight": 1,
+              "required": true,
+              "kind": "answer_media_refs_valid"
+            }
+          ],
+          "referenceAnswer": "用缠魂木制作黑暗魔杖；缠魂树苗可经诅咒注入器或根之图腾获得。后续使用仪式与灵魂能量，具体配方查JEI并遵循整合包教程。"
+        }
+      ]
+    },
+    {
+      "id": "MP737-S05",
+      "name": "龙之冒险：新征程的主世界与下界亚波伦打法有什么区别？分别要注意哪些机制？",
+      "turns": [
+        {
+          "id": "MP737-S05",
+          "question": "龙之冒险：新征程的主世界与下界亚波伦打法有什么区别？分别要注意哪些机制？",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html",
+            "https://www.mcmod.cn/post/5355.html"
+          ],
+          "type": "modpack",
+          "category": "paraphrase",
+          "expected": {
+            "answerPoints": [
+              "区分主世界与下界机制",
+              "说明回血、偷取和尾杀结界的应对"
+            ]
+          },
+          "judgeRubric": [
+            "依据教程说明准备、战斗机制与应对步骤；没有依据的数值或机制不应编造。",
+            "引用已入库的本整合包教程；缺少证据时明确说明。",
+            "配图必须来自检索到的图文关联，不能编造图片或引用地址。",
+            "依据本包v2.4a教程核对；允许合理同义表达，不能仅凭关键词出现认定事实正确。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "source_url_any",
+              "values": [
+                "https://www.mcmod.cn/post/5454.html"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "主世界"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "下界"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "回血",
+                "亡灵杀手"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "结界",
+                "尾杀"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "偷取",
+                "偷走",
+                "饰品"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "weight": 1,
+              "required": true,
+              "kind": "answer_media_refs_valid"
+            }
+          ],
+          "referenceAnswer": "区分主世界与下界亚波伦：主世界可利用傀儡牵制，诅咒刃片逃课教程不适用于下界。下界需应对回血、偷取装备饰品与击杀后结界，及时远离结界。"
+        }
+      ]
+    },
+    {
+      "id": "MP737-N01",
+      "name": "龙之冒险新征程里寒冰剑是T1梯度，所以T3流程一定不能用它，对吗？请区分流程阶段与装备强度梯度。",
+      "turns": [
+        {
+          "id": "MP737-N01",
+          "question": "龙之冒险新征程里寒冰剑是T1梯度，所以T3流程一定不能用它，对吗？请区分流程阶段与装备强度梯度。",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ],
+          "type": "modpack",
+          "category": "counterexample",
+          "expected": {
+            "answerPoints": [
+              "纠正不能仅凭T1排除T3的前提",
+              "区分流程阶段和装备强度梯度",
+              "有本包原文依据"
+            ]
+          },
+          "judgeRubric": [
+            "不得沿错误前提禁止T3使用寒冰剑。",
+            "用教程证据区分流程与强度，不要求再列出全套装备、武器和饰品。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "source_url_any",
+              "values": [
+                "https://www.mcmod.cn/post/5454.html"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "weight": 1,
+              "required": true,
+              "kind": "answer_media_refs_valid"
+            },
+            {
+              "kind": "answer_contains_all",
+              "values": [
+                "寒冰剑",
+                "流程",
+                "梯度"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ],
+          "referenceAnswer": "不能仅凭T1梯度推断T3流程不能使用寒冰剑。v2.4a教程在T3流程的武器推荐中列出寒冰剑；流程阶段和装备强度梯度是不同维度。"
+        }
+      ]
+    },
+    {
+      "id": "MP737-N02",
+      "name": "龙之冒险新征程的量子跃迁维护规程，每一步要用多少材料？请给出确定配方。",
+      "turns": [
+        {
+          "id": "MP737-N02",
+          "question": "龙之冒险新征程的量子跃迁维护规程，每一步要用多少材料？请给出确定配方。",
+          "referenceAnswer": "本轮检索没有足够证据确认所谓量子跃迁维护规程及其材料，不能提供确定步骤、配方或数字；可请求提供具体教程或名称。不能从本轮未命中断言整个整合包没有此内容。",
+          "referenceSources": [],
+          "type": "modpack",
+          "category": "missing_evidence",
+          "expected": {
+            "answerPoints": [
+              "明确本轮证据缺口",
+              "不编造确定的材料数量或配方",
+              "不把未检索到等同于整个资料不存在"
+            ]
+          },
+          "judgeRubric": [
+            "这是缺失证据探针，不能从模型常识补机制。",
+            "可以简短请求资料，不要求引用无关教程或强配图片。",
+            "机制依据不足时不应附加无关配图；文本裁判不能替代图片像素核对。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_matches",
+              "value": "证据不足|未找到|没有找到|无法确认|无法确定|不能确认|未检索到|缺乏.*依据|没有足够.*证据",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_images_absent",
+              "required": true,
+              "weight": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MP737-N03",
+      "name": "龙之冒险新征程如何组装并升级傀儡，以及量子跃迁维护规程？",
+      "turns": [
+        {
+          "id": "MP737-N03",
+          "question": "龙之冒险新征程如何组装并升级傀儡，以及量子跃迁维护规程？",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ],
+          "type": "modpack",
+          "category": "partial_evidence",
+          "expected": {
+            "answerPoints": [
+              "说明胚料加工与部件组装",
+              "说明部件替换和升级槽位",
+              "已知组装升级正常回答，未知片段保留缺口"
+            ]
+          },
+          "judgeRubric": [
+            "给出组装与升级的操作顺序、必要材料或条件；有相关示意图时将图放在对应步骤旁。",
+            "引用已入库的本整合包教程；缺少证据时明确说明。",
+            "配图必须来自检索到的图文关联，不能编造图片或引用地址。",
+            "依据本包v2.4a教程核对；允许合理同义表达，不能仅凭关键词出现认定事实正确。",
+            "不能因一部分未知而拒绝整个问题，也不能用通用词命中掩盖未知片段。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "values": [
+                "mcmod:modpack:737"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "source_url_any",
+              "values": [
+                "https://www.mcmod.cn/post/5454.html"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "胚料"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "身体"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "手臂"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "升级"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_contains_any",
+              "values": [
+                "扩充",
+                "槽位"
+              ],
+              "weight": 1,
+              "required": true
+            },
+            {
+              "weight": 1,
+              "required": true,
+              "kind": "answer_media_refs_valid"
+            },
+            {
+              "kind": "answer_matches",
+              "value": "证据不足|未找到|没有找到|无法确认|无法确定|不能确认|未检索到|缺乏.*依据|没有足够.*证据",
+              "required": true,
+              "weight": 1
+            }
+          ],
+          "referenceAnswer": "将傀儡胚料切成身体、双腿和两个手臂模型，再加工成材料部件并组装；可单独替换部件。升级可选钟升级、友伤免疫和回收升级，用钻石或下界合金扩充模版增加槽位。 对量子跃迁维护规程，仅说明本轮证据不足，不能给出确定机制、材料或步骤。"
+        }
+      ]
+    }
+  ]
+}

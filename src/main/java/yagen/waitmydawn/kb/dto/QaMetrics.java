@@ -13,6 +13,10 @@ import java.util.*;
  *   追踪: 每阶段详细记录
  */
 public class QaMetrics {
+    public yagen.waitmydawn.kb.service.KnowledgeRetrievalService.Diagnostics knowledgeRetrieval;
+    public String answerGeneration;
+    /** 表示实际传入的证据块与引用身份，不表示模型正确使用了这些证据。 */
+    public List<String> knowledgeContextChunkIds=List.of(), knowledgeCitedSourceIds=List.of();
     public int httpRequestCount, httpErrorCount, memoryPageCacheHits, persistentPageCacheHits;
     public int documentEmbeddingCount, queryEmbeddingCount, reusedEmbeddingCount;
     public long httpResponseBytes, embeddingTimeMs;
@@ -202,6 +206,30 @@ public class QaMetrics {
         sb.append(String.format("│ Vector Scores:   max=%.3f  avg=%.3f\n", vectorMaxScore, vectorAvgScore));
         sb.append(String.format("│ Context Chunks:  %-4d used  Utilization: %.0f%%\n", contextChunksUsed, contextUtilization * 100));
         sb.append(String.format("│ Answer Length:   %-5d chars\n", answerLength));
+        if(knowledgeRetrieval!=null && knowledgeRetrieval.coverage()!=null) {
+            var coverage=knowledgeRetrieval.coverage();
+            String stop=switch(coverage.stopReason()) {
+                case "CANDIDATES_FOR_ALL_FACETS" -> "各要点已有候选依据";
+                case "NO_NEW_SEEDS" -> "未发现新的证据块";
+                case "QUERY_BUDGET", "ROUND_BUDGET" -> "达到补检预算";
+                case "DISABLED" -> "补检已关闭";
+                default -> "沿用首轮检索";
+            };
+            sb.append("│ 定向补检：").append(coverage.attempts().size()).append(" 次；结束原因：").append(stop).append('\n');
+            for(var check:coverage.finalChecks()) sb.append("│ 要点 ").append(check.facet()).append("：")
+                    .append(check.sourceIds().isEmpty()?"本轮未找到依据":"存在候选依据，仍需事实核对").append('\n');
+        }
+        if(knowledgeRetrieval!=null && knowledgeRetrieval.images()!=null) {
+            var images=knowledgeRetrieval.images();
+            String status=switch(images.status()) {
+                case "SELECTED", "SELECTED_AFTER_CACHE" -> "已有可用候选图片";
+                case "RELEVANT_NOT_DOWNLOADED" -> "章节候选图片尚未下载";
+                case "CACHE_MISSING" -> "图片缓存丢失或损坏";
+                default -> "本轮上下文未找到合适图片";
+            };
+            sb.append("│ 插图：").append(images.selected()).append(" 张；相关待缓存：").append(images.pending()).append("；状态：").append(status).append('\n');
+            if(images.hydration()!=null) sb.append("│ 插图补缓存：").append(images.hydration().attempts()).append(" 次；失败 ").append(images.hydration().failures()).append(" 次\n");
+        }
         sb.append("└──────────────────────────────────────────────────┘\n\n");
 
         // Cost

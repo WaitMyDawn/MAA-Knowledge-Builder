@@ -40,6 +40,14 @@ public final class EvalReport {
         s.put("passedTurns", passed);
         s.put("passRate", round(passRate, 4));
         s.put("avgRuleScore", round(avgRuleScore, 4));
+        var generation=new LinkedHashMap<String,Integer>();
+        records.forEach(r -> generation.merge(r.get("answerGeneration")==null?"NOT_RECORDED":r.get("answerGeneration").toString(),1,Integer::sum));
+        s.put("answerGeneration",generation);
+        var media=new LinkedHashMap<String,Integer>();
+        media.put("observedTurns",(int)records.stream().filter(r -> mapOf(r.get("observation")).get("media") instanceof Map).count());
+        for(String key:List.of("candidates","displayed","valid","validIllustrations","unavailable","citedSources","invalidReferences"))
+            media.put(key,records.stream().map(r -> mapOf(mapOf(r.get("observation")).get("media"))).mapToInt(m -> intOf(m.get(key))).sum());
+        s.put("media",media);
 
         s.put("byType", groupBy(records, "type"));
         s.put("byCategory", groupBy(records, "category"));
@@ -185,6 +193,11 @@ public final class EvalReport {
         }
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("scored", judges.size());
+        var calls=records.stream().map(r -> mapOf(r.get("judge"))).filter(j -> !j.isEmpty()).toList();
+        long observed=calls.stream().filter(j -> Boolean.TRUE.equals(j.get("usageReported"))).count();
+        m.put("attempted",calls.size());m.put("usageObserved",observed);
+        m.put("totalTokenIn",observed==0?null:calls.stream().filter(j -> Boolean.TRUE.equals(j.get("usageReported"))).mapToLong(j -> longOf(j.get("tokenIn"))).sum());
+        m.put("totalTokenOut",observed==0?null:calls.stream().filter(j -> Boolean.TRUE.equals(j.get("usageReported"))).mapToLong(j -> longOf(j.get("tokenOut"))).sum());
         m.put("avgFaithfulness", avg(judges, "faithfulness"));
         m.put("avgCompleteness", avg(judges, "completeness"));
         m.put("avgCorrectness", avg(judges, "correctness"));
@@ -276,6 +289,7 @@ public final class EvalReport {
         sb.append("- 评测集: ").append(s.get("goldenSet")).append(" (v").append(s.get("goldenSetVersion")).append(")\n");
         sb.append("- tag: ").append(s.get("tag")).append("\n");
         sb.append("- LLM 裁判: ").append(boolOf(s.get("judgeEnabled")) ? "开启" : "关闭").append("\n");
+        sb.append("- 回答生成路径: ").append(s.getOrDefault("answerGeneration","未记录")).append("（离线摘录不等同于真实模型回答）\n");
         sb.append("- 运行目录: ").append(s.get("runDir")).append("\n\n");
 
         sb.append("## 总览\n\n");
@@ -285,6 +299,12 @@ public final class EvalReport {
         sb.append("| 通过率 | ").append(pct(s.get("passRate"))).append(" |\n");
         sb.append("| 平均规则得分 | ").append(s.get("avgRuleScore")).append(" |\n");
         sb.append("| 检索命中率(Hit) | ").append(pct(s.get("hitRate"))).append(" |\n");
+        var media=mapOf(s.get("media"));
+        if(!media.isEmpty()) {
+            sb.append("| 图文统计覆盖轮次 | ").append(media.get("observedTurns")).append(" |\n");
+            sb.append("| 候选图片 / 实际引用 / 有效图片 | ").append(media.get("candidates")).append(" / ").append(media.get("displayed")).append(" / ").append(media.get("valid")).append(" |\n");
+            sb.append("| 有效资料插图 / 不可用图片 / 无效引用 | ").append(media.get("validIllustrations")).append(" / ").append(media.get("unavailable")).append(" / ").append(media.get("invalidReferences")).append(" |\n");
+        }
         sb.append("| 平均耗时 | ").append(s.get("avgTotalMs")).append(" ms（P95 ").append(s.get("p95TotalMs")).append(" ms）|\n");
         sb.append("| 端到端耗时（含渲染+裁判） | ").append(s.get("avgEvalTotalMs")).append(" ms（P95 ")
                 .append(s.get("p95EvalTotalMs")).append(" ms；渲染 ").append(s.get("avgRenderMs"))
@@ -316,9 +336,13 @@ public final class EvalReport {
 
         Map<String, Object> judge = (Map<String, Object>) s.get("judge");
         sb.append("## LLM 裁判维度（复核）\n\n");
+        sb.append("文本裁判未接收图片像素，不能代替图片语义核对。\n\n");
         sb.append("| 指标 | 值 |\n|---|---|\n");
         sb.append("| 已判分轮次 | ").append(judge.get("scored")).append(" |\n");
         sb.append("| 裁判通过率 | ").append(pct(judge.get("passRate"))).append(" |\n");
+        sb.append("| 裁判用量观测 | ").append(judge.getOrDefault("usageObserved",0)).append(" / ").append(judge.getOrDefault("attempted",0)).append(" |\n");
+        sb.append("| 裁判 Token in / out | ").append(judge.get("totalTokenIn")==null?"未观测":judge.get("totalTokenIn"))
+                .append(" / ").append(judge.get("totalTokenOut")==null?"未观测":judge.get("totalTokenOut")).append(" |\n");
         sb.append("| 平均忠实度/完整性/正确性 | ").append(judge.get("avgFaithfulness")).append(" / ")
                 .append(judge.get("avgCompleteness")).append(" / ").append(judge.get("avgCorrectness")).append(" |\n");
         sb.append("| 幻觉率 | ").append(pct(judge.get("hallucinationRate"))).append(" |\n");

@@ -1,0 +1,270 @@
+{
+  "version": 1,
+  "judgments": "partial-positive-labels",
+  "methodology": "人工核对固定语料及两版候选池的等价证据，标注未穷尽所有相关块。",
+  "description": "对既有v2.4a正文摘录逐项核对的关键证据；未标注块不等于不相关，不用于计算Precision@K或完整语料召回率。",
+  "documents": [
+    {
+      "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9",
+      "location": "https://www.mcmod.cn/post/5454.html",
+      "contentHash": "aa7e7baf82295fd39916449d45c7f33c9b2bf3b2fbbfbc0186fca74eb2a97564"
+    }
+  ],
+  "queries": [
+    {
+      "id": "MP737-T01",
+      "groups": [
+        {
+          "id": "armor",
+          "description": "T3流程章节的护甲推荐",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/107/e2e919b54708b98e832802575252e71f1ed34e0f1138a419269a91a66b3a8761",
+              "quote": "龙炎钢"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/107/86fc16b46feb0c5ddebec6036c645fee20c012f4304abe7408450ef04ab7e230",
+              "quote": "龙霜钢"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/107/6573dc35c2ad1d2e588d308b763c3232932f7d4e87df57c945ed448deb401457",
+              "quote": "下界合金"
+            }
+          ]
+        },
+        {
+          "id": "weapon",
+          "description": "T3流程章节的武器推荐",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/108/c2b6be97d14a9f4b9a6b86c68546c5da2edd2a6662ea377599a5ba796fc25b3f",
+              "quote": "魂祸战刃"
+            }
+          ]
+        },
+        {
+          "id": "accessory",
+          "description": "T3流程章节的饰品推荐",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/109/1d598bb10dbb0d182bbc267d576808003e1e6095adef074328a854efe9d3882f",
+              "quote": "神龙之心"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/109/342526e78a95d6b690bb66924234bf5725781713d2920c355207517cdde306a1",
+              "quote": "比干的认可"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/109/5ccc69bc0a987b9172eac6456a2179cf336b9011269eeb3e88304dca7ebf77ea",
+              "quote": "破妄金瞳"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/109/570d62b764a4876f3011a8f76c6293b06094649b9e027767ae7df30cef68b91d",
+              "quote": "蠕虫围巾"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MP737-T02",
+      "groups": [
+        {
+          "id": "preparation",
+          "description": "组装台和胚料准备",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/242/d2389c2d9bff745b7e603b8d594dbdf793923370851c9e311a84bd533d1a74bb",
+              "quote": "傀儡装配台"
+            }
+          ]
+        },
+        {
+          "id": "parts",
+          "description": "部件切割和材料加工",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/244/5940b3abf4c737eee49608f1fc51b5f7c7a47592a9fe0682450b15243326d89d",
+              "quote": "1个身体，1个双腿与2个手臂"
+            }
+          ]
+        },
+        {
+          "id": "replace",
+          "description": "组装后独立更换部件",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/245/3788408abcd467ae5ac40c5515f5c50d8fdea464f665aa545515971e669faef7",
+              "quote": "单独替换傀儡的部件"
+            }
+          ]
+        },
+        {
+          "id": "upgrade",
+          "description": "升级及扩充槽位",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/254/3e3483ec420204dc8237748deef000041f030b689931fa4015a2f8b95e9400ac",
+              "quote": "增加强化槽位"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MP737-T03",
+      "groups": [
+        {
+          "id": "work",
+          "description": "工作模式及时间设置",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/270/6f87aeb80c97b351f93a15bc6157e82ea96e42f70eb0b70b277f64e184e76c5a",
+              "quote": "工作模式"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/274/220b976bc60b5e7103d4cafec4809d3e4552e48d5b924f7da95b41f7c54a046a",
+              "quote": "工作时间"
+            }
+          ]
+        },
+        {
+          "id": "fishing",
+          "description": "女仆钓鱼用途",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/294/db3f3e9569a0315bb75bfa0f589f0ace2d1741f005bb201c77e85d0f38d13ed9",
+              "quote": "女仆钓鱼"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/25/e1fce2c2c132d86450ed7f9f7d582e3c6d041d0de312319baab2dcd0b5602b49",
+              "quote": "女仆坐在船上也能钓鱼"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/308/29cc039674401bd5d91ff8f4fe2907aee0141420af5cbda26c866c8e5e4725e9",
+              "quote": "钓鱼女仆"
+            }
+          ]
+        },
+        {
+          "id": "cooking",
+          "description": "女仆烹饪用途",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/303/1abd74cbe9e186d401fc06161cbcb66f3ff1131ffccbd585907b0a337841cda5",
+              "quote": "女仆自动烹饪"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/308/29cc039674401bd5d91ff8f4fe2907aee0141420af5cbda26c866c8e5e4725e9",
+              "quote": "烧鱼女仆"
+            }
+          ]
+        },
+        {
+          "id": "combat",
+          "description": "战斗与召唤回收傀儡",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/316/3ae5f5982b952c82fcc63a2c9ed7bdbd42e26a50f2d3cf3f6ae28568c38daa13",
+              "quote": "自动召唤，回收傀儡"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MP737-T04",
+      "groups": [
+        {
+          "id": "wand",
+          "description": "缠魂木及黑暗魔杖入门",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/396/72c6602ee4547b35c59473e7f3d520df9d7214e8e7be2bd3811c6c04f6b0bf95",
+              "quote": "黑暗魔杖"
+            }
+          ]
+        },
+        {
+          "id": "conversion",
+          "description": "诅咒注入器与根之图腾",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/397/117b940665d2afc480623505641eddfdbbdcc76429ac6ae81dbda5a31aebd04c",
+              "quote": "诅咒注入器与根之图腾"
+            }
+          ]
+        },
+        {
+          "id": "soul",
+          "description": "图腾收集灵魂能量",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/403/320ce75f24cb6a68d68c6bb975a3c0e95d8c89b181193baa0cd7f59651eb1525",
+              "quote": "击杀生物的时候获取灵魂能量"
+            }
+          ]
+        },
+        {
+          "id": "ritual",
+          "description": "祭坛能量与仪式风险",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/405/831532c07b145f2cf45e95edbc0bb15305cc34800a2f8f7df9065990b70c4de1",
+              "quote": "黑暗祭坛"
+            },
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/405/466b0b4310d869485e99ec1e58b0a319b890607f608de3f3d093de3d4a138c9f",
+              "quote": "物品会全部消失"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MP737-T05",
+      "groups": [
+        {
+          "id": "overworld",
+          "description": "主世界输出方式与限制",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/221/4452950daac35580e463f3a343ea7bd23ac512ff15f915eb00fa22d79a4b8d42",
+              "quote": "如果不使用tetra主手注意不要使用潮汐利爪"
+            }
+          ]
+        },
+        {
+          "id": "regeneration",
+          "description": "下界回血及附魔应对",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/231/b1c4c555c23506265064957bdb6ebddac9f0ec008c3ca6bbf76ed384d88c84a7",
+              "quote": "亡灵杀手附魔破除他的回血"
+            }
+          ]
+        },
+        {
+          "id": "stealing",
+          "description": "偷取饰品装备的应对",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/233/ef58787a577e2d92ea1d73faa85d76d6c026123e5e986fb6260088f18a494cce",
+              "quote": "偷取玩家的饰品与装备"
+            }
+          ]
+        },
+        {
+          "id": "barrier",
+          "description": "尾杀结界与远离机制",
+          "chunks": [
+            {
+              "id": "2e50195ef875e5747fe5b69e974d813ad7ae432b8ea34f523a8f6fecf124efc9/234/ad7c6821b32229df1af0eb6afdfbb9f90098bd84fec8540b35361ef7ad5833c9",
+              "quote": "立刻远离他"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

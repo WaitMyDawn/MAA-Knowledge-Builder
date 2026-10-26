@@ -140,7 +140,7 @@ public class AutoTestService {
                 }
 
                 if (sessionEnabled && result.answer != null) {
-                    chatHistory.addMessage(session, "maa", result.answer);
+                    chatHistory.addMessage(session, "maa", result.answer, result.artifacts);
                     try {
                         chatHistory.save(session);
                     } catch (Exception e) {

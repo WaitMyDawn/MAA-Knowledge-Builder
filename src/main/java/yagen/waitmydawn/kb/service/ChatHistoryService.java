@@ -36,7 +36,9 @@ public class ChatHistoryService {
     public Path getCacheDir() { return cacheDir; }
 
     /** A single chat message */
-    public record ChatMessage(String role, String content, String timestamp) {}
+    public record ChatMessage(String role, String content, String timestamp, yagen.waitmydawn.kb.model.AnswerArtifacts artifacts) {
+        public ChatMessage(String role,String content,String timestamp) { this(role,content,timestamp,null); }
+    }
 
     /** A chat session */
     public static class ChatSession {
@@ -86,8 +88,12 @@ public class ChatHistoryService {
 
     /** Add a message to a session */
     public void addMessage(ChatSession session, String role, String content) {
+        addMessage(session, role, content, null);
+    }
+
+    public void addMessage(ChatSession session, String role, String content, yagen.waitmydawn.kb.model.AnswerArtifacts artifacts) {
         session.messages.add(new ChatMessage(role, content,
-                LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))));
+                LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")), artifacts));
     }
 
     /** Save session to file */

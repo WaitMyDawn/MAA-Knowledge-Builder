@@ -118,6 +118,12 @@ public class WikiScraperService {
 
     private record CacheEntry(FetchedPage page, long expireAt) {}
     private PublicKnowledgeCache publicCache;
+    private WebResourceCache resourceCache;
+    private final Map<String, Map<String, String>> resourceCookies = new ConcurrentHashMap<>();
+    public void setResourceDatabase(yagen.waitmydawn.kb.model.DatabaseBuilder db) { resourceCache = new WebResourceCache(db, this); }
+    public Resource fetchBuildResource(String url, String referer, boolean image) {
+        return resourceCache == null ? fetchResource(url, referer, image, Map.of()) : resourceCache.fetch(url, referer, image);
+    }
     public void setPublicCache(PublicKnowledgeCache cache) { this.publicCache=cache; }
 
     // ==================== MC百科 分类枚举 ====================
@@ -295,35 +301,47 @@ public class WikiScraperService {
     public record ModScrapeResult(List<WebPage> pages, yagen.waitmydawn.kb.model.WebCatalog catalog) {}
 
     public ModScrapeResult scrapeModCatalog(String modId, ScrapeProgress progress) {
+        String classId = findModClassId(modId);
+        if (classId == null) return new ModScrapeResult(List.of(), new yagen.waitmydawn.kb.model.WebCatalog(List.of(), List.of()));
+        return scrapeModCatalog(modId, classId, progress);
+    }
+
+    public ModScrapeResult scrapeModCatalog(String modId, String classId, ScrapeProgress progress) {
+        if (!classId.matches("[1-9][0-9]*")) throw new IllegalArgumentException("Invalid class ID");
         List<WebPage> pages = new ArrayList<>();
         var nodes = new ArrayList<yagen.waitmydawn.kb.model.WebCatalog.Node>();
         var members = new ArrayList<yagen.waitmydawn.kb.model.WebCatalog.Member>();
-        String classId = findModClassId(modId);
-        if (classId == null) return new ModScrapeResult(pages, new yagen.waitmydawn.kb.model.WebCatalog(nodes, members));
 
-        // Visit main page first to get session cookies
         String mainUrl = "https://www.mcmod.cn/class/" + classId + ".html";
-        Map<String, String> sessionCookies = new LinkedHashMap<>();
-        WebPage main = fetchPageWithCookies(mainUrl, "mcmod", sessionCookies);
-        if (main != null) pages.add(main);
-
-        // 遍历所有分类，收集 subWebPage 映射
+        Resource mainResource = fetchBuildResource(mainUrl, MCMOD_BASE + "/", false);
+        Document mainDoc;
+        try {
+            if (mainResource.status() != 200 || mainResource.bytes() == null)
+                return new ModScrapeResult(pages, new yagen.waitmydawn.kb.model.WebCatalog(nodes, members));
+            mainDoc = mainResource.document();
+        } catch (java.io.IOException e) { throw new IllegalStateException("模组主页解析失败", e); }
+        WebPage main = toWebPage(mainDoc, mainResource.url(), "mcmod");
+        if (!main.content().isBlank()) pages.add(main);
         Map<String, String> subWebPage = new LinkedHashMap<>();
-        McmodCategory[] allCats = McmodCategory.values();
+        var allCats = McmodLinkDiscovery.categories(mainDoc, classId, mainResource.url());
         int catIdx = 0;
-
-        for (McmodCategory cat : allCats) {
+        for (var cat : allCats) {
+            checkCancelled();
             catIdx++;
-            String subUrl = "https://www.mcmod.cn/item/list/" + classId + "-" + cat.getId() + ".html";
-
-            // Fetch with retry + cookies + browser headers
-            CategoryFetchResult fetch = fetchCategoryWithRetry(subUrl, 3, sessionCookies, mainUrl);
+            String subUrl = cat.url();
+            Resource resource = fetchBuildResource(subUrl, mainUrl, false);
+            CategoryFetchResult fetch;
+            try {
+                fetch = resource.status() == 200 && resource.bytes() != null
+                        ? new CategoryFetchResult(resource.document(), 200, resource.bytes().length, 1)
+                        : new CategoryFetchResult(null, resource.status(), 0, 1);
+            } catch (java.io.IOException e) { throw new IllegalStateException("分类页解析失败", e); }
             if (fetch.doc() == null) {
                 String reason = fetch.httpStatus() > 0
                         ? "HTTP " + fetch.httpStatus() : "connection failed";
-                log.warn("mcmod.cn {} [{}] — {} ({} retries)", modId, cat.getName(), reason, fetch.retries());
+                log.warn("mcmod.cn {} [{}] — {} ({} retries)", modId, cat.name(), reason, fetch.retries());
                 if (progress != null)
-                    progress.onProgress(catIdx, allCats.length, cat.getName(), -1, 0, "error:" + reason);
+                    progress.onProgress(catIdx, allCats.size(), cat.name(), -1, 0, "error:" + reason);
                 continue;
             }
 
@@ -333,17 +351,20 @@ public class WikiScraperService {
             // 404 check
             if (title.contains("404") || title.contains("未找到")) {
                 if (progress != null)
-                    progress.onProgress(catIdx, allCats.length, cat.getName(), -1, 0, "404");
+                    progress.onProgress(catIdx, allCats.size(), cat.name(), -1, 0, "404");
                 continue;
             }
 
-            var catalog = new WebCatalogParser().parse(doc, modId, subUrl, cat.getId(), cat.getName());
+            var catalog = new WebCatalogParser().parse(doc, modId, subUrl, cat.id(), cat.name());
             nodes.addAll(catalog.nodes()); members.addAll(catalog.members());
 
             // 提取真实物品链接
             Elements itemLinks = doc.select("a[href*=/item/]");
             List<Element> itemLinksP = itemLinks.stream()
-                    .filter(el -> ITEM_LINK_PATTERN.matcher(el.attr("href")).matches())
+                    .filter(el -> {
+                        String target = McmodLinkDiscovery.mcmodUrl(subUrl, el.attr("href"));
+                        return target != null && ITEM_LINK_PATTERN.matcher(URI.create(target).getPath()).matches();
+                    })
                     .toList();
             int subCount = itemLinksP.size();
 
@@ -354,16 +375,16 @@ public class WikiScraperService {
             } else if (fetch.bodyLen() < MIN_BODY_LEN) {
                 status = "blocked";  // short body + no items = likely rate-limited or JS-only
                 log.warn("mcmod.cn {} [{}] — body too short ({} chars), possible block",
-                        modId, cat.getName(), fetch.bodyLen());
+                        modId, cat.name(), fetch.bodyLen());
             } else {
                 status = "empty";    // normal body but no items = genuinely empty
             }
 
             if (progress != null)
-                progress.onProgress(catIdx, allCats.length, cat.getName(), 0, subCount, status);
+                progress.onProgress(catIdx, allCats.size(), cat.name(), 0, subCount, status);
 
             StringBuilder content = new StringBuilder();
-            content.append("MC百科 ").append(cat.getName()).append(": ").append(title).append("\n");
+            content.append("MC百科 ").append(cat.name()).append(": ").append(title).append("\n");
 
             // 子类别标题
             Elements leftHeaders = doc.select("th.item-list-type-left");
@@ -379,10 +400,8 @@ public class WikiScraperService {
                 String cnName = link.attr("data-cn");
                 if (cnName.isEmpty()) cnName = link.text().trim();
                 String enName = link.attr("data-en");
-                String href = link.attr("href");
-                if (cnName.isEmpty() || href.isEmpty()) continue;
-
-                if (!href.startsWith("http")) href = "https://www.mcmod.cn" + href;
+                String href = McmodLinkDiscovery.mcmodUrl(subUrl, link.attr("href"));
+                if (cnName.isEmpty() || href == null) continue;
 
                 // Key: "秘银矿石(Mithril Ore)" or "幽灵(Ghost)"
                 String key = enName.isEmpty() ? cnName : cnName + "(" + enName + ")";
@@ -396,7 +415,7 @@ public class WikiScraperService {
 
                 // NO item page visit — just report count
                 if (progress != null)
-                    progress.onProgress(catIdx, allCats.length, cat.getName(), itemIdx, subCount, status);
+                    progress.onProgress(catIdx, allCats.size(), cat.name(), itemIdx, subCount, status);
             }
 
             // 右侧单元格物品文本
@@ -412,7 +431,7 @@ public class WikiScraperService {
             }
 
             if (progress != null)
-                progress.onProgress(catIdx, allCats.length, cat.getName(), -1, subCount, status);
+                progress.onProgress(catIdx, allCats.size(), cat.name(), -1, subCount, status);
 
             pages.add(new WebPage(title, subUrl, content.toString(), "mcmod",
                     new LinkedHashMap<>()));
@@ -532,8 +551,41 @@ public class WikiScraperService {
 
     // ==================== 统一请求执行器（限流 + 退避 + 预算） ====================
 
-    private record FetchOutcome(int status, String body, int attempts,String etag,String lastModified) {
-        FetchOutcome(int status,String body,int attempts) { this(status,body,attempts,null,null); }
+    private record FetchOutcome(int status, String body, int attempts, String etag, String lastModified,
+                                byte[] bytes, String contentType, String finalUrl) {
+        FetchOutcome(int status, String body, int attempts) { this(status, body, attempts, null, null, null, null, null); }
+        FetchOutcome(int status, String body, int attempts, String etag, String lastModified) {
+            this(status, body, attempts, etag, lastModified, null, null, null);
+        }
+    }
+
+    public record Resource(int status, byte[] bytes, String contentType, String url, String etag, String lastModified) {
+        public Document document() throws java.io.IOException {
+            String charset = null;
+            if (contentType != null) {
+                var matcher = Pattern.compile("(?i)charset\\s*=\\s*[\"']?([^;\"'\\s]+)").matcher(contentType);
+                if (matcher.find()) charset = matcher.group(1);
+            }
+            return Jsoup.parse(new java.io.ByteArrayInputStream(bytes), charset, url);
+        }
+    }
+
+    /** 图文构建与旧百科检索共用请求执行器、请求预算、冷却和间隔。 */
+    public Resource fetchResource(String url, String referer, boolean image, Map<String, String> headers) {
+        var cookies = resourceCookies.computeIfAbsent(hostOf(url), host -> new ConcurrentHashMap<>());
+        var out = executeResource(url, cookies, referer, true, MAX_RETRIES_DEFAULT,
+                headers, true, image ? 32 * 1024 * 1024 : 4 * 1024 * 1024);
+        if (out.status() == 200 && out.body() != null && containsBlockMarker(out.body())) {
+            REQUEST_GATE.coolDown(url, 300_000L);
+            return new Resource(403, null, out.contentType(), url, null, null);
+        }
+        return new Resource(out.status(), out.bytes(), out.contentType(), out.finalUrl() == null ? url : out.finalUrl(), out.etag(), out.lastModified());
+    }
+
+    private static boolean containsBlockMarker(String body) {
+        String lower = body.toLowerCase(Locale.ROOT);
+        for (String marker : BLOCK_MARKERS) if (lower.contains(marker)) return true;
+        return false;
     }
 
     /** 限定 HTTPS 知识来源，拒绝目录和重定向中的任意外部地址。 */
@@ -559,7 +611,13 @@ public class WikiScraperService {
 
     private FetchOutcome executeRaw(String url, Map<String,String> cookies,String referer,
                                     boolean captureCookies,int maxRetries,Map<String,String> headers) {
-        validateFetchUrl(url);
+        return executeResource(url, cookies, referer, captureCookies, maxRetries, headers, false, 2 * 1024 * 1024);
+    }
+
+    private FetchOutcome executeResource(String url, Map<String,String> cookies, String referer,
+                                         boolean captureCookies, int maxRetries, Map<String,String> headers,
+                                         boolean publicWeb, int maxBytes) {
+        if (publicWeb) url = WebUrlPolicy.normalize(url); else validateFetchUrl(url);
         int redirects = 0;
         int lastStatus = 0;
         int lastBodyLen = -1;
@@ -575,6 +633,7 @@ public class WikiScraperService {
                 return new FetchOutcome(lastStatus, null, attempt + 1);
             }
             try {
+                if (publicWeb) WebUrlPolicy.validateResolved(url);
                 var conn = Jsoup.connect(url)
                         .userAgent(UA)
                         .header("Accept", ACCEPT)
@@ -583,7 +642,7 @@ public class WikiScraperService {
                         .header("Connection", "keep-alive")
                         .timeout(15000)
                         .followRedirects(false)
-                        .maxBodySize(2 * 1024 * 1024)
+                        .maxBodySize(maxBytes + 1)
                         .ignoreHttpErrors(true)
                         .ignoreContentType(true);
                 if (referer != null) conn.header("Referer", referer);
@@ -600,7 +659,7 @@ public class WikiScraperService {
                 if (status >= 300 && status < 400 && resp.header("Location") != null) {
                     if (++redirects > 5) throw new IllegalArgumentException("Too many redirects");
                     String redirected = java.net.URI.create(url).resolve(resp.header("Location")).toString();
-                    try { validateFetchUrl(redirected); }
+                    try { if (publicWeb) WebUrlPolicy.normalize(redirected); else validateFetchUrl(redirected); }
                     catch (IllegalArgumentException unsafeRedirect) {
                         var destination = java.net.URI.create(redirected);
                         log.warn("Knowledge source redirect rejected: {} -> scheme={}, host={}", hostOf(url), destination.getScheme(), destination.getHost());
@@ -611,7 +670,13 @@ public class WikiScraperService {
                     attempt--;
                     continue;
                 }
-                String body = resp.body();
+                byte[] responseBytes = resp.bodyAsBytes();
+                if (responseBytes.length > maxBytes) return new FetchOutcome(413, null, attempt + 1);
+                String responseType = resp.contentType();
+                boolean textResponse = !publicWeb || responseType == null || responseType.toLowerCase(Locale.ROOT).startsWith("text/")
+                        || responseType.toLowerCase(Locale.ROOT).contains("html") || responseType.toLowerCase(Locale.ROOT).contains("json")
+                        || responseType.toLowerCase(Locale.ROOT).contains("xml");
+                String body = textResponse ? resp.body() : null;
 
                 if (captureCookies && cookies != null) {
                     Map<String, String> newCookies = resp.cookies();
@@ -620,8 +685,9 @@ public class WikiScraperService {
                 lastStatus = status;
                 lastBodyLen = body != null ? body.length() : 0;
 
-                if (status == 200 && body != null && body.length() > MIN_VALID_BODY_LEN) {
-                    return new FetchOutcome(200, body, attempt + 1,resp.header("ETag"),resp.header("Last-Modified"));
+                if (status == 200 && (publicWeb ? responseBytes.length > 0 : body != null && body.length() > MIN_VALID_BODY_LEN)) {
+                    return new FetchOutcome(200, body, attempt + 1, resp.header("ETag"), resp.header("Last-Modified"),
+                            responseBytes, responseType, url);
                 }
                 if (status == 404) {
                     return new FetchOutcome(404, body, attempt + 1); // 永久性错误，不重试
@@ -730,7 +796,7 @@ public class WikiScraperService {
         StringBuilder content = new StringBuilder();
 
         if ("mcmod".equals(source)) {
-            Element nameEl = doc.selectFirst(".itemname .name h5, .itemname .name");
+            Element nameEl = doc.selectFirst(".itemname .name h5, .itemname .name, .class-title h3, .postname h1, .postname");
             if (nameEl != null) title = nameEl.text().trim();
             content.append("名称：").append(title).append("\n");
 
@@ -743,7 +809,7 @@ public class WikiScraperService {
                 if (!k.isEmpty() && !v.isEmpty()) content.append(k).append("：").append(v).append("\n");
             }
 
-            Element main = doc.selectFirst(".item-content.common-text, .class-text.common-text, .class-text .common-text, .class-text");
+            Element main = doc.selectFirst(".item-content.common-text, .post-content .text, .post-content.common-text, .class-text.common-text, .class-text .common-text, .class-text");
             if (main != null) {
                 content.append(WikiBodyExtractor.extract(main));
             }
@@ -756,7 +822,7 @@ public class WikiScraperService {
         }
 
         // 缺失正文时整页回退会把用户评论和导航变成事实证据，必须保持未知。
-        if ("mcmod".equals(source) && doc.selectFirst(".item-content.common-text, .item-info-table, .class-text") == null)
+        if ("mcmod".equals(source) && doc.selectFirst(".item-content.common-text, .item-info-table, .class-text, .post-content") == null)
             return new WebPage(title,url,"",source,new LinkedHashMap<>());
         return new WebPage(title, url, cleanAndDedupe(content.toString()), source, new LinkedHashMap<>());
     }

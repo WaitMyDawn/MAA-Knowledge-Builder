@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
 
 /**
  * 简易 Markdown → JavaFX TextFlow 渲染器。
- * 支持: ## header, **bold**, `code`, bullet list, table, 图片 ![alt](path)
+ * 支持: ## header, **bold**, 行内与围栏代码、bullet list、table、图片 ![alt](path)
  */
 public class MarkdownRenderer {
 
@@ -38,6 +38,16 @@ public class MarkdownRenderer {
 
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
+            var fence=Pattern.compile("^\\s{0,3}(`{3,}|~{3,}).*$").matcher(line);
+            if(fence.matches()) {
+                flushBuffer(container,buffer,imageRoots);
+                String delimiter=fence.group(1);var code=new StringBuilder();
+                while(++i<lines.length && !lines[i].strip().matches(Pattern.quote(delimiter.charAt(0)+"")+"{"+delimiter.length()+",}\\s*"))
+                    code.append(lines[i]).append('\n');
+                var flow=new TextFlow();var value=new Text(code.toString());value.setFont(Font.font("Consolas",13));
+                value.getStyleClass().add("markdown-code");flow.getChildren().add(value);flow.setMaxWidth(780);container.getChildren().add(flow);
+                continue;
+            }
             if (line.trim().isEmpty()) {
                 flushBuffer(container, buffer, imageRoots);
                 continue;
@@ -175,7 +185,7 @@ public class MarkdownRenderer {
         flow.setMaxWidth(780);
         flow.setLineSpacing(2);
 
-        Matcher img = IMAGE_PATTERN.matcher(text);
+        Matcher img = IMAGE_PATTERN.matcher(yagen.waitmydawn.kb.service.AnswerMedia.referenceText(text));
         int last = 0;
         while (img.find()) {
             String before = text.substring(last, img.start());
@@ -202,7 +212,7 @@ public class MarkdownRenderer {
 
     /** 解析一段纯文本中的 **bold** / `code` / 普通文本。 */
     private static void appendInline(TextFlow flow, String text) {
-        var links = Pattern.compile("(?<!!)\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)").matcher(text);
+        var links = Pattern.compile("(?<!!)\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)").matcher(yagen.waitmydawn.kb.service.AnswerMedia.referenceText(text));
         int end = 0;
         boolean found = false;
         while (links.find()) {
@@ -269,7 +279,10 @@ public class MarkdownRenderer {
             file = new File(System.getProperty("user.dir"), path);
         }
 
-        if (isAllowedImage(file.toPath(), imageRoots)) {
+        boolean allowed;
+        try {allowed=isAllowedImage(file.toPath(),imageRoots);}
+        catch(java.nio.file.InvalidPathException e) {allowed=false;}
+        if (allowed) {
             try {
                 Image image = new Image(file.toURI().toString());
                 ImageView view = new ImageView(image);

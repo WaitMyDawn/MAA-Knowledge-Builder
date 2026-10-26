@@ -63,12 +63,20 @@ public class QaPipeline {
     private static final String LIKE_WHERE_DATA = "recipe_data LIKE ? ESCAPE '\\'";
     private final List<QAPair> conversationHistory = new ArrayList<>();
     private int conversationTurn = 0;
+    private String lastKnowledgeScope;
+    private final KnowledgeRetrievalService knowledge;
 
     public QaPipeline(ClassifyAgent classifyAgent, EntityAgent entityAgent,
                       UrlAgent urlAgent, AnswerAgent answerAgent,
                       RagAgentService llm, VectorStore baseVectorStore,
                       EmbeddingService embedder, DatabaseBuilder baseDb,
                       MultiDBManager dbManager, Path dataDir) {
+        this(classifyAgent,entityAgent,urlAgent,answerAgent,llm,baseVectorStore,embedder,baseDb,dbManager,dataDir,dataDir);
+    }
+
+    public QaPipeline(ClassifyAgent classifyAgent,EntityAgent entityAgent,UrlAgent urlAgent,AnswerAgent answerAgent,
+                      RagAgentService llm,VectorStore baseVectorStore,EmbeddingService embedder,DatabaseBuilder baseDb,
+                      MultiDBManager dbManager,Path dataDir,Path assetDir) {
         this.classifyAgent = classifyAgent;
         this.entityAgent = entityAgent;
         this.urlAgent = urlAgent;
@@ -80,18 +88,21 @@ public class QaPipeline {
         this.dbManager = dbManager;
         urlAgent.setActiveDatabases(dbManager::getActiveDatabases);
         this.metricsHistory = new MetricsHistoryService(dataDir);
+        this.knowledge = new KnowledgeRetrievalService(baseDb, embedder, assetDir);
     }
 
     // ==================== Main entry point ====================
 
-    public synchronized QaResult process(String question) {
+    public synchronized QaResult process(String question) { return process(question, null); }
+
+    public synchronized QaResult process(String question, String selectedScope) {
         if (llm != null) llm.beginTrace();
         RetrievalTelemetry.begin();
-        try { return processTurn(question); }
+        try { return processTurn(question, selectedScope); }
         finally { RetrievalTelemetry.end(); if (llm != null) llm.endTrace(); }
     }
 
-    private QaResult processTurn(String question) {
+    private QaResult processTurn(String question, String selectedScope) {
         for (var database : dbManager.getActiveDatabases())
             VectorStore.verifyProfile(database, embedder.profile(), false);
         long t0 = System.nanoTime();
@@ -101,6 +112,28 @@ public class QaPipeline {
         m.conversationTurn = conversationTurn;
         m.questionHash = sha256hex(question);
         m.sessionId = dbManager.getCurrentSessionId();
+
+        var resolution = knowledge.resolve(question, selectedScope, lastKnowledgeScope);
+        KnowledgeRetrievalService.Retrieval imported = null;
+        String retrievalQuestion = question;
+        String resolvedScope=resolution.scope()!=null?resolution.scope().id():resolution.documentId()==null?null:"document:"+resolution.documentId();
+        if(lastKnowledgeScope!=null && lastKnowledgeScope.equals(resolvedScope) && !conversationHistory.isEmpty()
+                && question.matches("(?s).*(它|这个|那个|上面|刚才|继续|还有|第[0-9]+页).*"))
+            retrievalQuestion=conversationHistory.getLast().question()+"；"+question;
+        if (resolution.explicit() || !knowledge.scopes().isEmpty()) imported = knowledge.retrieve(retrievalQuestion, resolution, false);
+        if(imported!=null) m.knowledgeRetrieval=imported.diagnostics();
+        boolean hasImportedSources = !knowledge.scopes().isEmpty();
+        boolean mentionsInstalledMod = baseDb.findAllModEntries().stream().anyMatch(mod -> {
+            String q=KnowledgeSearchText.normalize(question);
+            String name=KnowledgeSearchText.normalize(mod.getDisplayName());
+            String id=KnowledgeSearchText.normalize(mod.getModId());
+            return name.length()>=3 && q.contains(name) || id.length()>=3 && q.contains(id);
+        });
+        if (resolution.explicit() || (hasImportedSources && baseDb.findAllModEntries().isEmpty())
+                || imported != null && !imported.hits().isEmpty() && imported.bestLexical()>=0.6 && !mentionsInstalledMod) {
+            if(imported!=null) imported=knowledge.hydrate(imported,retrievalQuestion);
+            return processKnowledgeTurn(question, resolution, imported, m, t0);
+        }
 
         urlAgent.reset();
         QaResult result = new QaResult();
@@ -211,6 +244,11 @@ public class QaPipeline {
                 .sorted(Comparator.comparingDouble(VectorStore.SearchResult::score).reversed())
                 .limit(180)
                 .toList();
+        if (imported != null && (plan == null || plan.modId() == null) && !imported.hits().isEmpty()) {
+            var merged = new LinkedHashMap<String,VectorStore.SearchResult>();
+            vectorResults.forEach(v -> merged.put(v.chunkId(), v)); imported.hits().forEach(v -> merged.put(v.chunkId(), v));
+            vectorResults = new ArrayList<>(merged.values());
+        }
         if(result.catalogEvidence!=null) {
             var withCatalog=new ArrayList<>(vectorResults);
             withCatalog.addFirst(new VectorStore.SearchResult("catalog/"+(plan==null?"unknown":plan.modId()),result.catalogEvidence,
@@ -319,6 +357,10 @@ public class QaPipeline {
         }
         if(result.catalogEvidence!=null) finalSubQueries.add(new UrlAgent.SubQueryResult(question,
                 vectorResults.stream().filter(v -> v.type().startsWith("category_")).toList(),List.of()));
+        if (imported != null) {
+            var kept = imported.hits().stream().filter(v -> selectedIds.contains(v.sourcePath() + "\n" + v.chunkId())).toList();
+            if (!kept.isEmpty()) finalSubQueries.add(new UrlAgent.SubQueryResult(question, kept, List.of()));
+        }
         m.computeVectorRelevance(vectorResults, 0.2);
         m.vectorResultCount = vectorResults.size();
         result.recipeResults = recipeResults;
@@ -358,20 +400,33 @@ public class QaPipeline {
         result.sourceScope=baseDb.findAllModEntries().stream().filter(mod->relevantMods.isEmpty() || relevantMods.contains(mod.getModId())).map(mod -> mod.getModId()+": modVersion="+mod.getVersion()
                 +", Minecraft="+mod.getMcVersion()+", loader="+mod.getLoader()+", "+KnowledgeSourcePolicy.describe(mod.getModId(), mod.getMcVersion())).collect(java.util.stream.Collectors.joining("\n"))
                 +"\nnull 表示 JAR 元数据未提供版本。移植版本默认沿用原模组的百科机制知识；实际配方、注册名、纹理由安装 JAR 优先确定。仅证据指出具体差异时披露该差异，不把缺少移植版独立百科视为知识缺失。";
+        var importedContext = imported;
+        if (importedContext != null) {
+            var ids = vectorResults.stream().map(VectorStore.SearchResult::chunkId).collect(java.util.stream.Collectors.toSet());
+            var contextSnapshot = importedContext;
+            var sourceIds=contextSnapshot.hits().stream().filter(h -> ids.contains(h.chunkId())).map(h -> KnowledgeRetrievalService.sourceId(contextSnapshot,h.chunkId())).collect(java.util.stream.Collectors.toSet());
+            var sources = contextSnapshot.artifacts().sources().stream().filter(s -> sourceIds.contains(s.id())).toList();
+            var pics = importedContext.artifacts().pictures().stream().filter(p -> p.chunkIds().stream().anyMatch(ids::contains)).toList();
+            result.artifacts = new yagen.waitmydawn.kb.model.AnswerArtifacts(null, null, sources, pics);
+            var kept=contextSnapshot.hits().stream().filter(h -> ids.contains(h.chunkId())).toList();
+            importedContext=knowledge.hydrate(new KnowledgeRetrievalService.Retrieval(kept,result.artifacts,"",contextSnapshot.bestLexical(),contextSnapshot.diagnostics()),question);
+            result.artifacts=importedContext.artifacts();m.knowledgeRetrieval=importedContext.diagnostics();
+        }
         AnswerContext ctx = new AnswerContext(
                 question, intent, resolvedEntities, answerRecipeMatches,
                 vectorResults, incInfo, finalSubQueries,
-                premiseWarning,result.sourceScope);
+                premiseWarning,result.sourceScope, importedContext == null ? null : filteredKnowledgeEvidence(result.artifacts,importedContext.diagnostics()));
 
         long answerLlmStart = llm != null ? llm.usageTrace().latencyMs : 0;
         result.answer = answerAgent.compose(ctx);
+        m.answerGeneration=answerAgent.lastGenerationMode();
         m.answerLlmMs = llm != null ? llm.usageTrace().latencyMs - answerLlmStart : 0;
         TokenUsage answerUsage = answerAgent.lastUsage();
         if (answerUsage != null) recordUsage(m, answerUsage);
         else m.recordLlmCall(estimateContextTokens(ctx), estimateAnswerTokens(result.answer));
 
         // If data is sparse (Tier C/D), supplement with LLM fallback
-        m.fallbackUsed = false;
+        m.fallbackUsed = "MODEL_ERROR".equals(m.answerGeneration);
         if (!hasRelevantData && llm != null && (plan == null || (!plan.enumerate()
                 && (plan.modId() == null || "minecraft".equals(plan.modId()))))) {
             long fallbackLlmStart = llm.usageTrace().latencyMs;
@@ -380,6 +435,7 @@ public class QaPipeline {
             m.fallbackLlmMs = llm.usageTrace().latencyMs - fallbackLlmStart;
             if (fallback.text() != null) {
                 result.answer = fallback.text();
+                m.answerGeneration="MODEL_FALLBACK";
                 m.fallbackUsed = true;
                 if (fallback.usage() != null) recordUsage(m, fallback.usage());
             }
@@ -390,6 +446,10 @@ public class QaPipeline {
         }
         m.answerGenTimeMs = (System.nanoTime() - t6) / 1_000_000;
         result.answer = AnswerSourceLinks.enrich(result.answer, result.vectorResults);
+        result.artifacts=AnswerMedia.snapshotCitations(result.answer,result.artifacts);
+        result.answer = AnswerMedia.bind(result.answer, result.artifacts);
+        m.knowledgeContextChunkIds=KnowledgeRetrievalService.contextIds(importedContext,result.artifacts);
+        m.knowledgeCitedSourceIds=result.artifacts.citedSourceIds();
         m.answerLength = result.answer != null ? result.answer.length() : 0;
 
         m.addTrace("AnswerGen", m.answerGenTimeMs, m.fallbackUsed ? "LLM fallback" : "RAG compose");
@@ -431,11 +491,79 @@ public class QaPipeline {
         }
 
         // Save to conversation history
+        lastKnowledgeScope = null;
         conversationHistory.add(new QAPair(question, result.answer));
         while (conversationHistory.size() > MAX_CONTEXT_PAIRS) {
             conversationHistory.remove(0);
         }
 
+        return result;
+    }
+
+    public List<KnowledgeRetrievalService.Scope> knowledgeScopes() { return knowledge.scopes(); }
+    public synchronized void setKnowledgeImageFetching(boolean enabled) {knowledge.setImageFetching(enabled);}
+
+    private static String filteredKnowledgeEvidence(yagen.waitmydawn.kb.model.AnswerArtifacts artifacts,KnowledgeRetrievalService.Diagnostics diagnostics) {
+        return KnowledgeRetrievalService.evidence(artifacts,diagnostics);
+    }
+
+    private QaResult processKnowledgeTurn(String question, KnowledgeRetrievalService.Resolution scope,
+                                          KnowledgeRetrievalService.Retrieval retrieval, QaMetrics m, long started) {
+        var result = new QaResult();
+        m.vectorSearchTimeMs=(System.nanoTime()-started)/1_000_000;
+        result.sourceScope = scope.scope() == null ? "已导入资料" : scope.scope().label();
+        result.artifacts = retrieval == null ? yagen.waitmydawn.kb.model.AnswerArtifacts.empty() : retrieval.artifacts();
+        result.vectorResults = retrieval == null ? List.of() : retrieval.hits();
+        m.knowledgeRetrieval=retrieval==null?null:retrieval.diagnostics();
+        m.knowledgeContextChunkIds=KnowledgeRetrievalService.contextIds(retrieval,result.artifacts);
+        String boundMod=knowledge.boundModId(scope.scope());
+        if(boundMod!=null && hasCraftingIntent(question)) {
+            var entities=entityAgent.resolveEntities(question,"本轮仅查询已选资料对应模组："+boundMod);
+            result.resolvedEntities=entities.inferredEntities().stream().filter(e -> boundMod.equals(e.modId())).toList();
+            var recipes=findScoredRecipes(result.resolvedEntities).stream().filter(r -> boundMod.equals(r.match().sourceMod())).toList();
+            result.recipeResults=recipes.stream().map(ScoredRecipe::match).toList();
+            result.recipesToRender=selectRecipesToRender(recipes,true);
+            m.entityCount=result.resolvedEntities.size();m.recipeResultCount=result.recipeResults.size();
+        }
+        m.classifySource = "knowledge_source"; m.classifyCategory = "资料问答";
+        m.vectorResultCount = result.vectorResults.size();
+        var snapshot=retrieval;
+        m.contextChunksUsed=snapshot==null?0:(int)snapshot.hits().stream().filter(h -> KnowledgeRetrievalService.sourceId(snapshot,h.chunkId())!=null).count();
+        m.computeVectorRelevance(result.vectorResults, 0.2);
+        m.dataTier = !result.recipeResults.isEmpty() ? result.vectorResults.isEmpty()?"TIER B":"TIER A"
+                : result.vectorResults.isEmpty() ? "TIER D" : "TIER C";
+        long answerStart = System.nanoTime();
+        m.answerGeneration="NO_EVIDENCE";
+        if (scope.warning() != null) result.answer = scope.warning();
+        else if (result.vectorResults.isEmpty() && result.recipeResults.isEmpty()) result.answer = "在当前资料范围内没有找到足够证据，无法确认这个问题。可更换资料范围或补充相关文档。";
+        else {
+            var recipes=result.recipeResults.stream().map(r -> new AnswerAgent.RecipeMatch(r.recipeJson(),r.outputItem(),r.sourceMod(),r.sourceType())).toList();
+            var ctx = new AnswerContext(question, QuestionType.GENERAL, result.resolvedEntities, recipes, result.vectorResults, null, List.of(),
+                    null, "本轮仅使用已导入资料及已绑定同模组的原始 JAR 配方：" + result.sourceScope + "；不代表整合包运行时生效规则。",
+                    filteredKnowledgeEvidence(result.artifacts,retrieval==null?null:retrieval.diagnostics()));
+            result.answer = answerAgent.compose(ctx);
+            m.answerGeneration=answerAgent.lastGenerationMode();m.fallbackUsed="MODEL_ERROR".equals(m.answerGeneration);
+            recordUsage(m, answerAgent.lastUsage());
+        }
+        result.artifacts=AnswerMedia.snapshotCitations(result.answer,result.artifacts);
+        result.answer = AnswerMedia.bind(result.answer, result.artifacts);
+        m.knowledgeCitedSourceIds=result.artifacts.citedSourceIds();
+        m.answerGenTimeMs = (System.nanoTime()-answerStart)/1_000_000; m.answerLength=result.answer.length();
+        m.totalTimeMs=(System.nanoTime()-started)/1_000_000; m.computeTtft(); m.computeQualityIndicators();
+        if (llm != null) {
+            var usage=llm.usageTrace(); m.llmCallCount=usage.calls; m.tokenEstimateInput=usage.inputTokens;
+            m.tokenEstimateOutput=usage.outputTokens; m.tokenTotalCount=usage.inputTokens+usage.outputTokens; m.unknownUsageCalls=usage.unknownUsageCalls;
+        }
+        var io=RetrievalTelemetry.current(); m.queryEmbeddingCount=io.queryEmbeddings; m.documentEmbeddingCount=io.documentEmbeddings;
+        m.httpRequestCount=io.httpRequests;m.httpErrorCount=io.httpErrors;m.httpResponseBytes=io.responseBytes;
+        m.memoryPageCacheHits=io.memoryPageHits;m.persistentPageCacheHits=io.persistentPageHits;
+        m.embeddingTimeMs=io.embeddingNanos/1_000_000; m.addTrace("KnowledgeRetrieval", m.totalTimeMs-m.answerGenTimeMs, result.sourceScope);
+        m.accumulate(); result.metrics=m;
+        if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Question cancelled");
+        try { metricsHistory.save(m); } catch (Exception e) { log.warn("Knowledge metrics save failed",e); }
+        lastKnowledgeScope=result.artifacts.scopeId();
+        conversationHistory.add(new QAPair(question,result.answer));
+        while(conversationHistory.size()>MAX_CONTEXT_PAIRS) conversationHistory.remove(0);
         return result;
     }
 
@@ -867,6 +995,7 @@ public class QaPipeline {
     /** Clear conversation history (e.g., when switching sessions) */
     public synchronized void clearHistory() {
         conversationHistory.clear();
+        lastKnowledgeScope = null;
         conversationTurn = 0;
         classifyAgent.reset();
         answerAgent.clearMemory();
@@ -880,6 +1009,7 @@ public class QaPipeline {
             if ("user".equals(message.role())) question = message.content();
             else if ("maa".equals(message.role()) && question != null) {
                 conversationHistory.add(new QAPair(question, message.content()));
+                lastKnowledgeScope = message.artifacts() == null ? null : message.artifacts().scopeId();
                 conversationTurn++;
                 question = null;
             }
@@ -960,6 +1090,7 @@ public class QaPipeline {
     private record ScoredRecipe(RecipeMatch match, int score) {}
 
     public static class QaResult {
+        public yagen.waitmydawn.kb.model.AnswerArtifacts artifacts = yagen.waitmydawn.kb.model.AnswerArtifacts.empty();
         public String sourceScope;
         public yagen.waitmydawn.kb.dto.RetrievalPlan retrievalPlan;
         public String catalogEvidence;

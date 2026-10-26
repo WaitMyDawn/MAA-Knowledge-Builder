@@ -43,8 +43,17 @@ public class DatabaseBuilder {
         return database;
     }
 
+    /** 诊断入口禁止建表和内容写入；已有凭据仍由统一连接入口处理。 */
+    public static DatabaseBuilder atReadOnlyPath(java.nio.file.Path path) {
+        var database=atPath(path);
+        database.jdbcUrl+=";ACCESS_MODE_DATA=r;IFEXISTS=TRUE";
+        return database;
+    }
+
     private static final List<String> BUILD_TABLES = List.of("rag_mod_info", "rag_recipe",
-            "rag_texture_cache", "rag_entity_registry", "rag_web_cache", "rag_web_category", "rag_web_category_member", "rag_vectors", "rag_vector_profile", "rag_build_metadata");
+            "rag_texture_cache", "rag_entity_registry", "rag_web_cache", "rag_web_category", "rag_web_category_member", "rag_vectors", "rag_vector_profile", "rag_build_metadata",
+            "rag_knowledge_source", "rag_document", "rag_content_chunk", "rag_image_asset", "rag_image_occurrence", "rag_chunk_image",
+            "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block");
 
     /** 网络与解析工作在临时库完成，发布事务只包含已校验的数据复制。 */
     public void replaceBuildDataFrom(DatabaseBuilder staging) {
@@ -58,7 +67,7 @@ public class DatabaseBuilder {
                         var columns = new ArrayList<Integer>();
                         var names = new ArrayList<String>();
                         for (int i = 1; i <= meta.getColumnCount(); i++) {
-                            if ("id".equalsIgnoreCase(meta.getColumnName(i)) && !table.equals("rag_vector_profile")) continue;
+                            if (meta.isAutoIncrement(i)) continue;
                             columns.add(i); names.add(meta.getColumnName(i));
                         }
                         String sql = "INSERT INTO " + table + " (" + String.join(",", names) + ") VALUES ("
@@ -99,7 +108,8 @@ public class DatabaseBuilder {
                     digest.update(table.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     String order = table.equals("rag_build_metadata") ? "name"
                             : table.equals("rag_web_category") ? "category_id"
-                            : table.equals("rag_web_category_member") ? "category_id,item_url" : "id";
+                            : table.equals("rag_web_category_member") ? "category_id,item_url"
+                            : table.equals("rag_chunk_image") ? "chunk_id,occurrence_id" : table.equals("rag_chunk_block")?"chunk_id,block_id":"id";
                     try (var s = c.createStatement(); var rows = s.executeQuery("SELECT * FROM " + table + " ORDER BY " + order)) {
                         var metadata = rows.getMetaData();
                         while (rows.next()) for (int i = 1; i <= metadata.getColumnCount(); i++) {
@@ -198,6 +208,7 @@ public class DatabaseBuilder {
     public void initDatabase() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
             yagen.waitmydawn.kb.service.WebCatalogStore.init(conn);
+            yagen.waitmydawn.kb.service.KnowledgeContentStore.init(conn);
 
             stmt.execute("CREATE TABLE IF NOT EXISTS rag_build_metadata (name VARCHAR(100) PRIMARY KEY, meta_value VARCHAR(1000))");
             stmt.execute("CREATE TABLE IF NOT EXISTS rag_vector_profile (id INT PRIMARY KEY, profile VARCHAR(1000) NOT NULL)");
@@ -413,6 +424,8 @@ public class DatabaseBuilder {
      */
     public void clearBuildData() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            for (String table : yagen.waitmydawn.kb.service.KnowledgeContentStore.BUILD_TABLES)
+                stmt.executeUpdate("DELETE FROM " + table);
             stmt.execute("DELETE FROM rag_vectors");
             stmt.execute("DELETE FROM rag_recipe");
             stmt.execute("DELETE FROM rag_texture_cache");

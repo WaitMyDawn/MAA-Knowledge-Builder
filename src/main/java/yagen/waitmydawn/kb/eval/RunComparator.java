@@ -36,7 +36,7 @@ public final class RunComparator {
             Map<String, Object> configA = readJson(runDirA.resolve("config.json"));
             Map<String, Object> configB = readJson(runDirB.resolve("config.json"));
             List<String> differences = new ArrayList<>();
-            for (String field : List.of("embeddingProfile", "baseContentSha256", "goldenSetSha256", "cachePolicy")) {
+            for (String field : List.of("embeddingProfile", "baseContentSha256", "goldenSetSha256", "cachePolicy","answerModel","judgeModel","assetPolicy")) {
                 if (!java.util.Objects.equals(configA.get(field), configB.get(field))) differences.add(field);
             }
             if (!differences.isEmpty()) sb.append("> 比较条件不同：").append(String.join(", ", differences))
@@ -55,6 +55,14 @@ public final class RunComparator {
         rowNum(sb, "端到端耗时(ms)", a.get("avgEvalTotalMs"), b.get("avgEvalTotalMs"));
         rowNum(sb, "平均 Token in", a.get("avgTokenIn"), b.get("avgTokenIn"));
         rowNum(sb, "平均 Token out", a.get("avgTokenOut"), b.get("avgTokenOut"));
+        var ma=mapOf(a.get("media"));var mb=mapOf(b.get("media"));
+        if(intOf(ma.get("observedTurns"))>0 || intOf(mb.get("observedTurns"))>0) {
+            for(String key:List.of("displayed","validIllustrations","unavailable","invalidReferences")) {
+                boolean observedA=intOf(ma.get("observedTurns"))>0,observedB=intOf(mb.get("observedTurns"))>0;
+                sb.append("| 图文 ").append(key).append(" | ").append(observedA?ma.get(key):"未观测").append(" | ")
+                        .append(observedB?mb.get(key):"未观测").append(" | ").append(observedA && observedB?fmtNumDelta(doubleOf(mb.get(key))-doubleOf(ma.get(key))):"-").append(" |\n");
+            }
+        }
         Map<String, Object> ja = mapOf(a.get("judge"));
         Map<String, Object> jb = mapOf(b.get("judge"));
         // 裁判未启用的 run（scored=0）显示 "-"，避免把"未测"误读成 0%/退化
@@ -121,6 +129,11 @@ public final class RunComparator {
     }
 
     private static void rowNum(StringBuilder sb, String name, Object a, Object b) {
+        if(a==null || b==null) {
+            sb.append("| ").append(name).append(" | ").append(a==null?"未观测":fmtNum(doubleOf(a)))
+                    .append(" | ").append(b==null?"未观测":fmtNum(doubleOf(b))).append(" | - |\n");
+            return;
+        }
         double da = doubleOf(a);
         double db = doubleOf(b);
         sb.append("| ").append(name).append(" | ").append(fmtNum(da))

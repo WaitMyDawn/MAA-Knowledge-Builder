@@ -12,7 +12,7 @@ import java.util.*;
 public final class PublicKnowledgeCache {
     private static final ObjectMapper JSON = new ObjectMapper();
     // 正文提取规则改变时旧快照必须失效，避免延续评论污染或旧分块语义。
-    private static final int EXTRACTION_VERSION = 4;
+    private static final int EXTRACTION_VERSION = 5;
     private static final long TTL = Duration.ofDays(7).toMillis();
     private final DatabaseBuilder db;
     private final Clock clock;

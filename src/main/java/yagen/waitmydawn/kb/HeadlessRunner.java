@@ -13,6 +13,8 @@ import yagen.waitmydawn.kb.config.DataDirLock;
 import yagen.waitmydawn.kb.eval.EvalRunner;
 import yagen.waitmydawn.kb.eval.RunComparator;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
+import yagen.waitmydawn.kb.model.BuildRequest;
+import yagen.waitmydawn.kb.model.ModEntry;
 import yagen.waitmydawn.kb.service.*;
 
 import java.io.IOException;
@@ -57,6 +59,8 @@ public class HeadlessRunner {
         boolean useSavedKey = false;
         boolean doScan = false;
         boolean doBuild = false;
+        boolean appendBuild = false;
+        var additionalSources=new java.util.ArrayList<BuildRequest.Source>();
         boolean doClean = false;
         boolean doTest = false;
         boolean doWebTest = false;
@@ -84,6 +88,9 @@ public class HeadlessRunner {
                 case "--data-dir" -> dataDir = args[++i];
                 case "--scan" -> { doScan = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) modsFolder = args[++i]; }
                 case "--build" -> { doBuild = true; doScan = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) modsFolder = args[++i]; }
+                case "--append" -> appendBuild=true;
+                case "--build-url" -> {doBuild=true;additionalSources.add(BuildRequest.Source.of(BuildRequest.Kind.URL,args[++i]));}
+                case "--build-documents" -> {doBuild=true;additionalSources.add(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,args[++i]));}
                 case "--clean" -> doClean = true;
                 case "--test" -> { doTest = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) testFile = args[++i]; }
                 case "--eval" -> { doEval = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) evalFile = args[++i]; }
@@ -203,6 +210,8 @@ public class HeadlessRunner {
         }
 
         // === Clean ===
+        if(appendBuild && (!doBuild || doClean))
+            throw new IllegalArgumentException("--append 需要构建来源，且不能与 --clean 同时使用");
         if (doClean) {
             System.out.println("\n[Clean] Removing generated/, logs/, sessions/ ...");
             cleanDirectory(dataPath.resolve("generated"));
@@ -245,6 +254,7 @@ public class HeadlessRunner {
         // === Scan + Build ===
         KnowledgeBuilder knowledgeBuilder = null;
         VectorStore vectorStore = null;
+        var scannedEntries=new java.util.ArrayList<ModEntry>();
 
         if (doScan && modsFolder != null) {
             Path modsPath = Path.of(modsFolder);
@@ -262,6 +272,13 @@ public class HeadlessRunner {
             for (var jar : jars) {
                 var entry = parser.parse(jar);
                 if (entry != null) {
+                    if(appendBuild) {
+                        var status=new JarBuildIndex(db).inspect(entry,JarBuildIndex.hash(jar));
+                        if(status!=JarBuildIndex.Status.NEW) {
+                            System.out.println("  ["+status+"] "+entry.getModId());
+                            continue;
+                        }
+                    }
                     if (!"minecraft".equals(entry.getModId()) && !"vanilla".equals(entry.getLoader())) {
                         var bind = binder.bind(jar, entry.getModId(), entry.getDisplayName(),
                                 entry.getVersion(), entry.getMcVersion(), entry.getLoader());
@@ -273,7 +290,8 @@ public class HeadlessRunner {
                         }
                     }
                     ModrinthBinder.preserveKnownBinding(entry, db.findModEntry(entry.getModId()));
-                    db.saveModEntry(entry);
+                    if(!doBuild) db.saveModEntry(entry);
+                    scannedEntries.add(entry);
                     count++;
                     System.out.println("  [" + count + "] " + entry.getModId() + (entry.getSlug() != null ? " -> " + entry.getSlug() : ""));
                 }
@@ -281,10 +299,13 @@ public class HeadlessRunner {
             System.out.println("[Scan] Found " + count + " mods");
         }
 
-        if (doBuild && modsFolder != null) {
+        if (doBuild) {
             System.out.println("\n[Build] Starting knowledge base build...");
             knowledgeBuilder = new KnowledgeBuilder(config, db, embedder);
-            KnowledgeBuilder.BuildResult r = knowledgeBuilder.build(Path.of(modsFolder),
+            knowledgeBuilder.setScannedMods(scannedEntries);
+            if(modsFolder!=null) additionalSources.add(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,modsFolder));
+            var request=new BuildRequest(additionalSources,appendBuild?BuildRequest.Mode.APPEND:BuildRequest.Mode.REBUILD);
+            KnowledgeBuilder.BuildResult r = knowledgeBuilder.build(request,
                     (phase, cur, total, msg) -> {
                         if ("done".equals(phase) || cur == total || total <= 1) {
                             System.out.println("  [" + phase + "] " + msg);
@@ -556,6 +577,9 @@ public class HeadlessRunner {
             Operations:
               --scan <mods-folder>  Scan JAR files and bind Modrinth slugs
               --build <mods-folder> Build knowledge base (implies --scan)
+              --build-url <url>    Import a URL (repeatable)
+              --build-documents <path> Import a document directory (repeatable)
+              --append            Preserve existing knowledge; import new content only
               --clean               Delete generated/, logs/, sessions/
               --isolated           Do not read/write global settings or change GUI data directory
               --use-saved-key      With --isolated, read the saved API key for this run only

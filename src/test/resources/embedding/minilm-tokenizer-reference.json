@@ -1,0 +1,266 @@
+{
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "referenceImplementation": "huggingface/tokenizers 0.22.1",
+  "source": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/blob/main/tokenizer.json",
+  "tokenizerSha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+  "vocabSha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+  "cases": [
+    {
+      "text": "Hello world!",
+      "maxLength": 256,
+      "ids": [
+        101,
+        7592,
+        2088,
+        999,
+        102
+      ]
+    },
+    {
+      "text": "Minecraft Goety goety:wight",
+      "maxLength": 256,
+      "ids": [
+        101,
+        3067,
+        10419,
+        2175,
+        27405,
+        2175,
+        27405,
+        1024,
+        20945,
+        102
+      ]
+    },
+    {
+      "text": "龙之冒险新征程的T3装备武器饰品推荐",
+      "maxLength": 256,
+      "ids": [
+        101,
+        100,
+        1749,
+        100,
+        100,
+        1862,
+        100,
+        100,
+        1916,
+        1056,
+        2509,
+        100,
+        100,
+        1889,
+        100,
+        100,
+        100,
+        100,
+        100,
+        102
+      ]
+    },
+    {
+      "text": "龙之冒险新征程的T3装备武器饰品推荐",
+      "maxLength": 8,
+      "ids": [
+        101,
+        100,
+        1749,
+        100,
+        100,
+        1862,
+        100,
+        102
+      ]
+    },
+    {
+      "text": "黑暗魔杖与缠魂木",
+      "maxLength": 256,
+      "ids": [
+        101,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        1875,
+        102
+      ]
+    },
+    {
+      "text": "傀儡：组装、升级。",
+      "maxLength": 256,
+      "ids": [
+        101,
+        100,
+        100,
+        1993,
+        100,
+        100,
+        1635,
+        100,
+        100,
+        1636,
+        102
+      ]
+    },
+    {
+      "text": "女仆有什么用？",
+      "maxLength": 256,
+      "ids": [
+        101,
+        1815,
+        100,
+        1873,
+        100,
+        100,
+        100,
+        1994,
+        102
+      ]
+    },
+    {
+      "text": "Café naïve résumé",
+      "maxLength": 256,
+      "ids": [
+        101,
+        7668,
+        15743,
+        13746,
+        102
+      ]
+    },
+    {
+      "text": "ICE Sword + 20% damage",
+      "maxLength": 256,
+      "ids": [
+        101,
+        3256,
+        4690,
+        1009,
+        2322,
+        1003,
+        4053,
+        102
+      ]
+    },
+    {
+      "text": "a\tb\nc",
+      "maxLength": 256,
+      "ids": [
+        101,
+        1037,
+        1038,
+        1039,
+        102
+      ]
+    },
+    {
+      "text": "[CLS] goety [SEP]",
+      "maxLength": 256,
+      "ids": [
+        101,
+        101,
+        2175,
+        27405,
+        102,
+        102
+      ]
+    },
+    {
+      "text": "foo\u0000bar",
+      "maxLength": 256,
+      "ids": [
+        101,
+        29379,
+        8237,
+        102
+      ]
+    },
+    {
+      "text": "中文，English；T1.1/T3",
+      "maxLength": 256,
+      "ids": [
+        101,
+        1746,
+        1861,
+        1989,
+        2394,
+        100,
+        1056,
+        2487,
+        1012,
+        1015,
+        1013,
+        1056,
+        2509,
+        102
+      ]
+    },
+    {
+      "text": "中文，English；T1.1/T3",
+      "maxLength": 8,
+      "ids": [
+        101,
+        1746,
+        1861,
+        1989,
+        2394,
+        100,
+        1056,
+        102
+      ]
+    },
+    {
+      "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "maxLength": 256,
+      "ids": [
+        101,
+        100,
+        102
+      ]
+    },
+    {
+      "text": "épee",
+      "maxLength": 256,
+      "ids": [
+        101,
+        4958,
+        4402,
+        102
+      ]
+    },
+    {
+      "text": "𠀀 🐉",
+      "maxLength": 256,
+      "ids": [
+        101,
+        100,
+        100,
+        102
+      ]
+    },
+    {
+      "text": "装备（T2）与武器【T3】",
+      "maxLength": 256,
+      "ids": [
+        101,
+        100,
+        100,
+        1987,
+        1056,
+        2475,
+        1988,
+        100,
+        1889,
+        100,
+        100,
+        1056,
+        2509,
+        100,
+        102
+      ]
+    }
+  ]
+}

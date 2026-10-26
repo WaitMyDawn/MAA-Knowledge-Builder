@@ -48,6 +48,8 @@ public class EmbeddingService implements AutoCloseable {
     public boolean onnxAvailable() { return onnxReady; }
     public String activeModel() { return onnxReady ? localModel.getActiveModel() : "hash-ngram-v2"; }
     public String profile() { return onnxReady ? localModel.profile() : "hash-ngram-v2:384:lower-root"; }
+    /** 包含起止 Token；哈希模式采用字符上界，保持分块可供短文本模型重建。 */
+    public int tokenCount(String text) {return onnxReady?localModel.tokenCount(text):text.codePointCount(0,text.length())+2;}
     public String vectorStoreCount() { return String.valueOf(docCount); }
 
     // ==================== Embed ====================

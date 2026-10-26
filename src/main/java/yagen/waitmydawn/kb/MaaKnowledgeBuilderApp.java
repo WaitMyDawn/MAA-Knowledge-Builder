@@ -59,6 +59,11 @@ public class MaaKnowledgeBuilderApp extends Application {
     private StackPane contentArea;
     private VBox builderPage, qaPage, seedPage, settingsPage, metricsPage, knowledgePage, evaluationPage;
     private TextField folderField, apiKeyField, dataDirField;
+    private TextArea buildUrlsField, buildDocumentsField;
+    private TextField buildTargetField;
+    private ComboBox<BuildRequest.Mode> buildModeChoice;
+    private ComboBox<KnowledgeRetrievalService.Scope> knowledgeScopeChoice;
+    private CheckBox fetchKnowledgeImages;
     private TextArea builderLog, qaLog;
     private ListView<String> modListView;
     private VBox chatHistory;
@@ -344,6 +349,29 @@ public class MaaKnowledgeBuilderApp extends Application {
 
         Label title = pageTitle("构建知识库");
 
+        buildTargetField=new TextField(config.getDataDir().toString());
+        buildTargetField.setEditable(false);
+        buildModeChoice=new ComboBox<>();
+        buildModeChoice.getItems().setAll(BuildRequest.Mode.values());
+        buildModeChoice.setValue(vectorStore.count()>0?BuildRequest.Mode.APPEND:BuildRequest.Mode.REBUILD);
+        Button chooseTarget=new Button("选择已有知识库");
+        chooseTarget.setOnAction(event -> {
+            if(busy()) return;
+            var chooser=new DirectoryChooser();chooser.setTitle("选择包含 rag_data.mv.db 的知识库目录");
+            var selected=chooser.showDialog(stage);
+            if(selected==null) return;
+            if(!Files.isRegularFile(selected.toPath().resolve("rag_data.mv.db"))) {showError("该目录没有基础数据库 rag_data.mv.db");return;}
+            buildTargetField.setText(selected.getAbsolutePath());buildModeChoice.setValue(BuildRequest.Mode.APPEND);
+            scannedMods=null;modListView.getItems().clear();
+        });
+        Button currentTarget=new Button("使用当前知识库");
+        currentTarget.setOnAction(event -> {
+            if(busy()) return;
+            buildTargetField.setText(config.getDataDir().toString());scannedMods=null;modListView.getItems().clear();
+        });
+        var targetRow=new HBox(8,buildTargetField,chooseTarget,currentTarget,buildModeChoice);
+        HBox.setHgrow(buildTargetField,Priority.ALWAYS);
+
         // Step 1: Folder
         folderField = new TextField();
         folderField.setPromptText("选择包含模组 JAR 的目录…");
@@ -360,11 +388,35 @@ public class MaaKnowledgeBuilderApp extends Application {
         HBox.setHgrow(folderField,Priority.ALWAYS);
         folderRow.setAlignment(Pos.CENTER_LEFT);
 
+        buildUrlsField = new TextArea();
+        buildUrlsField.setPromptText("每行一个网址；支持百科模组、整合包和普通网页");
+        buildUrlsField.setPrefRowCount(2);
+        buildDocumentsField = new TextArea();
+        buildDocumentsField.setPromptText("每行一个资料目录；支持 TXT、DOC、DOCX、PDF 和图片，默认使用本地 OCR");
+        buildDocumentsField.setPrefRowCount(2);
+        Button browseDocuments = new Button("添加资料目录");
+        browseDocuments.setOnAction(e -> {
+            DirectoryChooser chooser = new DirectoryChooser();
+            File selected = chooser.showDialog(stage);
+            if (selected != null) buildDocumentsField.appendText((buildDocumentsField.getText().isBlank() ? "" : "\n") + selected.getAbsolutePath());
+        });
+        var sourceStore = new KnowledgeContentStore(db);
+        var savedSources = sourceStore.draft().or(sourceStore::publishedRequest);
+        savedSources.ifPresent(request -> {
+            for (var source : request.sources()) {
+                switch (source.kind()) {
+                    case JAR_DIRECTORY -> folderField.setText(source.location());
+                    case URL -> buildUrlsField.appendText(source.location() + "\n");
+                    case DOCUMENT_DIRECTORY -> buildDocumentsField.appendText(source.location() + "\n");
+                }
+            }
+        });
+
         // Step 2: Mod list
         modListView = new ListView<>();
-        modListView.setPrefHeight(220);
+        modListView.setPrefHeight(100);
         modListView.setOnMouseClicked(ev -> {
-            if (ev.getClickCount() == 2) {
+            if (ev.getClickCount() == 2 && !busy()) {
                 int idx = modListView.getSelectionModel().getSelectedIndex();
                 if (idx >= 0 && idx < scannedMods.size()) {
                     ModEntry e = scannedMods.get(idx);
@@ -377,7 +429,15 @@ public class MaaKnowledgeBuilderApp extends Application {
         Button buildBtn = styledButton("构建知识库", "#10b981");
         buildBtn.setFont(Font.font(14));
         buildBtn.setOnAction(e -> onBuild());
-        HBox buildRow = new HBox(12, buildBtn);
+        Button saveSourcesBtn = new Button("保存来源配置");
+        saveSourcesBtn.setOnAction(e -> {
+            if (busy()) return;
+            try(var target=BuildTarget.open(Path.of(buildTargetField.getText()),config,db)) {
+                new KnowledgeContentStore(target.database()).saveDraft(readBuildRequest());
+                logText("来源配置已保存；已发布知识库未改变。");
+            } catch (Exception ex) { showError(ex.getMessage()); }
+        });
+        HBox buildRow = new HBox(12, buildBtn, saveSourcesBtn);
         buildRow.setAlignment(Pos.CENTER_LEFT);
 
         // Log
@@ -388,15 +448,20 @@ public class MaaKnowledgeBuilderApp extends Application {
 
         SplitPane splitPane = new SplitPane();
         VBox topSection = new VBox(8,
+                card("目标知识库与构建方式", targetRow),
                 card("模组目录", folderRow),
+                card("网址来源", buildUrlsField),
+                card("资料目录", new VBox(6, buildDocumentsField, browseDocuments)),
                 card("已识别模组", modListView));
         VBox.setVgrow(modListView, Priority.ALWAYS);
         VBox bottomSection = new VBox(8,
-                card("开始构建", buildRow),
+                card("开始构建", new VBox(6, new Label("补充保留旧知识并跳过重复内容；版本或文件内容冲突保留旧版本并报告。重建按所选全部来源替换基础库。"), buildRow)),
                 card("构建日志", builderLog));
         VBox.setVgrow(builderLog, Priority.ALWAYS);
         splitPane.setOrientation(javafx.geometry.Orientation.VERTICAL);
-        splitPane.getItems().addAll(topSection, bottomSection);
+        ScrollPane sourcesScroll = new ScrollPane(topSection);
+        sourcesScroll.setFitToWidth(true);
+        splitPane.getItems().addAll(sourcesScroll, bottomSection);
         splitPane.setDividerPositions(0.6);
         VBox.setVgrow(splitPane, Priority.ALWAYS);
 
@@ -413,6 +478,8 @@ public class MaaKnowledgeBuilderApp extends Application {
             return;
         }
         Path dir = Path.of(folderPath);
+        Path targetDirectory=Path.of(buildTargetField.getText());
+        boolean append=buildModeChoice.getValue()==BuildRequest.Mode.APPEND;
         if (!Files.isDirectory(dir)) {
             logText("Not a directory: " + folderPath);
             return;
@@ -424,7 +491,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         operationInFlight = true;
 
         submitOperation(() -> {
-            try {
+            try(var target=BuildTarget.open(targetDirectory,config,db)) {
             JarScannerService scanner = new JarScannerService();
             ModMetadataParser parser = new ModMetadataParser();
             ModrinthBinder binder = new ModrinthBinder();
@@ -435,6 +502,13 @@ public class MaaKnowledgeBuilderApp extends Application {
                 if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("扫描已取消");
                 ModEntry modEntry = parser.parse(jar);
                 if (modEntry != null) {
+                    var status=append?new JarBuildIndex(target.database()).inspect(modEntry,JarBuildIndex.hash(jar)):JarBuildIndex.Status.NEW;
+                    if(status!=JarBuildIndex.Status.NEW) {
+                        entries.add(modEntry);
+                        String label="["+status+"] "+formatEntry(modEntry);
+                        Platform.runLater(() -> modListView.getItems().add(label));
+                        continue;
+                    }
                     // Don't search slug for vanilla or already-known
                     if (!"minecraft".equals(modEntry.getModId()) && !"vanilla".equals(modEntry.getLoader())) {
                         ModrinthBinder.BindResult bind = binder.bind(
@@ -451,8 +525,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                             modEntry.setSource(bind.source());
                         }
                     }
-                    ModrinthBinder.preserveKnownBinding(modEntry, db.findModEntry(modEntry.getModId()));
-                    db.saveModEntry(modEntry);
+                    ModrinthBinder.preserveKnownBinding(modEntry, target.database().findModEntry(modEntry.getModId()));
                     entries.add(modEntry);
                     ModEntry fe = modEntry;
                     Platform.runLater(() -> modListView.getItems().add(formatEntry(fe)));
@@ -488,23 +561,44 @@ public class MaaKnowledgeBuilderApp extends Application {
         return sb.toString();
     }
 
+    private BuildRequest readBuildRequest() {
+        var sources = new java.util.ArrayList<BuildRequest.Source>();
+        if (!folderField.getText().isBlank()) sources.add(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY, folderField.getText()));
+        buildUrlsField.getText().lines().filter(line -> !line.isBlank())
+                .forEach(line -> sources.add(BuildRequest.Source.of(BuildRequest.Kind.URL, line)));
+        buildDocumentsField.getText().lines().filter(line -> !line.isBlank())
+                .forEach(line -> sources.add(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY, line)));
+        return new BuildRequest(sources,buildModeChoice.getValue());
+    }
+
     private void onBuild() {
         if (busy()) return;
-        String folderPath = folderField.getText().trim();
-        if (folderPath.isEmpty() || !Files.isDirectory(Path.of(folderPath))) {
-            logText("Select valid mod folder first.");
-            return;
-        }
-        logText("Building knowledge base (JAR extraction + embed)...");
+        final BuildRequest request;
+        final Path targetDirectory=Path.of(buildTargetField.getText());
+        final List<ModEntry> scanned=scannedMods==null?List.of():List.copyOf(scannedMods);
+        try {
+            request = readBuildRequest();
+        } catch (Exception ex) { showError(ex.getMessage()); return; }
+        logText(request.mode()+"："+targetDirectory+"；来源数量：" + request.sources().size());
         setStatus("正在构建知识库…", true);
         operationInFlight = true;
         submitOperation(() -> {
-            try {
-            KnowledgeBuilder.BuildResult r = knowledgeBuilder.build(Path.of(folderPath),
+            try(var target=BuildTarget.open(targetDirectory,config,db)) {
+            new KnowledgeContentStore(target.database()).saveDraft(request);
+            var builder=target.external()?new KnowledgeBuilder(target.config(),target.database(),embedder):knowledgeBuilder;
+            builder.setScannedMods(scanned);
+            KnowledgeBuilder.BuildResult r = builder.build(request,
                     (phase, cur, total, msg) -> Platform.runLater(() -> {
                         if (total > 0) progressBar.setProgress((double) cur / total);
                         logText("[" + phase + "] " + msg);
                     }));
+            if(target.external()) {
+                Platform.runLater(() -> {
+                    logBuildResult(r);
+                    logText("已发布到："+targetDirectory+"；在设置中选择该数据目录并重启后可用于问答。");
+                });
+                return;
+            }
             vectorStore = knowledgeBuilder.getVectorStore();
             rendererService.clearCache();
             // Refresh agents after build (new mods + subWebPages in DB)
@@ -516,17 +610,24 @@ public class MaaKnowledgeBuilderApp extends Application {
             metricsHistoryService = qaPipeline.getMetricsHistory();
             if (currentSession != null) qaPipeline.restoreHistory(currentSession.messages);
             Platform.runLater(() -> {
-                logText("=== Complete ===");
-                logText("Mods: " + r.parsed + "  Textures: " + r.textures
-                        + "  Recipes: " + r.recipes);
-                logText("Chunks: " + r.textChunks + "  Vectors: " + r.embeddings);
-                logText("Duration: " + (r.durationMs / 1000.0) + "s");
+                refreshKnowledgeScopes();
+                logBuildResult(r);
                 setStatus("就绪", false);
             });
             } catch (Exception ex) {
                 Platform.runLater(() -> { if(ex instanceof java.util.concurrent.CancellationException) logText("构建已取消，保留原基础知识库。"); else showError("构建失败，保留原基础知识库："+ex.getMessage()); });
             } finally { Platform.runLater(() -> { operationInFlight = false; setStatus("就绪", false); }); }
         });
+    }
+
+    private void logBuildResult(KnowledgeBuilder.BuildResult result) {
+        logText("构建完成；新增模组："+result.parsed+"，跳过JAR："+result.skipped+"，冲突："+result.conflicts);
+        logText("新增文档："+result.documents+"，复用文档："+result.reusedDocuments+"，跳过网址："+result.reusedSources);
+        logText("新增向量："+result.addedEmbeddings+"，总向量："+result.embeddings+"，配方："+result.recipes);
+        logText("教程："+result.tutorials+"，网页图片："+result.webImages+"，未缓存图片："+result.deferredWebImages);
+        logText("本地图片："+result.localImages+"，OCR："+result.ocrImages+"，视觉描述："+result.visionImages);
+        result.warnings.forEach(this::logText);
+        logText("耗时："+(result.durationMs/1000.0)+"s");
     }
 
     // =================== QA Page ===================
@@ -555,6 +656,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             currentSession = null;
             chatHistory.getChildren().clear();
             qaPipeline.clearHistory();
+            if (knowledgeScopeChoice != null) knowledgeScopeChoice.getSelectionModel().selectFirst();
             refreshSessionList(historySidebar);
         });
 
@@ -616,6 +718,15 @@ public class MaaKnowledgeBuilderApp extends Application {
         chatScroll.setPrefHeight(440);
         chatScroll.getStyleClass().add("chat-scroll");
 
+        knowledgeScopeChoice = new ComboBox<>();
+        knowledgeScopeChoice.setMaxWidth(Double.MAX_VALUE);
+        knowledgeScopeChoice.setMinWidth(120);
+        refreshKnowledgeScopes();
+        fetchKnowledgeImages = new CheckBox("按需缓存来源插图");
+        fetchKnowledgeImages.setSelected(true);
+        HBox scopeRow = new HBox(8, new Label("资料范围："), knowledgeScopeChoice, fetchKnowledgeImages);
+        HBox.setHgrow(knowledgeScopeChoice, Priority.ALWAYS);
+
         questionField = new TextArea();
         questionField.setWrapText(true); questionField.setPrefRowCount(2); questionField.setMaxHeight(100);
         questionField.setPromptText("询问模组、生物、配方或机制 · Ctrl + Enter 发送");
@@ -631,7 +742,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         qaLog.setPrefRowCount(3);
         qaLog.setStyle("-fx-font-family: 'Consolas'; -fx-font-size: 11px;");
 
-        VBox chatSection = new VBox(4, chatScroll, inputRow);
+        VBox chatSection = new VBox(4, chatScroll, scopeRow, inputRow);
         VBox.setVgrow(chatScroll, Priority.ALWAYS);
         var detailSection = new TitledPane("检索与性能详情",qaLog); detailSection.setExpanded(false);
         VBox qaLayout = new VBox(12,chatSection,detailSection); VBox.setVgrow(chatSection,Priority.ALWAYS);
@@ -705,12 +816,19 @@ public class MaaKnowledgeBuilderApp extends Application {
         }
         qaPipeline.setIncrementalDB(incDb);
         qaPipeline.restoreHistory(sess.messages);
+        refreshKnowledgeScopes();
+        if (knowledgeScopeChoice != null) {
+            knowledgeScopeChoice.getSelectionModel().selectFirst();
+            var last = sess.messages.stream().filter(m -> m.role().equals("maa")).reduce((a,b)->b);
+            last.filter(message -> message.artifacts()!=null && message.artifacts().scopeId()!=null).ifPresent(message ->
+                    knowledgeScopeChoice.getItems().stream().filter(item -> java.util.Objects.equals(item.id(), message.artifacts().scopeId())).findFirst().ifPresent(knowledgeScopeChoice::setValue));
+        }
         refreshDBCheckboxes(dbCheckboxList);
 
         chatHistory.getChildren().clear();
         for (ChatHistoryService.ChatMessage msg : sess.messages) {
             String bg = msg.role().equals("user") ? "#e8f0fe" : "#f0fdf4";
-            addChatBubble(msg.role().equals("user") ? "You" : "MAA", msg.content(), bg);
+            addChatBubble(msg.role().equals("user") ? "You" : "MAA", msg.content(), bg, msg.artifacts());
         }
         qaLog.appendText("Loaded: " + sess.title + " (" + sess.messages.size() + " msgs)\n");
     }
@@ -739,64 +857,26 @@ public class MaaKnowledgeBuilderApp extends Application {
         chatHistoryService.addMessage(currentSession, "user", q);
         final var submittedSession = currentSession;
         final var submittedPipeline = qaPipeline;
+        submittedPipeline.setKnowledgeImageFetching(fetchKnowledgeImages == null || fetchKnowledgeImages.isSelected());
+        final String submittedScope = knowledgeScopeChoice == null || knowledgeScopeChoice.getValue() == null ? null : knowledgeScopeChoice.getValue().id();
 
         submitOperation(() -> {
             try {
-                QaPipeline.QaResult result = submittedPipeline.process(q);
-
-                // Render recipe images on demand (skip if already exists)
-                final Map<String, String> recipeImages;
-                final List<String> imagePaths = new java.util.ArrayList<>();
-                if (!result.recipesToRender.isEmpty()) {
-                    recipeImages = rendererService.renderRecipes(result.recipesToRender);
-                    for (String p : recipeImages.values()) {
-                        java.io.File f = new java.io.File(p);
-                        // 不再用字节大小粗筛（合法小图如 1KB 熔炉图会被误丢），
-                        // 改为校验文件存在且可被解码为图片（2026-09-07 修复）。
-                        boolean valid = f.exists() && f.length() > 0;
-                        if (valid) {
-                            try (var in = new java.io.FileInputStream(f)) {
-                                valid = ImageIO.read(in) != null;
-                            } catch (Exception ex) {
-                                valid = false;
-                            }
-                        }
-                        if (valid) {
-                            imagePaths.add(p);
-                        } else {
-                            log.warn("Recipe image invalid or unreadable, skipping: {} ({} bytes)",
-                                    p, f.exists() ? f.length() : 0);
-                        }
-                    }
-                } else {
-                    recipeImages = Map.of();
-                }
-
-                // Embed image references into the answer at the end
-                final String answerWithImages;
-                if (!recipeImages.isEmpty()) {
-                    StringBuilder imgs = new StringBuilder("\n\n## 配方图\n\n");
-                    for (var e : recipeImages.entrySet()) {
-                        String outputLabel = e.getKey().split("#", 2)[0];
-                        String name = outputLabel.contains(":")
-                                ? outputLabel.substring(outputLabel.indexOf(':') + 1) : outputLabel;
-                        imgs.append("![recipe:").append(name).append("](")
-                                .append(e.getValue().replace('\\', '/')).append(")\n\n");
-                    }
-                    answerWithImages = result.answer + imgs;
-                } else {
-                    answerWithImages = result.answer;
-                }
+                QaPipeline.QaResult result = submittedPipeline.process(q, submittedScope);
+                var recipeImages = result.recipesToRender.isEmpty() ? Map.<String,String>of() : rendererService.renderRecipes(result.recipesToRender);
+                AnswerMedia.attachRecipes(result, recipeImages, config.getDataDir());
+                final var media=AnswerMedia.assess(result.answer,result.artifacts,config.getDataDir());
+                final String answerWithImages = result.answer;
 
                 Platform.runLater(() -> {
-                    addChatBubble("MAA", answerWithImages, "#f0fdf4");
-                    appendEvidence(result);
+                    addChatBubble("MAA", answerWithImages, "#f0fdf4", result.artifacts);
+                    appendEvidence(result,media);
                     if (result.metrics != null) {
                         log.info("QA Metrics: total={}ms answers={} imgs={}",
                                 result.metrics.totalTimeMs, result.metrics.answerLength,
-                                imagePaths.size());
+                                media.valid());
                     }
-                    chatHistoryService.addMessage(submittedSession, "maa", answerWithImages);
+                    chatHistoryService.addMessage(submittedSession, "maa", answerWithImages, result.artifacts);
                     try {
                         chatHistoryService.save(submittedSession);
                     } catch (Exception ignored) {}
@@ -817,7 +897,19 @@ public class MaaKnowledgeBuilderApp extends Application {
         });
     }
 
-    private void addChatBubble(String sender, String msg, String bg) {
+    private void refreshKnowledgeScopes() {
+        if (knowledgeScopeChoice == null || qaPipeline == null) return;
+        String selected = knowledgeScopeChoice.getValue() == null ? null : knowledgeScopeChoice.getValue().id();
+        var choices = new java.util.ArrayList<KnowledgeRetrievalService.Scope>();
+        choices.add(new KnowledgeRetrievalService.Scope(null, "自动识别资料范围", null, List.of(), null));
+        choices.addAll(qaPipeline.knowledgeScopes());
+        knowledgeScopeChoice.getItems().setAll(choices);
+        knowledgeScopeChoice.setValue(choices.stream().filter(s -> java.util.Objects.equals(s.id(),selected)).findFirst().orElse(choices.getFirst()));
+    }
+
+    private void addChatBubble(String sender, String msg, String bg) { addChatBubble(sender,msg,bg,null); }
+
+    private void addChatBubble(String sender, String msg, String bg, AnswerArtifacts artifacts) {
         VBox b = new VBox(4);
         b.getStyleClass().add("You".equals(sender)?"chat-user":"chat-assistant");
 
@@ -852,7 +944,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             header.getChildren().add(copyBtn);
 
             b.getChildren().add(header);
-            b.getChildren().add(yagen.waitmydawn.kb.ui.MarkdownRenderer.render(msg, java.util.List.of(config.getGeneratedDir())));
+            b.getChildren().add(yagen.waitmydawn.kb.ui.AnswerRenderer.render(msg, artifacts, config.getDataDir()));
         }
         chatHistory.getChildren().add(b);
     }
@@ -1202,10 +1294,30 @@ public class MaaKnowledgeBuilderApp extends Application {
         ((Label) apiRow.getChildren().getFirst()).setMinWidth(108);
         HBox.setHgrow(apiKeyField, Priority.ALWAYS);
         VBox apiCard = card("模型连接", apiRow);
-        Label apiNote = new Label("Key 保存在本机设置文件中。未配置时，问答显示本地检索结果。");
+        Label apiNote = new Label("Key 保存在本机设置文件中。问答会将选中的证据片段发送至模型服务；未配置时展示本地资料摘录。");
         apiNote.setWrapText(true);
         apiNote.setFont(Font.font(12));
         apiNote.getStyleClass().add("muted");
+
+        CheckBox visionEnabled = new CheckBox("允许将导入的本地图片发送到下方视觉服务");
+        visionEnabled.setSelected(config.isVisionEnabled());
+        TextField visionEndpoint = new TextField(config.getVisionEndpoint());
+        visionEndpoint.setPromptText("完整的 OpenAI 兼容接口地址，例如 https://服务地址/v1/chat/completions");
+        TextField visionModel = new TextField(config.getVisionModel());
+        visionModel.setPromptText("支持图像输入的模型名称");
+        PasswordField visionKey = new PasswordField();
+        visionKey.setText(config.getVisionApiKey()); visionKey.setPromptText("视觉服务 Key；本机服务可留空");
+        Button applyVision = new Button("保存视觉设置");
+        Label visionStatus = new Label("默认关闭。Windows OCR 在本机运行；启用后，构建会发送图片至指定服务，可能产生费用。");
+        visionStatus.setWrapText(true);
+        applyVision.setOnAction(e -> {
+            if (busy()) return;
+            config.setVisionSettings(visionEnabled.isSelected(), visionEndpoint.getText(), visionModel.getText(), visionKey.getText());
+            visionStatus.setText(config.isVisionEnabled() ? "视觉描述已启用，下次构建生效；描述将标记为模型推断。" : "视觉描述已关闭，继续使用本地 OCR。");
+        });
+        TitledPane visionPane = new TitledPane("图片文字与视觉描述", new VBox(6, visionEnabled,
+                visionEndpoint, visionModel, visionKey, applyVision, visionStatus));
+        visionPane.setExpanded(false);
 
         // Embedding model selector
         Label embedLabel = pageTitle("本地向量模型");
@@ -1271,8 +1383,19 @@ public class MaaKnowledgeBuilderApp extends Application {
         page.getChildren().addAll(pageTitle("外观"), card("主题设置", themeRow),
                 pageTitle("构建准备"), card("预取常用详情", new VBox(10, prewarmRow, prewarmNote)));
         page.getChildren().addAll(dirTitle, dirCard, dirNote, authorTitle, authorCard,
-                apiTitle, apiCard, apiNote, embedLabel, embedCard);
-        return page;
+                apiTitle, apiCard, apiNote, visionPane, embedLabel, embedCard);
+        page.getChildren().add(card("图片缓存维护",new yagen.waitmydawn.kb.ui.ImageCachePane(db,config.getDataDir(),this::busy,operation -> {
+            operationInFlight=true;setStatus("正在维护图片缓存…",true);
+            submitOperation(()->{
+                try {operation.run();}
+                finally {Platform.runLater(()->{operationInFlight=false;setStatus("就绪",false);});}
+            });
+        })));
+        ScrollPane settingsScroll = new ScrollPane(page);
+        settingsScroll.setFitToWidth(true);
+        VBox container = new VBox(settingsScroll);
+        VBox.setVgrow(settingsScroll, Priority.ALWAYS);
+        return container;
     }
 
     // =================== Helpers ===================
@@ -1311,8 +1434,10 @@ public class MaaKnowledgeBuilderApp extends Application {
         });
     }
 
-    private void appendEvidence(QaPipeline.QaResult result) {
+    private void appendEvidence(QaPipeline.QaResult result,AnswerMedia.Assessment media) {
         StringBuilder text=new StringBuilder();
+        text.append("候选图片：").append(media.candidates()).append("；正文引用：").append(media.displayed())
+                .append("；有效图片：").append(media.valid()).append("；不可用图片：").append(media.unavailable()).append("\n\n");
         if(result.catalogEvidence!=null) text.append(result.catalogEvidence).append("\n\n");
         result.subPageUrls.forEach((label,url)->text.append(label).append("\n").append(url).append("\n\n"));
         if(result.metrics!=null) text.append(result.metrics.toUiSummary());
@@ -1393,7 +1518,6 @@ public class MaaKnowledgeBuilderApp extends Application {
                 entry.setModrinthUrl("https://modrinth.com/mod/" + entry.getSlug());
                 entry.setSource("modrinth");
             }
-            db.saveModEntry(entry);
             // Refresh list display
             int idx = scannedMods.indexOf(entry);
             if (idx >= 0) modListView.getItems().set(idx, formatEntry(entry));

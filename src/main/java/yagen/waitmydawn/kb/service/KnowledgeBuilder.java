@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import yagen.waitmydawn.kb.config.AppConfig;
 import yagen.waitmydawn.kb.model.DatabaseBuilder;
 import yagen.waitmydawn.kb.model.ModEntry;
+import yagen.waitmydawn.kb.model.BuildRequest;
 
 import java.io.InputStream;
 import java.nio.file.Path;
@@ -31,19 +32,33 @@ public class KnowledgeBuilder {
     private final TextChunker chunker;
     private final EmbeddingService embedder;
     private final VectorStore vectorStore;
-    private final WikiScraperService wikiScraper = new WikiScraperService();
+    private final WikiScraperService wikiScraper;
     private final Map<String, String> allEntityMappings = new LinkedHashMap<>();
     private Map<String, ModEntry> previousMods = Map.of();
+    private Map<String, ModEntry> scannedMods = Map.of();
     private Path diagnosticDir;
     private PublicKnowledgeCache publicCache;
+    private final List<BuildSourceProcessor> sourceProcessors;
 
     public KnowledgeBuilder(AppConfig config, DatabaseBuilder db) {
         this(config, db, initializedEmbedder(config));
     }
 
     public KnowledgeBuilder(AppConfig config, DatabaseBuilder db, EmbeddingService embedder) {
+        this(config, db, embedder, null);
+    }
+
+    public KnowledgeBuilder(AppConfig config, DatabaseBuilder db, EmbeddingService embedder,
+                            List<BuildSourceProcessor> sourceProcessors) {
+        this(config,db,embedder,sourceProcessors,new WikiScraperService());
+    }
+
+    KnowledgeBuilder(AppConfig config, DatabaseBuilder db, EmbeddingService embedder,
+                     List<BuildSourceProcessor> sourceProcessors, WikiScraperService scraper) {
         this.config = config;
         this.db = db;
+        this.wikiScraper=scraper;
+
         this.scanner = new JarScannerService();
         this.parser = new ModMetadataParser();
         this.textureExtractor = new TextureExtractor(config);
@@ -53,6 +68,11 @@ public class KnowledgeBuilder {
         this.vectorStore = new VectorStore(db, embedder.getDimension());
         this.publicCache = new PublicKnowledgeCache(db);
         wikiScraper.setPublicCache(publicCache);
+        wikiScraper.setResourceDatabase(db);
+        var documents = new DocumentDirectoryProcessor(config);
+        this.sourceProcessors = sourceProcessors == null
+                ? List.of(documents, new UrlBuildProcessor(wikiScraper, documents))
+                : List.copyOf(sourceProcessors);
     }
 
     private static EmbeddingService initializedEmbedder(AppConfig config) {
@@ -68,36 +88,106 @@ public class KnowledgeBuilder {
 
     public VectorStore getVectorStore() { return vectorStore; }
 
+    public void setScannedMods(List<ModEntry> entries) {
+        var selected=new LinkedHashMap<String,ModEntry>();
+        if(entries!=null) for(var entry:entries) selected.put(entry.getModId(),entry);
+        scannedMods=Map.copyOf(selected);
+    }
+
     public BuildResult build(Path modFolder, ProgressCallback progressCallback) {
-        if (!java.nio.file.Files.isDirectory(modFolder) || scanner.scan(modFolder).isEmpty())
-            throw new IllegalArgumentException("No JAR files found; previous knowledge base retained");
+        return build(BuildRequest.jars(modFolder), progressCallback);
+    }
+
+    public BuildResult build(BuildRequest request, ProgressCallback progressCallback) {
+        Objects.requireNonNull(request);
+        checkCancelled();
+        boolean append=request.mode()==BuildRequest.Mode.APPEND;
+        if(append) VectorStore.verifyProfile(db,embedder.profile(),false);
+        String targetFingerprint=append?db.contentFingerprint():null;
+        for (var source : request.sources()) {
+            if (source.kind() == BuildRequest.Kind.JAR_DIRECTORY) {
+                if (!java.nio.file.Files.isDirectory(Path.of(source.location())) || scanner.scan(Path.of(source.location())).isEmpty())
+                    throw new IllegalArgumentException("No JAR files found; previous knowledge base retained");
+            } else if (sourceProcessors.stream().noneMatch(p -> p.supports(source.kind()))) {
+                throw new IllegalArgumentException("尚未接通此来源的内容处理器：" + source.kind() + "；已保存来源，原库保留");
+            }
+        }
+        long started = System.currentTimeMillis();
         String generation = "build-" + UUID.randomUUID();
         Path stagingPath = config.getDataDir().resolve("staging-" + UUID.randomUUID());
         DatabaseBuilder staging = DatabaseBuilder.atPath(stagingPath);
         try {
             staging.initDatabase();
-            var candidate = new KnowledgeBuilder(config, staging, embedder);
+            new VectorStore(staging,embedder.getDimension());
+            if(append) staging.replaceBuildDataFrom(db);
+            String originalFingerprint=append?staging.contentFingerprint():null;
+            int originalVectors=append?new VectorStore(staging,embedder.getDimension()).count():0;
+            var candidate = new KnowledgeBuilder(config, staging, embedder, sourceProcessors,wikiScraper);
             candidate.publicCache=publicCache;
             candidate.wikiScraper.setPublicCache(publicCache);
+            candidate.wikiScraper.setResourceDatabase(db);
             var oldMods = new LinkedHashMap<String, ModEntry>();
             for (var mod : db.findAllModEntries()) oldMods.put(mod.getModId(), mod);
+            scannedMods.forEach((id,entry) -> {
+                if(!append || !oldMods.containsKey(id)) oldMods.put(id,entry);
+            });
             candidate.previousMods = oldMods;
             candidate.textureExtractor.setGeneration(generation);
             candidate.diagnosticDir = config.getTexturesDir().resolve(generation);
             java.nio.file.Files.createDirectories(candidate.diagnosticDir);
-            staging.setBuildGeneration(generation);
-            BuildResult result = candidate.buildInto(modFolder, (phase, cur, total, message) -> {
+            var jars = request.sources().stream().filter(s -> s.kind() == BuildRequest.Kind.JAR_DIRECTORY)
+                    .map(s -> Path.of(s.location())).toList();
+            BuildResult result = candidate.buildInto(jars, append, (phase, cur, total, message) -> {
                 if (!"done".equals(phase)) report(progressCallback, phase, cur, total, message);
             });
-            if (result.parsed == 0) throw new IllegalStateException("No valid mods found; previous knowledge base retained");
+            var content = new KnowledgeContentStore(staging);
+            var images = new ImageAssetStore(config.getDataDir());
+            for (var source : request.sources()) {
+                checkCancelled();
+                if(append && source.kind()==BuildRequest.Kind.URL && content.publishedRequest().stream()
+                        .flatMap(r -> r.sources().stream()).anyMatch(s -> s.id().equals(source.id()))) {
+                    result.reusedSources++;
+                    report(progressCallback,"reuse",result.reusedSources,0,"跳过已导入网址："+source.location());
+                    continue;
+                }
+                content.saveSource(source);
+                if (source.kind() != BuildRequest.Kind.JAR_DIRECTORY) {
+                    var processor = sourceProcessors.stream().filter(p -> p.supports(source.kind())).findFirst().orElseThrow();
+                    processor.process(source, new BuildSourceProcessor.Context(staging, content, images,
+                            candidate.vectorStore, embedder, progressCallback, result));
+                }
+            }
+            if (candidate.vectorStore.count() == 0 && result.parsed == 0)
+                throw new IllegalStateException("没有可发布的有效内容；原基础库保留");
+            try(var c=staging.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT COUNT(*) FROM rag_document d WHERE EXISTS(SELECT 1 FROM rag_content_chunk c WHERE c.document_id=d.id) AND NOT EXISTS(SELECT 1 FROM rag_content_block b WHERE b.document_id=d.id)")) {
+                r.next();if(r.getInt(1)>0) result.warnings.add("复用了 "+r.getInt(1)+" 篇旧分块资料；完整标题与段落扩展需要对目标基础库执行完整重建。");
+            }
+            checkCancelled();
+            images.validate(content, staging);
+            if (result.deferredWebImages > 0) result.warnings.add("未缓存的网页图片：" + result.deferredWebImages + "；原始地址与处理状态已保留");
             checkCancelled();
             staging.healthCheck();
             checkCancelled();
+            result.embeddings = candidate.vectorStore.count();
+            result.addedEmbeddings=result.embeddings-originalVectors;
+            if(append && originalFingerprint.equals(staging.contentFingerprint())) {
+                result.durationMs=System.currentTimeMillis()-started;
+                report(progressCallback,"done",1,1,"没有新增内容，基础库保持不变");
+                return result;
+            }
+            staging.setBuildGeneration(generation);
+            if(append && !targetFingerprint.equals(db.contentFingerprint()))
+                throw new IllegalStateException("构建期间目标基础库发生变化，请重新执行补充构建");
             db.replaceBuildDataFrom(staging);
-            report(progressCallback, "done", result.parsed, result.parsed, "Build published: " + result.embeddings + " vectors");
+            result.durationMs = System.currentTimeMillis() - started;
+            try {
+                report(progressCallback, "done", request.sources().size(), request.sources().size(), "Build published: " + result.embeddings + " vectors");
+            } catch (RuntimeException e) { log.warn("Build published, but progress listener failed", e); }
             return result;
-        } catch (java.sql.SQLException | java.io.IOException e) {
-            throw new IllegalStateException("Staging database validation failed", e);
+        } catch (java.util.concurrent.CancellationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("构建失败，原基础库保留：" + e.getMessage(), e);
         } finally {
             try { staging.shutdown(); } catch (Exception e) { log.warn("Staging shutdown failed", e); }
             try {
@@ -112,25 +202,40 @@ public class KnowledgeBuilder {
             throw new java.util.concurrent.CancellationException("Knowledge build cancelled");
     }
 
-    private BuildResult buildInto(Path modFolder, ProgressCallback progressCallback) {
+    private BuildResult buildInto(List<Path> modFolders, boolean append, ProgressCallback progressCallback) {
         final int warmLimit=Math.max(0,Math.min(30,Integer.getInteger("maa.build.prewarmPages",config.getPrewarmPages())));
         BuildResult result = new BuildResult();
         long timeStamp0 = System.currentTimeMillis();
 
         // ===== Overwrite mode: clear previous build data =====
-        db.clearBuildData();
-        log.info("Overwrite mode: previous build data cleared");
+        if(!append) db.clearBuildData();
 
         // ===== Phase A-E: JAR extraction =====
         report(progressCallback, "scan", 0, 1, "Scanning JAR files...");
-        List<Path> jars = scanner.scan(modFolder);
+        List<Path> jars = modFolders.stream().flatMap(folder -> scanner.scan(folder).stream()).distinct().toList();
         result.totalJars = jars.size();
+        var importedMods=new ArrayList<ModEntry>();
+        var jarIndex=new JarBuildIndex(db);
 
         for (int i = 0; i < jars.size(); i++) {
             checkCancelled();
             Path jar = jars.get(i);
+            String jarHash;
+            try { jarHash=JarBuildIndex.hash(jar); }
+            catch(java.io.IOException e) {throw new IllegalStateException("JAR 内容读取失败："+jar,e);}
             ModEntry entry = parser.parse(jar);
             if (entry == null) { result.skipped++; continue; }
+            var status=jarIndex.inspect(entry,jarHash);
+            if(status!=JarBuildIndex.Status.NEW) {
+                if(!append && status==JarBuildIndex.Status.CONFLICT)
+                    throw new IllegalStateException("同一构建包含不同版本的模组："+entry.getModId());
+                result.skipped++;
+                if(status==JarBuildIndex.Status.CONFLICT) result.conflicts++;
+                String message=entry.getModId()+"："+status;
+                report(progressCallback,"reuse",i+1,jars.size(),message);
+                if(status!=JarBuildIndex.Status.DUPLICATE) result.warnings.add(message);
+                continue;
+            }
             result.parsed++;
 
             String modId = entry.getModId();
@@ -185,13 +290,18 @@ public class KnowledgeBuilder {
                     entry.setSource(existing.getSource());
                 }
             }
+            try {
+                if(!jarHash.equals(JarBuildIndex.hash(jar))) throw new IllegalStateException("构建期间 JAR 内容发生变化："+jar);
+            } catch(java.io.IOException e) {throw new IllegalStateException("JAR 内容校验失败："+jar,e);}
             db.saveModEntry(entry);
             saveTextures(allTex, modId, slug);
             saveRecipes(recipes, entry.getLoader(), entry.getVersion());
+            jarIndex.save(entry,jarHash);
+            importedMods.add(entry);
         }
 
         // ===== Phase F: Baseline MC Wiki =====
-        if (!jars.isEmpty()) {
+        if (!importedMods.isEmpty() && (!append || !hasBaselineWiki())) {
             int total = WikiScraperService.BASELINE_PAGES.length;
             List<TextChunker.TextChunk> wikiChunks = new ArrayList<>();
             int idx = 0;
@@ -212,7 +322,7 @@ public class KnowledgeBuilder {
         }
 
         // ===== Phase G: MC百科 mod scraping =====
-        List<ModEntry> mods = db.findAllModEntries();
+        List<ModEntry> mods = importedMods;
         // Deduplicate by modId (prevent double-scrape from old entries with different KEY)
         Map<String, ModEntry> uniqueMods = new LinkedHashMap<>();
         for (ModEntry m : mods) {
@@ -340,6 +450,12 @@ public class KnowledgeBuilder {
         return result;
     }
 
+    private boolean hasBaselineWiki() {
+        try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT 1 FROM rag_vectors WHERE chunk_type='mcwiki' LIMIT 1")) {
+            return r.next();
+        } catch(java.sql.SQLException e) {throw new IllegalStateException("原版知识读取失败",e);}
+    }
+
     private List<TextChunker.TextChunk> extractLangText(Path jarPath, String modId, String modName) {
         try (JarFile jar = new JarFile(jarPath.toFile())) {
             for (String p : new String[]{
@@ -405,6 +521,10 @@ public class KnowledgeBuilder {
 
     public static class BuildResult {
         public int totalJars, parsed, skipped;
+        public int reusedSources, reusedDocuments, conflicts, addedEmbeddings;
+        public int documents, tutorials, webImages, webImageAttempts, deferredWebImages;
+        public int localImages, ocrAttempts, ocrImages, visionAttempts, visionImages;
+        public final List<String> warnings = new ArrayList<>();
         public int textures, entities, recipes, textChunks, embeddings;
         public long durationMs;
     }

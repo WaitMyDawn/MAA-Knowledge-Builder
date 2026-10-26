@@ -30,6 +30,10 @@ public class AppConfig {
     private String defaultLoader = "neoforge";
     private yagen.waitmydawn.kb.ui.ThemeMode themeMode = yagen.waitmydawn.kb.ui.ThemeMode.SYSTEM;
     private int prewarmPages = 6;
+    private boolean visionEnabled;
+    private String visionEndpoint = "";
+    private String visionModel = "";
+    private String visionApiKey = "";
 
     private boolean initialized = false;
     private boolean persistenceEnabled = true;
@@ -54,6 +58,18 @@ public class AppConfig {
             config.embeddingModelName = saved.getProperty("embeddingModelName", "all-MiniLM-L6-v2");
         }
         return config;
+    }
+
+    /** 为单次外部知识库构建派生配置，不切换全局数据目录或重新读取凭据文件。 */
+    public AppConfig forBuildTarget(Path directory) throws IOException {
+        var target=new AppConfig(true);
+        target.dataDir=directory.toRealPath();target.initialized=true;
+        target.embeddingModelName=embeddingModelName;
+        target.defaultMcVersion=defaultMcVersion;target.defaultLoader=defaultLoader;
+        target.prewarmPages=prewarmPages;
+        target.visionEnabled=visionEnabled;target.visionEndpoint=visionEndpoint;
+        target.visionModel=visionModel;target.visionApiKey=visionApiKey;
+        return target;
     }
 
     // --- properties ---
@@ -121,6 +137,15 @@ public class AppConfig {
     public int getPrewarmPages() { return prewarmPages; }
     public void setPrewarmPages(int pages) { prewarmPages = Math.max(0, Math.min(30, pages)); save(); }
 
+    public boolean isVisionEnabled() { return visionEnabled; }
+    public String getVisionEndpoint() { return visionEndpoint; }
+    public String getVisionModel() { return visionModel; }
+    public String getVisionApiKey() { return visionApiKey; }
+    public void setVisionSettings(boolean enabled, String endpoint, String model, String key) {
+        visionEnabled = enabled; visionEndpoint = endpoint == null ? "" : endpoint.trim();
+        visionModel = model == null ? "" : model.trim(); visionApiKey = key == null ? "" : key.trim(); save();
+    }
+
     // --- derived paths ---
 
     public Path getTemplatesDir() { return resolve("templates"); }
@@ -165,6 +190,10 @@ public class AppConfig {
             try { prewarmPages = Math.max(0, Math.min(30, Integer.parseInt(props.getProperty("prewarmPages", "6")))); }
             catch (NumberFormatException ignored) { prewarmPages = 6; }
             this.apiKey = props.getProperty("apiKey", "");
+            visionEnabled = Boolean.parseBoolean(props.getProperty("visionEnabled", "false"));
+            visionEndpoint = props.getProperty("visionEndpoint", "");
+            visionModel = props.getProperty("visionModel", "");
+            visionApiKey = props.getProperty("visionApiKey", "");
             this.embeddingModelName = props.getProperty("embeddingModelName", "all-MiniLM-L6-v2");
             String savedUser = props.getProperty("username", "");
             this.username = (savedUser != null && !savedUser.isBlank())
@@ -197,6 +226,10 @@ public class AppConfig {
         props.setProperty("defaultLoader", defaultLoader);
         props.setProperty("themeMode", themeMode.name());
         props.setProperty("prewarmPages", Integer.toString(prewarmPages));
+        props.setProperty("visionEnabled", Boolean.toString(visionEnabled));
+        props.setProperty("visionEndpoint", visionEndpoint);
+        props.setProperty("visionModel", visionModel);
+        props.setProperty("visionApiKey", visionApiKey);
 
         try (Writer w = Files.newBufferedWriter(SETTINGS_FILE)) {
             props.store(w, "MAA Knowledge Builder Settings");
