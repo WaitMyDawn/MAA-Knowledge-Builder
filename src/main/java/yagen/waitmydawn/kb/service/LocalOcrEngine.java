@@ -13,8 +13,12 @@ public interface LocalOcrEngine {
     Result recognize(BufferedImage image) throws Exception;
 
     static LocalOcrEngine windows() { return new WindowsEngine(); }
+    static LocalOcrEngine windows(int timeoutSeconds){return new WindowsEngine(timeoutSeconds);}
 
     final class WindowsEngine implements LocalOcrEngine {
+        private final int timeoutSeconds;
+        public WindowsEngine(){this(45);}
+        public WindowsEngine(int timeoutSeconds){this.timeoutSeconds=Math.max(1,Math.min(45,timeoutSeconds));}
         @Override public Result recognize(BufferedImage image) throws Exception {
             if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("OCR cancelled");
             if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win"))
@@ -42,7 +46,7 @@ public interface LocalOcrEngine {
                 process = new ProcessBuilder(executable.toString(), "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
                         "-File", script.toString(), "-InputPath", input.toString(), "-OutputPath", output.toString())
                         .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
-                if (!process.waitFor(45, TimeUnit.SECONDS)) return new Result("", "TIMEOUT", "");
+                if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) return new Result("", "TIMEOUT", "");
                 if (!Files.exists(output)) return new Result("", "UNAVAILABLE", "");
                 var result = new ObjectMapper().readTree(output.toFile());
                 // Windows 将中文词拆成空格分隔的字；仅合并汉字间横向空白，保留换行和英文词界。

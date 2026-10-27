@@ -47,6 +47,30 @@ class ModrinthBinderTest {
         assertEquals("exact-project", binder.bind(jar,"mod","Mod","different","1.21.1","neoforge").slug());
         assertEquals(2, requests.get());
     }
+    @Test void searchFallsBackFromModIdToDisplayNameAndRetainsVersionChecks(){
+        var queries=new java.util.ArrayList<String>();
+        var binder=new ModrinthBinder(uri->{
+            if(uri.getPath().endsWith("/search")){
+                String query=java.net.URLDecoder.decode(uri.getRawQuery(),java.nio.charset.StandardCharsets.UTF_8);queries.add(query);
+                return new ModrinthBinder.Response(200,query.contains("Farming for Blockheads")?"{\"hits\":[{\"slug\":\"farming-for-blockheads\",\"project_id\":\"farming\"}]}":"{\"hits\":[]}");
+            }
+            return new ModrinthBinder.Response(200,"[{\"version_number\":\"14.0.2\"}]");
+        });
+        assertEquals("farming-for-blockheads",binder.bind("farmingforblockheads","Farming for Blockheads","14.0.2","1.20.1","forge").slug());
+        assertEquals(2,queries.size());assertTrue(queries.get(0).contains("query=farmingforblockheads"));assertTrue(queries.get(1).contains("query=Farming for Blockheads"));
+    }
+    @Test void confirmedEnvironmentControlsSearchFiltersDespiteJarLoaderMetadata(){
+        var environment=new yagen.waitmydawn.kb.model.GameEnvironment(temp.resolve("Minecraft.jar").toString(),"neoforge","1.21.1");
+        var binder=new ModrinthBinder(uri->{String query=java.net.URLDecoder.decode(uri.getRawQuery(),java.nio.charset.StandardCharsets.UTF_8);assertTrue(query.contains("categories:neoforge"));assertTrue(query.contains("versions:1.21.1"));return new ModrinthBinder.Response(200,"{\"hits\":[]}");});
+        assertEquals("modrinth-no-match",binder.bind(null,"mod","Mod","1",environment).source());
+    }
+    @Test void acceptsOnlyCompleteKnownEnvironmentSuffixRatherThanSubstringVersions(){
+        for(String published:java.util.List.of("14.0.2+forge-1.20.1","14.0.20+forge-1.20.1","14.0.2+fabric-1.20.1","14.0.2+forge-1.19.2","14.0.2+addon")){
+            var binder=new ModrinthBinder(uri->uri.getPath().endsWith("/search")?new ModrinthBinder.Response(200,"{\"hits\":[{\"slug\":\"farming-for-blockheads\",\"project_id\":\"farming\"}]}"):new ModrinthBinder.Response(200,"[{\"version_number\":\""+published+"\"}]"));
+            var actual=binder.bind("farmingforblockheads","Farming for Blockheads","14.0.2","1.20.1","forge").slug();
+            if(published.equals("14.0.2+forge-1.20.1"))assertEquals("farming-for-blockheads",actual);else assertNull(actual);
+        }
+    }
     @Test void rateLimitCannotBeReportedAsAbsentProject() {
         var binder = new ModrinthBinder(uri -> new ModrinthBinder.Response(429,"{}"));
         assertEquals("modrinth-unavailable", binder.bind("mod","mod","1","1.21.1","neoforge").source());

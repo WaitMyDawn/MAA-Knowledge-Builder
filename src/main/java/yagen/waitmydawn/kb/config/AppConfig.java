@@ -30,6 +30,26 @@ public class AppConfig {
     private String defaultLoader = "neoforge";
     private yagen.waitmydawn.kb.ui.ThemeMode themeMode = yagen.waitmydawn.kb.ui.ThemeMode.SYSTEM;
     private int prewarmPages = 6;
+    private final Properties modFieldColors=new Properties();
+    public String getModFieldColor(boolean dark,String role){
+        String fallback=switch(role){case "modid"->dark?"#67e8f9":"#075985";case "slug"->dark?"#fcd34d":"#92400e";case "url"->dark?"#86efac":"#166534";default->throw new IllegalArgumentException("未知字段角色");};
+        return modFieldColors.getProperty((dark?"dark":"light")+"."+role,fallback);
+    }
+    public void setModFieldColors(boolean dark,java.util.Map<String,String> colors){
+        for(String role:java.util.List.of("modid","slug","url"))if(!colors.containsKey(role)||!colors.get(role).matches("#[0-9a-fA-F]{6}"))throw new IllegalArgumentException("颜色必须为 #RRGGBB");
+        colors.forEach((role,color)->{if(java.util.Set.of("modid","slug","url").contains(role))modFieldColors.setProperty((dark?"dark":"light")+"."+role,color);});save();
+    }
+    public void resetModFieldColors(boolean dark){for(String role:java.util.List.of("modid","slug","url"))modFieldColors.remove((dark?"dark":"light")+"."+role);save();}
+    public String getProgressColor(boolean dark,String role){
+        String fallback=switch(role){case "scan"->mix(getModFieldColor(dark,"modid"),getModFieldColor(dark,"slug"));case "bind"->getModFieldColor(dark,"url");case "build"->dark?"#c4b5fd":"#6d28d9";default->throw new IllegalArgumentException("未知进度角色");};
+        return modFieldColors.getProperty((dark?"dark":"light")+".progress"+role,fallback);
+    }
+    public boolean hasProgressOverride(boolean dark,String role){return modFieldColors.containsKey((dark?"dark":"light")+".progress"+role);}
+    public void setProgressColors(boolean dark,java.util.Map<String,String> overrides){
+        for(String role:java.util.List.of("scan","bind","build"))if(overrides.containsKey(role)&&(overrides.get(role)==null||!overrides.get(role).matches("#[0-9a-fA-F]{6}")))throw new IllegalArgumentException("颜色必须为 #RRGGBB");
+        for(String role:java.util.List.of("scan","bind","build")){String key=(dark?"dark":"light")+".progress"+role;if(overrides.containsKey(role))modFieldColors.setProperty(key,overrides.get(role));else modFieldColors.remove(key);}save();
+    }
+    private static String mix(String a,String b){int x=Integer.parseInt(a.substring(1),16),y=Integer.parseInt(b.substring(1),16);return String.format(java.util.Locale.ROOT,"#%02x%02x%02x",Math.round(((x>>16&255)+(y>>16&255))/2f),Math.round(((x>>8&255)+(y>>8&255))/2f),Math.round(((x&255)+(y&255))/2f));}
     private boolean visionEnabled;
     private String visionEndpoint = "";
     private String visionModel = "";
@@ -187,6 +207,7 @@ public class AppConfig {
                 LogSetup.init(dataDir);
             }
             themeMode = yagen.waitmydawn.kb.ui.ThemeMode.parse(props.getProperty("themeMode"));
+            for(String theme:java.util.List.of("dark","light"))for(String role:java.util.List.of("modid","slug","url","progressscan","progressbind","progressbuild")){String key=theme+"."+role,value=props.getProperty("modField."+key);if(value!=null&&value.matches("#[0-9a-fA-F]{6}"))modFieldColors.setProperty(key,value);}
             try { prewarmPages = Math.max(0, Math.min(30, Integer.parseInt(props.getProperty("prewarmPages", "6")))); }
             catch (NumberFormatException ignored) { prewarmPages = 6; }
             this.apiKey = props.getProperty("apiKey", "");
@@ -225,6 +246,7 @@ public class AppConfig {
         props.setProperty("defaultMcVersion", defaultMcVersion);
         props.setProperty("defaultLoader", defaultLoader);
         props.setProperty("themeMode", themeMode.name());
+        modFieldColors.forEach((key,value)->props.setProperty("modField."+key,value.toString()));
         props.setProperty("prewarmPages", Integer.toString(prewarmPages));
         props.setProperty("visionEnabled", Boolean.toString(visionEnabled));
         props.setProperty("visionEndpoint", visionEndpoint);

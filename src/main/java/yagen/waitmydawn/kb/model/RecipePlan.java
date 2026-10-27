@@ -18,12 +18,13 @@ public record RecipePlan(Kind kind, List<Slot> slots, Output output, int width, 
     public record Alternative(String id, boolean tag) {
         public String label() { return (tag ? "#" : "") + id; }
     }
-    public record Ingredient(List<Alternative> alternatives, int count, boolean stateful, String unsupported) {
+    public record Ingredient(List<Alternative> alternatives, int count, boolean stateful, String unsupported,JsonNode state) {
+        public Ingredient(List<Alternative> alternatives,int count,boolean stateful,String unsupported){this(alternatives,count,stateful,unsupported,null);}
         public Ingredient { alternatives = List.copyOf(alternatives); }
-        public String identity() { return alternatives + "|" + stateful + "|" + unsupported; }
+        public String identity() { return alternatives + "|" + stateful + "|" + unsupported+"|"+state; }
     }
     public record Slot(int index, String role, Ingredient ingredient) {}
-    public record Output(String itemId, int count, boolean stateful, boolean dynamic) {}
+    public record Output(String itemId, int count, boolean stateful, boolean dynamic,JsonNode state) {}
     public RecipePlan { slots = List.copyOf(slots); notes = List.copyOf(notes); }
 
     public static RecipePlan parse(String raw) {
@@ -99,7 +100,7 @@ public record RecipePlan(Kind kind, List<Slot> slots, Output output, int width, 
                 if (root.has("experience")) { xp = root.path("experience").asDouble(-1); if (!root.path("experience").isNumber() || !Double.isFinite(xp) || xp < 0) throw new IllegalArgumentException("经验值无效"); }
                 notes.add("不指定燃料种类或数量；营火无需燃料，其他工作站燃料由游戏规则决定。");
             }
-            return new RecipePlan(kind, slots, new Output(id, count, stateful, dynamic), width, height, ticks, xp, notes);
+            return new RecipePlan(kind, slots, new Output(id, count, stateful, dynamic,state(result)), width, height, ticks, xp, notes);
         } catch (IllegalArgumentException e) { throw e; }
         catch (Exception e) { throw new IllegalArgumentException("配方 JSON 无效", e); }
     }
@@ -107,14 +108,15 @@ public record RecipePlan(Kind kind, List<Slot> slots, Output output, int width, 
         if (node == null || node.isMissingNode() || node.isNull()) throw new IllegalArgumentException("缺少材料");
         if (node.isArray()) {
             if (node.isEmpty() || node.size() > 128) throw new IllegalArgumentException("替代材料数组为空或超限");
-            var alternatives = new ArrayList<Alternative>(); boolean state = false; String unknown = null; Integer count = null;
+            var alternatives = new ArrayList<Alternative>(); boolean state = false; String unknown = null; Integer count = null;JsonNode exactState=null;boolean first=true,mixed=false;
             for (var value : node) {
                 if (value.isArray()) throw new IllegalArgumentException("不支持嵌套替代材料数组");
                 var child = ingredient(value); alternatives.addAll(child.alternatives()); state |= child.stateful();
+                if(first){exactState=child.state();first=false;}else if(!Objects.equals(exactState,child.state()))mixed=true;
                 if (child.unsupported() != null) unknown = child.unsupported();
                 if (count != null && count != child.count()) throw new IllegalArgumentException("替代材料数量不一致"); count = child.count();
             }
-            return new Ingredient(alternatives.stream().distinct().toList(), count, state, unknown);
+            return new Ingredient(alternatives.stream().distinct().toList(), count, state, unknown,mixed?null:exactState);
         }
         if (node.isTextual()) { String text = node.asText(); return new Ingredient(List.of(new Alternative(resourceId(text.startsWith("#") ? text.substring(1) : text), text.startsWith("#"))), 1, false, null); }
         if (!node.isObject()) throw new IllegalArgumentException("材料必须为对象、字符串或数组");
@@ -123,7 +125,13 @@ public record RecipePlan(Kind kind, List<Slot> slots, Output output, int width, 
         if (node.has("type") && !node.path("type").asText().equals("minecraft:item")) return new Ingredient(List.of(), count, hasState(node), "自定义材料类型：" + node.path("type").asText());
         String item = node.path("item").asText(node.path("id").asText(null)); String tag = node.path("tag").asText(null);
         if ((item == null) == (tag == null)) throw new IllegalArgumentException("材料必须且只能指定 item/id 或 tag");
-        return new Ingredient(List.of(new Alternative(resourceId(item != null ? item : tag), tag != null)), count, hasState(node), null);
+        return new Ingredient(List.of(new Alternative(resourceId(item != null ? item : tag), tag != null)), count, hasState(node), null,state(node));
+    }
+    private static JsonNode state(JsonNode node){
+        if(!node.isObject())return null;
+        if(node.has("components")&&node.has("nbt"))return null;
+        if(node.path("components").isObject()&&!node.path("components").isEmpty())return JSON.createObjectNode().set("components",node.path("components").deepCopy());
+        if(node.path("nbt").isTextual()&&!node.path("nbt").asText().isBlank())return JSON.createObjectNode().set("nbt",node.path("nbt").deepCopy());return null;
     }
     private static boolean hasState(JsonNode node) { return node.isObject() && (node.has("nbt") || node.has("components") && !node.path("components").isEmpty() || node.has("data")); }
     private static int positiveCount(JsonNode value, int fallback) {

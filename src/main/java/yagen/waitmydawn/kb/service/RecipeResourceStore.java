@@ -14,11 +14,15 @@ import java.util.regex.Pattern;
 /** JAR 中的材料标签、名称和可保守展开的单层平面模型；不执行加载器或配方脚本。 */
 public final class RecipeResourceStore {
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String INDEX_VERSION="r3-v2";
     private static final Pattern TAG = Pattern.compile("data/([^/]+)/tags/items?/(.+)\\.json");
     private static final Pattern MODEL = Pattern.compile("assets/([^/]+)/models/(.+)\\.json");
     private final DatabaseBuilder db;
     public RecipeResourceStore(DatabaseBuilder db) { this.db = db; }
-    public record Imported(int tags, int names, int flatIcons) {}
+    public record Imported(int tags,int names,int flatIcons,List<String> warnings){
+        public Imported(int tags,int names,int flatIcons){this(tags,names,flatIcons,List.of());}
+        public Imported{warnings=List.copyOf(warnings);}
+    }
     public record TagFile(String source, JsonNode json) {}
     public record TagResult(List<String> items, String problem) { public boolean resolved() { return problem == null; } }
     public static void init(Connection c) throws SQLException {
@@ -32,9 +36,9 @@ public final class RecipeResourceStore {
     public Imported importJar(Path path, String sourceMod, Path dataDir) throws Exception {
         String jarHash=JarBuildIndex.hash(path);
         try(var c=db.getConnection();var p=c.prepareStatement("SELECT content_hash,index_version FROM rag_recipe_resource_import WHERE id=?")) {
-            p.setString(1,sourceMod);try(var r=p.executeQuery()){if(r.next()&&r.getString(1).equals(jarHash)&&r.getString(2).equals("r3-v1"))return new Imported(0,0,0);}
+            p.setString(1,sourceMod);try(var r=p.executeQuery()){if(r.next()&&r.getString(1).equals(jarHash)&&r.getString(2).equals(INDEX_VERSION))return new Imported(0,0,0);}
         }
-        int tags = 0, names = 0, icons = 0; long textBytes = 0;
+        int tags = 0, names = 0, icons = 0; long textBytes = 0;var warnings=new ArrayList<String>();
         var models = new TreeMap<String, JsonNode>();
         try (var jar = new JarFile(path.toFile())) {
             var entries = jar.entries();
@@ -58,7 +62,11 @@ public final class RecipeResourceStore {
                 } else if (name.matches("assets/[^/]+/lang/(zh_cn|en_us)\\.json")) {
                     String text = read(jar, entry, 16 * 1024 * 1024); textBytes += text.length();
                     String language = name.substring(name.lastIndexOf('/') + 1, name.length() - 5);
-                    names += importLanguage(text,language,sourceMod);
+                    try{names+=importLanguage(text,language,sourceMod);}
+                    catch(com.fasterxml.jackson.core.JsonProcessingException | IllegalArgumentException invalid){
+                        String position=invalid instanceof com.fasterxml.jackson.core.JsonProcessingException json&&json.getLocation()!=null?"（行 "+json.getLocation().getLineNr()+"，列 "+json.getLocation().getColumnNr()+"）":"";
+                        warnings.add(sourceMod+"：跳过无效语言文件 "+name+position+"；其他语言继续导入");
+                    }
                 }
                 if (textBytes > 128L * 1024 * 1024) throw new IOException("配方资源文本总量超限");
             }
@@ -98,13 +106,13 @@ public final class RecipeResourceStore {
                 icons++;
             }
         }
-        try(var c=db.getConnection();var p=c.prepareStatement("MERGE INTO rag_recipe_resource_import KEY(id) VALUES(?,?,'r3-v1')")){p.setString(1,sourceMod);p.setString(2,jarHash);p.executeUpdate();}
-        return new Imported(tags, names, icons);
+        try(var c=db.getConnection();var p=c.prepareStatement("MERGE INTO rag_recipe_resource_import KEY(id) VALUES(?,?,?)")){p.setString(1,sourceMod);p.setString(2,jarHash);p.setString(3,INDEX_VERSION);p.executeUpdate();}
+        return new Imported(tags,names,icons,warnings);
     }
     /** 附加已取得的语言资源，不创建配方或文本向量；命名空间来自完整翻译键。 */
     public int importLanguage(String json,String language,String sourceMod) throws Exception {
         if(!Set.of("zh_cn","en_us").contains(language)||json.length()>16*1024*1024)throw new IllegalArgumentException("语言或文本大小无效");
-        var root=JSON.readTree(json);if(!root.isObject())throw new IllegalArgumentException("语言文件必须为对象");
+        var root=JSON.readTree(json);if(root==null||!root.isObject())throw new IllegalArgumentException("语言文件必须为对象");
         var values=new LinkedHashMap<String,String>();
         for(String prefix:List.of("block.","item.")) {
             var fields=root.fields();while(fields.hasNext()) {

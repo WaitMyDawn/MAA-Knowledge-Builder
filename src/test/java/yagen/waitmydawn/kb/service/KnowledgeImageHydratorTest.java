@@ -10,6 +10,33 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class KnowledgeImageHydratorTest {
     @TempDir Path temp;
+    @Test void transientOcrPreservesInlineStepAndDoesNotPublishVectors() throws Exception {
+        var db=DatabaseBuilder.atPath(temp.resolve("transient"));db.initDatabase();new VectorStore(db,384);
+        try {
+            var content=new KnowledgeContentStore(db);var source=BuildRequest.Source.of(BuildRequest.Kind.URL,"https://example.com/upgrade");content.saveSource(source);
+            content.saveDocument(new KnowledgeContent.Document("doc",source.id(),"傀儡指南",source.location(),"hash","text/html"));
+            String step="第2步：将傀儡升级芯片放入菜单的升级槽位。";
+            content.saveChunk(new KnowledgeContent.Chunk("seed","doc",step,"傀儡升级",null,0));
+            content.saveBlock(new KnowledgeContent.Block("anchor","doc","傀儡升级","/root/upgrade/",0,null,"PARAGRAPH",null,step,"NATIVE"));
+            content.linkBlock("seed","anchor");
+            content.saveImageReference("correct","doc","https://images.example/upgrade.png","傀儡指南-第1张图片","傀儡升级",0,"DEFERRED",null);
+            content.setImageStep("correct",step);
+            content.saveImageReference("wrong","doc","https://images.example/assembly.png","傀儡指南-第2张图片","傀儡升级",0,"DEFERRED",null);
+            content.setImageStep("wrong","第1步：组装傀儡，将核心放入底座。");
+            var bytes=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(DocumentImportTest.textImage(),"png",bytes);var calls=new AtomicInteger();
+            var scraper=new WikiScraperService(){
+                @Override public Resource fetchResource(String url,String referer,boolean image,Map<String,String> headers){assertTrue(url.endsWith("upgrade.png"));return new Resource(200,bytes.toByteArray(),"image/png",url,null,null);}
+            };
+            LocalOcrEngine ocr=image->{calls.incrementAndGet();return new LocalOcrEngine.Result("升级菜单 升级槽位","OK","zh-Hans");};
+            String before=db.contentFingerprint();
+            var hydrator=new KnowledgeImageHydrator(db,temp,scraper,ocr);
+            var pictures=hydrator.hydrate("傀儡如何升级",List.of(new VectorStore.SearchResult("seed",step,null,"傀儡指南","web",0.9,source.location())),List.of(),Map.of("seed","s1"));
+            assertEquals(1,pictures.size());assertEquals(1,calls.get());
+            var grounding=pictures.getFirst().grounding();assertEquals("UI",grounding.purpose());assertEquals("OCR",grounding.basis());
+            assertEquals("傀儡升级\n"+step,grounding.stepText());assertEquals("INLINE_STEP",grounding.relation());
+            assertEquals(before,db.contentFingerprint());
+        } finally {db.shutdown();}
+    }
     @Test void structuredImageLookupDoesNotFetchAnAdjacentDifferentChapter() throws Exception {
         var db=DatabaseBuilder.atPath(temp.resolve("boundary"));db.initDatabase();
         try {

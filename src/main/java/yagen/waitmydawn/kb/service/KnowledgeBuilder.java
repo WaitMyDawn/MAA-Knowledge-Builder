@@ -17,7 +17,7 @@ import java.util.jar.JarFile;
  * 知识库构建编排器:
  *   Phase A-E: JAR 提取 (纹理/配方/文本 → 向量)
  *   Phase F:   基线 MC Wiki 抓取 (Crafting/Smelting/... 约20页)
- *   Phase G:   模组 MC百科 抓取 (按 modId 搜索)
+ *   Phase G:   模组 MC百科 抓取（仅使用显式绑定的主页）
  */
 public class KnowledgeBuilder {
 
@@ -39,6 +39,28 @@ public class KnowledgeBuilder {
     private Path diagnosticDir;
     private PublicKnowledgeCache publicCache;
     private final List<BuildSourceProcessor> sourceProcessors;
+    private Set<String> selectedJarMods=Set.of();
+    private List<BuildRequest.Source> jarSources=List.of();
+    private ModBindingStore bindingDrafts;
+    private ScanEnvironmentStore environments;
+    void setEnvironmentStore(ScanEnvironmentStore store){environments=store;}
+    private boolean requireBoundWiki;
+    void requireBoundWiki(){requireBoundWiki=true;}
+    private Map<String,ModEntry> preparations=Map.of();
+    private void prepareMod(ModEntry entry){
+        var old=previousMods.get(entry.getModId());bindingDrafts.apply(entry,old);
+        var selected=preparations.get(entry.getModId());
+        if(selected!=null&&Objects.equals(selected.getLoader(),entry.getLoader())) {
+            if(selected.getSlug()!=null){entry.setSlug(selected.getSlug());entry.setModrinthUrl(selected.getModrinthUrl());entry.setSource(selected.getSource());}
+            if(selected.getMcmodBinding()!=null)entry.setMcmodBinding(selected.getMcmodBinding());
+        }
+    }
+    private void recordJarOwners(Path jar,String mod,String hash){
+        var store=new SourceLifecycleStore(db);
+        for(var source:jarSources)if(jar.toAbsolutePath().normalize().startsWith(Path.of(source.location())))
+            store.execute("MERGE INTO rag_jar_source KEY(id) VALUES(?,?,?,?,?)",BuildRequest.fingerprint(source.id()+"\n"+mod),source.id(),mod,jar.toAbsolutePath().normalize().toString(),hash);
+    }
+    void selectJarMods(Set<String> mods){selectedJarMods=Set.copyOf(mods);}
 
     public KnowledgeBuilder(AppConfig config, DatabaseBuilder db) {
         this(config, db, initializedEmbedder(config));
@@ -57,6 +79,7 @@ public class KnowledgeBuilder {
                      List<BuildSourceProcessor> sourceProcessors, WikiScraperService scraper) {
         this.config = config;
         this.db = db;
+        this.bindingDrafts=new ModBindingStore(db);this.environments=new ScanEnvironmentStore(db);
         this.wikiScraper=scraper;
 
         this.scanner = new JarScannerService();
@@ -129,6 +152,9 @@ public class KnowledgeBuilder {
             String originalFingerprint=append?staging.contentFingerprint():null;
             int originalVectors=append?new VectorStore(staging,embedder.getDimension()).count():0;
             var candidate = new KnowledgeBuilder(config, staging, embedder, sourceProcessors,wikiScraper);
+            candidate.selectedJarMods=selectedJarMods;
+            candidate.environments=environments;candidate.bindingDrafts=bindingDrafts;candidate.preparations=scannedMods;candidate.requireBoundWiki=requireBoundWiki;
+            candidate.jarSources=request.sources().stream().filter(s->s.kind()==BuildRequest.Kind.JAR_DIRECTORY).toList();
             candidate.publicCache=publicCache;
             candidate.wikiScraper.setPublicCache(publicCache);
             candidate.wikiScraper.setResourceDatabase(db);
@@ -148,10 +174,15 @@ public class KnowledgeBuilder {
             });
             var content = new KnowledgeContentStore(staging);
             var images = new ImageAssetStore(config.getDataDir());
+            int completedSources=0;report(progressCallback,"progress:来源",0,request.sources().size(),"开始处理来源");
             for (var source : request.sources()) {
                 checkCancelled();
+                try{
                 if(append && source.kind()==BuildRequest.Kind.URL && content.publishedRequest().stream()
                         .flatMap(r -> r.sources().stream()).anyMatch(s -> s.id().equals(source.id()))) {
+                    var enrichmentContext=new BuildSourceProcessor.Context(staging,content,images,candidate.vectorStore,embedder,progressCallback,result);
+                    var urlProcessor=sourceProcessors.stream().filter(p->p instanceof UrlBuildProcessor).map(p->(UrlBuildProcessor)p).findFirst();
+                    if(urlProcessor.isPresent())urlProcessor.get().enrichExisting(source,enrichmentContext);else new WebImageEnricher().backfill(source,enrichmentContext);
                     result.reusedSources++;
                     report(progressCallback,"reuse",result.reusedSources,0,"跳过已导入网址："+source.location());
                     continue;
@@ -166,9 +197,12 @@ public class KnowledgeBuilder {
                     processor.process(source, new BuildSourceProcessor.Context(staging, content, images,
                             candidate.vectorStore, embedder, progressCallback, result));
                 }
+                }finally{report(progressCallback,"progress:来源",++completedSources,request.sources().size(),source.location());}
             }
             if (candidate.vectorStore.count() == 0 && result.parsed == 0 && !new ItemIconStore(staging).hasUsableIcons())
                 throw new IllegalStateException("没有可发布的有效内容；原基础库保留");
+            var lifecycle=new SourceLifecycleStore(staging);
+            for(var source:request.sources()){lifecycle.captureJarOwners(source);lifecycle.indexed(source,null,0);}
             try(var c=staging.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT COUNT(*) FROM rag_document d WHERE EXISTS(SELECT 1 FROM rag_content_chunk c WHERE c.document_id=d.id) AND NOT EXISTS(SELECT 1 FROM rag_content_block b WHERE b.document_id=d.id)")) {
                 r.next();if(r.getInt(1)>0) result.warnings.add("复用了 "+r.getInt(1)+" 篇旧分块资料；完整标题与段落扩展需要对目标基础库执行完整重建。");
             }
@@ -227,21 +261,34 @@ public class KnowledgeBuilder {
         var importedMods=new ArrayList<ModEntry>();
         var jarIndex=new JarBuildIndex(db);
 
+        report(progressCallback,"progress:JAR",0,jars.size(),"开始解析 JAR");
         for (int i = 0; i < jars.size(); i++) {
             checkCancelled();
+            try{
             Path jar = jars.get(i);
             String jarHash;
             try { jarHash=JarBuildIndex.hash(jar); }
             catch(java.io.IOException e) {throw new IllegalStateException("JAR 内容读取失败："+jar,e);}
-            ModEntry entry = parser.parse(jar);
+            ModEntry entry = parser.parse(jar,environments.forJar(jar));
             if (entry == null) { result.skipped++; continue; }
+            if(!selectedJarMods.isEmpty()&&!selectedJarMods.contains(entry.getModId()))continue;
+            prepareMod(entry);
             var status=jarIndex.inspect(entry,jarHash);
             if(status!=JarBuildIndex.Status.NEW) {
                 if(status==JarBuildIndex.Status.DUPLICATE) {
+                    var published=db.findModEntry(entry.getModId());
+                    boolean changed=!ModBindingStore.signature(entry.getMcmodBinding()).equals(ModBindingStore.signature(published.getMcmodBinding()));
+                    if(!Objects.equals(entry.getMcVersion(),published.getMcVersion()))result.warnings.add(entry.getModId()+"：确认的游戏版本与已发布知识不同，请在来源管理刷新该模组");
+                    if(changed)result.warnings.add(entry.getModId()+"：百科绑定已修改但未发布，请在来源管理刷新该模组");
+                    if(!Objects.equals(entry.getSlug(),published.getSlug())||!changed&&!Objects.equals(entry.getMcmodBinding(),published.getMcmodBinding())) {
+                        published.setSlug(entry.getSlug());published.setModrinthUrl(entry.getModrinthUrl());
+                        if(!changed)published.setMcmodBinding(entry.getMcmodBinding());db.saveModEntry(published);
+                    }
+                    recordJarOwners(jar,entry.getModId(),jarHash);
                     try {
                         var resources=new RecipeResourceStore(db).importJar(jar,entry.getModId(),config.getDataDir());
-                        result.itemTagFiles+=resources.tags();result.itemNames+=resources.names();result.staticItemIcons+=resources.flatIcons();
-                    }catch(Exception failure){throw new IllegalStateException("已有 JAR 的配方资源补建失败",failure);}
+                        result.itemTagFiles+=resources.tags();result.itemNames+=resources.names();result.staticItemIcons+=resources.flatIcons();result.warnings.addAll(resources.warnings());
+                    }catch(Exception failure){throw new IllegalStateException("已有 JAR 的配方资源补建失败："+entry.getModId()+"；"+failure.getMessage(),failure);}
                 }
                 if(!append && status==JarBuildIndex.Status.CONFLICT)
                     throw new IllegalStateException("同一构建包含不同版本的模组："+entry.getModId());
@@ -278,13 +325,14 @@ public class KnowledgeBuilder {
             result.recipes += recipes.size();
             try {
                 var resources = new RecipeResourceStore(db).importJar(jar, modId, config.getDataDir());
-                result.itemTagFiles += resources.tags(); result.itemNames += resources.names(); result.staticItemIcons += resources.flatIcons();
-            } catch (Exception failure) { throw new IllegalStateException("配方标签与图标资源解析失败：" + modId, failure); }
+                result.itemTagFiles += resources.tags(); result.itemNames += resources.names(); result.staticItemIcons += resources.flatIcons();result.warnings.addAll(resources.warnings());
+            } catch (Exception failure) { throw new IllegalStateException("配方标签与图标资源解析失败：" + modId+"；"+failure.getMessage(), failure); }
 
             // Text chunks
             List<TextChunker.TextChunk> chunks = new ArrayList<>();
             report(progressCallback, "text", i + 1, jars.size(), "Lang: " + modId);
-            chunks.addAll(extractLangText(jar, modId, modName));
+            try{var language=new JarLanguageExtractor().extract(jar,modId,modName);chunks.addAll(language.chunks());result.warnings.addAll(language.warnings());}
+            catch(java.io.IOException failure){throw new IllegalStateException("JAR 语言资源读取失败："+jar.getFileName(),failure);}
             if (entry.getDescription() != null && !entry.getDescription().isBlank())
                 chunks.addAll(chunker.fromDescription(entry.getDescription(), modId, modName));
             for (var r : recipes) {
@@ -301,15 +349,6 @@ public class KnowledgeBuilder {
                 result.embeddings += chunks.size();
             }
 
-            // Preserve slug from previous scan if not set during parse
-            if (entry.getSlug() == null) {
-                ModEntry existing = previousMods.get(entry.getModId());
-                if (existing != null && existing.getSlug() != null) {
-                    entry.setSlug(existing.getSlug());
-                    entry.setModrinthUrl(existing.getModrinthUrl());
-                    entry.setSource(existing.getSource());
-                }
-            }
             try {
                 if(!jarHash.equals(JarBuildIndex.hash(jar))) throw new IllegalStateException("构建期间 JAR 内容发生变化："+jar);
             } catch(java.io.IOException e) {throw new IllegalStateException("JAR 内容校验失败："+jar,e);}
@@ -317,7 +356,9 @@ public class KnowledgeBuilder {
             saveTextures(allTex, modId, slug);
             saveRecipes(recipes, entry.getLoader(), entry.getVersion());
             jarIndex.save(entry,jarHash);
+            recordJarOwners(jar,entry.getModId(),jarHash);
             importedMods.add(entry);
+            }finally{report(progressCallback,"progress:JAR",i+1,jars.size(),"已处理 JAR");}
         }
 
         // ===== Phase F: Baseline MC Wiki =====
@@ -325,6 +366,7 @@ public class KnowledgeBuilder {
             int total = WikiScraperService.BASELINE_PAGES.length;
             List<TextChunker.TextChunk> wikiChunks = new ArrayList<>();
             int idx = 0;
+            report(progressCallback,"progress:Wiki",0,total,"开始处理 Wiki");
             for (String page : WikiScraperService.BASELINE_PAGES) {
                 idx++;
                 report(progressCallback, "wiki", idx, total, "MC Wiki: " + page);
@@ -332,7 +374,10 @@ public class KnowledgeBuilder {
                 if (wp != null) {
                     wikiChunks.addAll(chunker.fromWebPage(wp.content(), "minecraft", "Minecraft", "mcwiki", wp.url()));
                 }
-                try { Thread.sleep(200); } catch (Exception ignored) {} // Be polite to wiki
+                report(progressCallback,"progress:Wiki",idx,total,"已处理 Wiki 页面");
+                try { Thread.sleep(200); } catch (InterruptedException cancelled) {
+                    Thread.currentThread().interrupt();throw new java.util.concurrent.CancellationException("Knowledge build cancelled");
+                }
             }
             if (!wikiChunks.isEmpty()) {
                 vectorStore.storeBatch(wikiChunks, publicCache.embeddings(wikiChunks,embedder),embedder.profile());
@@ -352,14 +397,20 @@ public class KnowledgeBuilder {
 
         report(progressCallback, "scrape", 0, deduped.size(), "mcmod.cn scraping...");
         int sIdx = 0;
+        report(progressCallback,"progress:百科",0,deduped.size(),"开始处理模组百科");
         for (ModEntry modEntry : deduped) {
             sIdx++;
+            try{
             if ("minecraft".equals(modEntry.getModId()) || "vanilla".equals(modEntry.getLoader())) continue;
+            var binding=modEntry.getMcmodBinding();
+            if(binding==null||binding.url()==null||binding.status().equals("DISABLED")) {
+                result.warnings.add(modEntry.getModId()+"：未绑定百科主页，仅构建本地内容");continue;
+            }
             report(progressCallback, "scrape", sIdx, deduped.size(), "mcmod: " + modEntry.getModId());
             final int cur = sIdx;
             final int total = deduped.size();
             final String mid = modEntry.getModId();
-            var scrape = wikiScraper.scrapeModCatalog(modEntry.getModId(),
+            var scrape = wikiScraper.scrapeModCatalog(modEntry.getModId(),binding.classId(),
                             (catCur, catTotal, catName, itemCur, itemTotal, status) -> {
                         String detail;
                         if (status.startsWith("error:")) {
@@ -384,6 +435,11 @@ public class KnowledgeBuilder {
                         report(progressCallback, "scrape", cur, total, detail);
                     });
             List<WikiScraperService.WebPage> pages = scrape.pages();
+            if(pages.isEmpty()) {
+                String message=modEntry.getModId()+"：绑定百科未返回有效正文："+binding.url();
+                if(requireBoundWiki)throw new IllegalStateException(message);
+                result.warnings.add(message);
+            }
             new WebCatalogStore(db).save(scrape.catalog());
             if (!pages.isEmpty()) {
                 // 持久化网页 (含 subWebPage 映射), 供 Q&A 阶段增量抓取
@@ -450,6 +506,7 @@ public class KnowledgeBuilder {
             }
             report(progressCallback,"prewarm",warmed.size(),warmed.size(),warmLimit==0?"已关闭常用详情预取":"详情预取完成：成功 "+prepared+" 页，跳过/失败 "+skipped+" 页（站点冷却期间不继续访问）");
             try { Thread.sleep(500); } catch (Exception ignored) {}
+            }finally{report(progressCallback,"progress:百科",sIdx,deduped.size(),"已处理模组百科");}
         }
 
         result.durationMs = System.currentTimeMillis() - timeStamp0;
@@ -474,24 +531,6 @@ public class KnowledgeBuilder {
         try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT 1 FROM rag_vectors WHERE chunk_type='mcwiki' LIMIT 1")) {
             return r.next();
         } catch(java.sql.SQLException e) {throw new IllegalStateException("原版知识读取失败",e);}
-    }
-
-    private List<TextChunker.TextChunk> extractLangText(Path jarPath, String modId, String modName) {
-        try (JarFile jar = new JarFile(jarPath.toFile())) {
-            for (String p : new String[]{
-                    "assets/" + modId + "/lang/zh_cn.json",
-                    "assets/" + modId + "/lang/en_us.json",
-                    "assets/" + modId.toLowerCase() + "/lang/zh_cn.json",
-                    "assets/" + modId.toLowerCase() + "/lang/en_us.json"}) {
-                JarEntry je = jar.getJarEntry(p);
-                if (je != null) try (InputStream is = jar.getInputStream(je)) {
-                    byte[] bytes = is.readNBytes(2 * 1024 * 1024 + 1);
-                    if (bytes.length > 2 * 1024 * 1024) throw new IllegalArgumentException("Language resource too large: " + p);
-                    return chunker.fromLangJson(new String(bytes, java.nio.charset.StandardCharsets.UTF_8), modId, modName, p);
-                } catch (Exception ignored) {}
-            }
-        } catch (Exception e) { log.debug("Lang: {} - {}", modId, e.getMessage()); }
-        return Collections.emptyList();
     }
 
     private void saveTextures(Map<String, Map<String, String>> allTex, String modId, String slug) {
@@ -544,7 +583,8 @@ public class KnowledgeBuilder {
         public int reusedSources, reusedDocuments, conflicts, addedEmbeddings;
         public int documents, tutorials, webImages, webImageAttempts, deferredWebImages;
         public int localImages, ocrAttempts, ocrImages, visionAttempts, visionImages;
-        public int nativeIconPacks,nativeIcons,failedNativeIcons,reusedIconPacks;
+        public int webOcrAttempts,webOcrImages,webOcrChunks,enrichedWebImages,reusedImageAnalyses,deferredImageAnalyses,imageStepBackfills;
+        public int nativeIconPacks,nativeIcons,transparentNativeIcons,failedNativeIcons,reusedIconPacks;
         public int itemTagFiles,itemNames,staticItemIcons;
         public final List<String> warnings = new ArrayList<>();
         public int textures, entities, recipes, textChunks, embeddings;

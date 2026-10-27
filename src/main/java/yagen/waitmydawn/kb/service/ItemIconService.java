@@ -25,8 +25,8 @@ public final class ItemIconService {
             c.setAutoCommit(false); c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
             var nativeIcons = new TreeMap<String, Asset>(); var flatIcons = new TreeMap<String, Asset>();
             if (profile != null && !profile.compatibility().equals("CONFLICT")) {
-                try (var p = c.prepareStatement("SELECT i.item_id,i.image_id,a.relative_path,i.status FROM rag_item_icon i LEFT JOIN rag_image_asset a ON a.id=i.image_id WHERE i.profile_id=? AND i.variant='default' ORDER BY i.item_id")) {
-                    p.setString(1, active); try (var r = p.executeQuery()) { while (r.next()) nativeIcons.put(r.getString(1), new Asset(r.getString(2),r.getString(3),r.getString(4))); }
+                try (var p = c.prepareStatement("SELECT i.item_id,i.image_id,a.relative_path,i.status,i.variant FROM rag_item_icon i LEFT JOIN rag_image_asset a ON a.id=i.image_id WHERE i.profile_id=? ORDER BY i.item_id,i.variant")) {
+                    p.setString(1, active); try (var r = p.executeQuery()) { while (r.next()) nativeIcons.put(r.getString(1)+"|"+r.getString(5), new Asset(r.getString(2),r.getString(3),r.getString(4))); }
                 }
             }
             try (var s = c.createStatement(); var r = s.executeQuery("SELECT i.id,i.image_id,a.relative_path,i.status FROM rag_item_static_icon i LEFT JOIN rag_image_asset a ON a.id=i.image_id ORDER BY i.id")) {
@@ -66,10 +66,23 @@ public final class ItemIconService {
             return id;
         }
         public Icon item(String id,boolean stateful) {
-            if(stateful)return missing(id,"指定组件/NBT 状态尚未导出");
+            return item(id,stateful,null);
+        }
+        public Icon item(String id,boolean stateful,com.fasterxml.jackson.databind.JsonNode state) {
+            if(stateful) {
+                if(id==null||state==null)return missing(id,"指定组件/NBT 状态尚未导出");
+                try {
+                    String variant=NativeIconPack.stateVariant(state);var asset=nativeIcons.get(id+"|"+variant);
+                    if(asset!=null&&"TRANSPARENT".equals(asset.status()))return transparent(id,asset);
+                    var image=load(asset,"OK");
+                    return image==null?missing(id,"指定组件/NBT 状态尚未导出："+variant):new Icon(id,name(id),asset.id(),"NATIVE","实机精确状态 "+variant,image);
+                }catch(java.io.IOException invalid){return missing(id,"指定组件/NBT 状态格式无效");}
+            }
             if(id==null)return missing(null,"动态产物，不能推断精确图标");
             return cache.computeIfAbsent(id, key -> {
-                var nativeIcon=nativeIcons.get(key); var nativeImage=load(nativeIcon,"OK");
+                var nativeIcon=nativeIcons.get(key+"|default");
+                if(nativeIcon!=null&&"TRANSPARENT".equals(nativeIcon.status()))return transparent(key,nativeIcon);
+                var nativeImage=load(nativeIcon,"OK");
                 if(nativeImage!=null)return new Icon(key,name(key),nativeIcon.id(),"NATIVE","实机默认状态",nativeImage);
                 var flat=flatIcons.get(key); var flatImage=load(flat,"FLAT_MODEL");
                 if(flatImage!=null)return new Icon(key,name(key),flat.id(),"JAR_FLAT","JAR 单层平面候选，未验证运行时着色",flatImage);
@@ -88,12 +101,17 @@ public final class ItemIconService {
                 }
             }
             Icon selected=null;
-            for(String id:candidates) { var icon=item(id,ingredient.stateful()); if(selected==null || rank(icon)<rank(selected))selected=icon; }
+            for(String id:candidates) { var icon=item(id,ingredient.stateful(),ingredient.state()); if(selected==null || rank(icon)<rank(selected))selected=icon; }
             if(selected==null)selected=missing(ingredient.alternatives().isEmpty()?null:ingredient.alternatives().getFirst().label(),"材料标签或候选未解析");
             if(ingredient.alternatives().stream().anyMatch(RecipePlan.Alternative::tag))warnings.add("标签候选来自 JAR 声明，未确认整合包运行时覆盖。");
             return new IngredientIcon(ingredient,selected,List.copyOf(candidates),List.copyOf(warnings));
         }
-        private static int rank(Icon icon) { return icon.source().equals("NATIVE")?0:icon.source().equals("JAR_FLAT")?1:2; }
+        private static int rank(Icon icon) { return Set.of("NATIVE","NATIVE_TRANSPARENT").contains(icon.source())?0:icon.source().equals("JAR_FLAT")?1:2; }
+        private Icon transparent(String id,Asset asset) {
+            var image=load(asset,"TRANSPARENT");
+            return image==null?missing(id,"完全透明图标缓存丢失或校验不符"):
+                    new Icon(id,name(id),asset.id(),"NATIVE_TRANSPARENT","实机完全透明（本次 GUI 渲染无可见像素）",image);
+        }
         private Icon missing(String id,String reason) { return new Icon(id,id==null?"未确定物品":name(id),null,"MISSING",reason,null); }
         private BufferedImage load(Asset asset,String status) {
             if(asset==null || !status.equals(asset.status()) || asset.id()==null || asset.path()==null)return null;

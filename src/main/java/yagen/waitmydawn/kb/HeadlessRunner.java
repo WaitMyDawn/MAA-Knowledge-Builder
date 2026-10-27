@@ -50,6 +50,7 @@ public class HeadlessRunner {
         yagen.waitmydawn.kb.config.NetworkBootstrap.configure();
         String dataDir = null;
         String modsFolder = null;
+        String gameJar=null,gameLoader=null,gameVersion=null;
         String testFile = "test-questions.json";
         String webTestFile = "test-web.json";
         String webTestDir = null;
@@ -58,6 +59,7 @@ public class HeadlessRunner {
         boolean isolated = false;
         boolean useSavedKey = false;
         boolean doScan = false;
+        boolean doBindUrls = false;
         boolean doBuild = false;
         boolean appendBuild = false;
         var additionalSources=new java.util.ArrayList<BuildRequest.Source>();
@@ -86,8 +88,12 @@ public class HeadlessRunner {
                 case "--isolated" -> isolated = true;
                 case "--use-saved-key" -> useSavedKey = true;
                 case "--data-dir" -> dataDir = args[++i];
+                case "--game-jar" -> gameJar=args[++i];
+                case "--game-loader" -> gameLoader=args[++i];
+                case "--game-version" -> gameVersion=args[++i];
                 case "--scan" -> { doScan = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) modsFolder = args[++i]; }
                 case "--build" -> { doBuild = true; doScan = true; if (i + 1 < args.length && !args[i + 1].startsWith("--")) modsFolder = args[++i]; }
+                case "--bind-urls" -> {doBindUrls=true;doScan=true;if(i+1<args.length&&!args[i+1].startsWith("--"))modsFolder=args[++i];}
                 case "--append" -> appendBuild=true;
                 case "--build-url" -> {doBuild=true;additionalSources.add(BuildRequest.Source.of(BuildRequest.Kind.URL,args[++i]));}
                 case "--build-documents" -> {doBuild=true;additionalSources.add(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,args[++i]));}
@@ -263,40 +269,27 @@ public class HeadlessRunner {
                 System.exit(1);
             }
 
+            var detector=new GameEnvironmentDetector();
+            var candidates=gameJar==null?detector.discover(modsPath):detector.inspect(Path.of(gameJar)).map(List::of).orElse(List.of());
+            if(candidates.size()!=1)throw new IllegalArgumentException("请用 --game-jar 指定唯一的 Minecraft 本体 JAR，或将本体 JAR 放在模组目录／直属上级目录");
+            var candidate=candidates.getFirst();
+            var environment=new yagen.waitmydawn.kb.model.GameEnvironment(candidate.jar().toString(),gameLoader==null?candidate.loader():gameLoader,gameVersion==null?candidate.version():gameVersion);
+            new ScanEnvironmentStore(db).save(modsPath,environment);
+            System.out.println("[Scan environment] "+environment.summary());
             System.out.println("\n[Scan] Scanning JARs in: " + modsFolder);
-            JarScannerService scanner = new JarScannerService();
-            ModMetadataParser parser = new ModMetadataParser();
-            ModrinthBinder binder = new ModrinthBinder();
-            List<java.nio.file.Path> jars = scanner.scan(modsPath);
-            int count = 0;
-            for (var jar : jars) {
-                var entry = parser.parse(jar);
-                if (entry != null) {
-                    if(appendBuild) {
-                        var status=new JarBuildIndex(db).inspect(entry,JarBuildIndex.hash(jar));
-                        if(status!=JarBuildIndex.Status.NEW) {
-                            System.out.println("  ["+status+"] "+entry.getModId());
-                            continue;
-                        }
-                    }
-                    if (!"minecraft".equals(entry.getModId()) && !"vanilla".equals(entry.getLoader())) {
-                        var bind = binder.bind(jar, entry.getModId(), entry.getDisplayName(),
-                                entry.getVersion(), entry.getMcVersion(), entry.getLoader());
-                        if (bind != null) entry.setSource(bind.source());
-                        if (bind != null && bind.slug() != null) {
-                            entry.setSlug(bind.slug());
-                            entry.setModrinthUrl(bind.modrinthUrl());
-                            entry.setSource(bind.source());
-                        }
-                    }
-                    ModrinthBinder.preserveKnownBinding(entry, db.findModEntry(entry.getModId()));
-                    if(!doBuild) db.saveModEntry(entry);
-                    scannedEntries.add(entry);
-                    count++;
-                    System.out.println("  [" + count + "] " + entry.getModId() + (entry.getSlug() != null ? " -> " + entry.getSlug() : ""));
-                }
-            }
-            System.out.println("[Scan] Found " + count + " mods");
+            var scan=new ModScanService().scan(modsPath,environment,db,appendBuild,new ModrinthBinder(),false,(done,total,entry,message)->System.out.println("[Scan "+done+"/"+total+"] "+message));
+            scannedEntries.addAll(scan.mods());System.out.println(scan.metrics().summary());if(scan.warning()!=null)System.out.println(scan.warning());
+
+        }
+
+        if(doBindUrls) {
+            if(modsFolder==null)throw new IllegalArgumentException("--bind-urls requires a mods folder");
+            var scraper=new WikiScraperService();scraper.setResourceDatabase(db);var binder=new ModUrlBinder(scraper);var store=new ModBindingStore(db);var scanCache=new JarScanCache(Path.of(modsFolder));
+            try{for(var entry:scannedEntries){
+                var previous=entry.getMcmodBinding();
+                if(previous==null||!Set.of("FOUND","NOT_FOUND","DISABLED","BUILTIN").contains(previous.status()))entry.setMcmodBinding(binder.bind(entry));
+                store.save(entry);scanCache.updateBinding(entry);System.out.println("[Bind Url] "+entry.getModId()+" "+entry.getMcmodBinding());
+            }}finally{if(scanCache.environment()!=null)scanCache.save(scanCache.environment());}
         }
 
         if (doBuild) {
@@ -575,8 +568,12 @@ public class HeadlessRunner {
               --data-dir <path>     Data directory for database and resources
 
             Operations:
-              --scan <mods-folder>  Scan JAR files and bind Modrinth slugs
-              --build <mods-folder> Build knowledge base (implies --scan)
+              --game-jar <file>     Select Minecraft client JAR for scan environment
+              --game-loader <id>    neoforge / forge / fabric (override detected loader)
+              --game-version <id>   Override detected Minecraft version
+              --scan <mods-folder>  Scan JAR files using one game environment
+              --bind-urls [folder]  Bind MC百科 candidate URLs after scan; save review drafts
+              --build <mods-folder> Build knowledge base from saved bindings (implies --scan)
               --build-url <url>    Import a URL (repeatable)
               --build-documents <path> Import a document directory (repeatable)
               --append            Preserve existing knowledge; import new content only

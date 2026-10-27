@@ -20,16 +20,17 @@ public final class ItemIconStore {
         try(var s=c.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS rag_item_icon_profile(id VARCHAR(64) PRIMARY KEY,source_id VARCHAR(64) NOT NULL,manifest_hash VARCHAR(64) NOT NULL,environment_hash VARCHAR(64) NOT NULL,origin VARCHAR(32) NOT NULL,compatibility VARCHAR(40) NOT NULL,manifest_json CLOB NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS rag_item_icon(id VARCHAR(64) PRIMARY KEY,profile_id VARCHAR(64) NOT NULL,item_id VARCHAR(500) NOT NULL,variant VARCHAR(40) NOT NULL,image_id VARCHAR(64),status VARCHAR(32) NOT NULL,error_text VARCHAR(2000),UNIQUE(profile_id,item_id,variant))");
+            s.execute("ALTER TABLE rag_item_icon ALTER COLUMN variant VARCHAR(80)");
         }
     }
     public void importPack(BuildRequest.Source source,NativeIconPack.Pack prepared,BuildSourceProcessor.Context context)throws Exception {
         var pack=NativeIconPack.read(prepared.root());
         if(!pack.manifestHash().equals(prepared.manifestHash()))throw new IllegalStateException("预检查后导出包内容发生变化");
-        try(var c=db.getConnection();var p=c.prepareStatement("SELECT manifest_hash FROM rag_item_icon_profile WHERE source_id=?")) {
-            p.setString(1,source.id());try(var r=p.executeQuery()) {if(r.next()) {
-                if(r.getString(1).equals(pack.manifestHash()))context.result().reusedIconPacks++;
-                else {context.result().conflicts++;context.result().warnings.add("导出包内容变化，补充构建保留原版本；更新请使用完整重建："+source.location());}
-                return;
+        String previousSelected=activeProfileId();boolean updateSelection=false;
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT id,manifest_hash,environment_hash FROM rag_item_icon_profile WHERE source_id=?")) {
+            p.setString(1,source.id());try(var r=p.executeQuery()) {while(r.next()) {
+                if(r.getString(2).equals(pack.manifestHash())){context.result().reusedIconPacks++;return;}
+                if(r.getString(1).equals(previousSelected)&&r.getString(3).equals(pack.environmentHash()))updateSelection=true;
             }}
         }
         String compatibility=compatibility(pack,db.findAllModEntries());
@@ -39,19 +40,21 @@ public final class ItemIconStore {
         }
         for(var icon:pack.icons()) {
             context.checkCancelled();String image=null;
-            if(icon.status().equals("OK")) {
+            if(Set.of("OK","TRANSPARENT").contains(icon.status())) {
                 NativeIconPack.validate(pack.root(),icon,pack.rendering().path("width").asInt());
                 byte[] bytes;try(var input=Files.newInputStream(ArchivePaths.resolve(pack.root(),icon.file()),LinkOption.NOFOLLOW_LINKS)){bytes=input.readNBytes(8*1024*1024+1);}
                 if(bytes.length>8*1024*1024)throw new IllegalStateException("图标超过导入上限");
                 var asset=context.images().put(bytes);
                 if(!asset.id().equals(icon.sha256()))throw new IllegalStateException("导入期间图标内容发生变化");
-                context.content().saveImage(asset);image=asset.id();context.result().nativeIcons++;
+                context.content().saveImage(asset);image=asset.id();
+                if(icon.status().equals("TRANSPARENT"))context.result().transparentNativeIcons++;else context.result().nativeIcons++;
             } else context.result().failedNativeIcons++;
             try(var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_item_icon VALUES(?,?,?,?,?,?,?)")) {
-                p.setString(1,BuildRequest.fingerprint(profile+"\n"+icon.itemId()));p.setString(2,profile);p.setString(3,icon.itemId());p.setString(4,"default");p.setString(5,image);p.setString(6,icon.status());p.setString(7,icon.error());p.executeUpdate();
+                p.setString(1,BuildRequest.fingerprint(profile+"\n"+icon.itemId()+ (icon.variant().equals("default")?"":"\n"+icon.variant())));p.setString(2,profile);p.setString(3,icon.itemId());p.setString(4,icon.variant());p.setString(5,image);p.setString(6,icon.status());p.setString(7,icon.error());p.executeUpdate();
             }
         }
         context.result().nativeIconPacks++;
+        if(updateSelection&&!compatibility.equals("CONFLICT")){selectProfile(profile);context.result().warnings.add("已更新当前来源的图标环境；旧会话图片快照保持不变。");}
         context.result().warnings.add("图标包已独立存储（"+pack.origin()+"，"+compatibility+"）；请在问答页选择图标环境，本次保留 JAR 配方与回退资源。");
         if(context.progress()!=null)context.progress().onProgress("icons",context.result().nativeIcons,pack.icons().size(),"已导入图标包："+source.location());
     }
@@ -72,7 +75,7 @@ public final class ItemIconStore {
     }
     public List<Profile> profiles() {
         var mods = db.findAllModEntries(); var result = new ArrayList<Profile>();
-        try (var c = db.getConnection(); var s = c.createStatement(); var r = s.executeQuery("SELECT p.*,s.location,(SELECT COUNT(*) FROM rag_item_icon i WHERE i.profile_id=p.id AND i.status='OK') AS icon_count FROM rag_item_icon_profile p JOIN rag_knowledge_source s ON s.id=p.source_id ORDER BY p.id")) {
+        try (var c = db.getConnection(); var s = c.createStatement(); var r = s.executeQuery("SELECT p.*,s.location,(SELECT COUNT(*) FROM rag_item_icon i WHERE i.profile_id=p.id AND i.status IN ('OK','TRANSPARENT')) AS icon_count FROM rag_item_icon_profile p JOIN rag_knowledge_source s ON s.id=p.source_id ORDER BY p.id")) {
             while (r.next()) {
                 var environment = JSON.readTree(r.getString("manifest_json")).path("environment");
                 result.add(new Profile(r.getString("id"),environment.path("minecraftVersion").asText(),environment.path("loader").asText(),r.getString("origin"),compatibility(environment,mods),r.getString("manifest_hash"),r.getString("environment_hash"),r.getInt("icon_count"),r.getString("location")));
@@ -94,12 +97,12 @@ public final class ItemIconStore {
         } catch (SQLException e) { throw new IllegalStateException("图标环境选择保存失败",e); }
     }
     public Optional<StoredIcon> findDefault(String profileId,String itemId) {
-        try(var c=db.getConnection();var p=c.prepareStatement("SELECT p.origin,p.compatibility,i.image_id,a.relative_path FROM rag_item_icon i JOIN rag_item_icon_profile p ON p.id=i.profile_id JOIN rag_image_asset a ON a.id=i.image_id WHERE i.profile_id=? AND i.item_id=? AND i.variant='default' AND i.status='OK'")) {
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT p.origin,p.compatibility,i.image_id,a.relative_path FROM rag_item_icon i JOIN rag_item_icon_profile p ON p.id=i.profile_id JOIN rag_image_asset a ON a.id=i.image_id WHERE i.profile_id=? AND i.item_id=? AND i.variant='default' AND i.status IN ('OK','TRANSPARENT')")) {
             p.setString(1,profileId);p.setString(2,itemId);try(var r=p.executeQuery()) {return r.next()?Optional.of(new StoredIcon(profileId,itemId,r.getString(3),r.getString(4),r.getString(1),r.getString(2))):Optional.empty();}
         } catch(SQLException e){throw new IllegalStateException("图标精确查询失败",e);}
     }
     public boolean hasUsableIcons() {
-        try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT COUNT(*) FROM rag_item_icon WHERE status='OK'")) {r.next();return r.getLong(1)>0;}
+        try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT COUNT(*) FROM rag_item_icon WHERE status IN ('OK','TRANSPARENT')")) {r.next();return r.getLong(1)>0;}
         catch(SQLException e){throw new IllegalStateException("图标数量查询失败",e);}
     }
 }

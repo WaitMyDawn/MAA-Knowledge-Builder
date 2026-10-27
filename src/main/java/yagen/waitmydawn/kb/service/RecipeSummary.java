@@ -17,6 +17,7 @@ public final class RecipeSummary {
             result.append("工作站：").append(plan.kind().station).append("；").append(plan.kind().label).append('\n');
             if(plan.output().dynamic())result.append("产物：由基底及状态决定，静态 JSON 无法确定精确物品状态。\n");
             else result.append("产物：").append(plan.output().itemId()).append(" × ").append(plan.output().count()).append('\n');
+            if(plan.output().stateful())result.append("产物状态：").append(stateSummary(plan.output().state())).append('\n');
             counts.forEach((id,count)->result.append("- ").append(id).append(" × ").append(count).append('\n'));
             if(root.path("pattern").isArray()) {
                 result.append("原始槽位图案（空格为空槽）：\n```\n");root.path("pattern").forEach(row->result.append(row.asText()).append('\n'));result.append("```\n符号对应：\n");
@@ -30,6 +31,11 @@ public final class RecipeSummary {
     private static String ingredient(RecipePlan.Ingredient ingredient) {
         if(ingredient.unsupported()!=null)return ingredient.unsupported();
         var choices=ingredient.alternatives().stream().map(a->(a.tag()?"标签 #":"")+a.id()).toList();
-        return choices.size()==1?choices.getFirst():"任选其一("+String.join(" / ",choices)+")";
+        String label=choices.size()==1?choices.getFirst():"任选其一("+String.join(" / ",choices)+")";
+        return ingredient.stateful()?label+"（指定状态："+stateSummary(ingredient.state())+"）":label;
+    }
+    private static String stateSummary(com.fasterxml.jackson.databind.JsonNode state) {
+        if(state==null)return "未完整解析，须核对原始 JSON";
+        String text=state.toString();return text.length()>600?text.substring(0,600)+"…（完整状态见原始 JSON）":text;
     }
 }

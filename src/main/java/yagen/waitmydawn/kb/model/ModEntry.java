@@ -20,6 +20,12 @@ public class ModEntry {
     private String slug;             // Modrinth slug (Phase 2 绑定)
     private String modrinthUrl;      // Modrinth 项目 URL
     private String source;           // modrinth / curseforge / unknown
+    private ModUrlBinding mcmodBinding;
+    private String scanStatus;
+    public ModUrlBinding getMcmodBinding(){return mcmodBinding;}
+    public void setMcmodBinding(ModUrlBinding value){mcmodBinding=value;}
+    @com.fasterxml.jackson.annotation.JsonIgnore public String getScanStatus(){return scanStatus;}
+    public void setScanStatus(String value){scanStatus=value;}
 
     public ModEntry() {}
 

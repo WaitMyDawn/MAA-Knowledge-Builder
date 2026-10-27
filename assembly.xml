@@ -35,7 +35,7 @@
         <fileSet>
             <directory>${project.basedir}/docs</directory>
             <outputDirectory>docs</outputDirectory>
-            <includes><include>retrieval-diagnostics.md</include><include>mkb-export-v1.md</include><include>recipes-r3.md</include></includes>
+            <includes><include>retrieval-diagnostics.md</include><include>mkb-export-v1.md</include><include>recipes-r3.md</include><include>export-r4.md</include><include>guide-images-r5.md</include><include>source-lifecycle-r6.md</include><include>bind-url-workflow.md</include><include>scan-environment.md</include><include>scan-progress-cache.md</include><include>jar-language-import.md</include></includes>
         </fileSet>
         <fileSet>
             <directory>${project.basedir}/examples/MKB-Export</directory>

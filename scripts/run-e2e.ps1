@@ -21,7 +21,7 @@ try {
     }
     $arguments = @('-Djava.net.preferIPv6Addresses=system', '-Dstdout.encoding=UTF-8', '-Dstderr.encoding=UTF-8', '-Xmx2g', '-cp', 'target/classes;target/lib/*',
         'yagen.waitmydawn.kb.HeadlessRunner', '--isolated', '--use-saved-key', '--data-dir', $DataDirectory,
-        '--build', $ModsDirectory, '--test', 'test-questions.json', '--eval', 'golden-set.json',
+        '--build', $ModsDirectory, '--bind-urls', '--test', 'test-questions.json', '--eval', 'golden-set.json',
         '--tag', 'from-zero', '--repeat', '1', '--judge')
     if ($FailUnder -gt 0) { $arguments += @('--fail-under', $FailUnder.ToString([System.Globalization.CultureInfo]::InvariantCulture)) }
     Write-Output ('Artifacts: ' + $DataDirectory)

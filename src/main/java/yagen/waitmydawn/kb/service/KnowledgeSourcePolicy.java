@@ -13,6 +13,11 @@ public final class KnowledgeSourcePolicy {
             policy += "；版本限制：矛（spear）是 Java 1.21.11 新增武器，当前安装版没有此物品。不要把新版 Wiki 的矛及其配套战术推荐为当前版本玩法。来源：https://www.minecraft.net/en-us/article/minecraft-java-edition-1-21-11";
         return policy;
     }
+    public static String describe(yagen.waitmydawn.kb.model.ModEntry mod) {
+        if ("minecraft".equals(mod.getModId())) return describe(mod.getModId(),mod.getMcVersion());
+        var binding=mod.getMcmodBinding();
+        return binding==null?"百科来源按已构建目录确定":binding.url()==null?"仅使用本地模组资料":"已绑定百科来源："+binding.url()+"；JAR 配方与注册名优先；百科绑定为用户可校对的候选";
+    }
     private static boolean before(String version, String minimum) {
         if (version == null || !version.matches("[0-9]+\\.[0-9]+(?:\\.[0-9]+)?")) return false;
         try {

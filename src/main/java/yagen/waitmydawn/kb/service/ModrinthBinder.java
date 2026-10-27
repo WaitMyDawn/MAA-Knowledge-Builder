@@ -22,6 +22,9 @@ public class ModrinthBinder {
     private final Transport transport;
     private final Map<String, JsonNode> cache = new HashMap<>();
     private long unavailableUntil;
+    private long requestCount,httpNanos;
+    public long requestCount(){return requestCount;}
+    public long httpNanos(){return httpNanos;}
 
     public record BindResult(String slug, String modrinthUrl, String source) {}
     record Response(int status, String body) {}
@@ -41,16 +44,24 @@ public class ModrinthBinder {
         };
     }
 
+    public BindResult bind(Path jar,String modId,String displayName,String modVersion,yagen.waitmydawn.kb.model.GameEnvironment environment){
+        return bind(jar,modId,displayName,modVersion,environment.minecraftVersion(),environment.loader());
+    }
+
     public BindResult bind(String modId, String displayName, String modVersion, String mcVersion, String loader) {
         return bind(null, modId, displayName, modVersion, mcVersion, loader);
     }
 
     public BindResult bind(Path jar, String modId, String displayName,
                            String modVersion, String mcVersion, String loader) {
+        return bindHashed(jar,null,modId,displayName,modVersion,mcVersion,loader);
+    }
+    public BindResult bindHashed(Path jar,String sha512,String modId,String displayName,String modVersion,String mcVersion,String loader){
+        if(sha512!=null&&!sha512.matches("[0-9a-f]{128}"))throw new IllegalArgumentException("无效的 JAR SHA-512");
         if (System.nanoTime() < unavailableUntil) return new BindResult(null, null, "modrinth-unavailable");
         try {
             if (jar != null) {
-                JsonNode version = request("/version_file/" + sha512(jar) + "?algorithm=sha512");
+                JsonNode version = request("/version_file/" + (sha512==null?sha512(jar):sha512) + "?algorithm=sha512");
                 if (version != null) {
                     String projectId = version.path("project_id").asText();
                     if (projectId.isBlank()) throw new IOException("Hash response has no project_id");
@@ -113,17 +124,26 @@ public class ModrinthBinder {
             JsonNode versions = request("/project/" + encode(project) + "/version" + filters);
             if (versions == null || !versions.isArray()) throw new IOException("Invalid project version response");
             for (JsonNode version : versions) {
-                if (modVersion != null && modVersion.equals(version.path("version_number").asText())) return slug;
+                if (matchesVersion(modVersion,version.path("version_number").asText(),mcVersion,loader)) return slug;
             }
         }
         return null;
+    }
+
+    /** 部分发布使用“模组版本+加载器-游戏版本”，只接受完整且已知的环境后缀。 */
+    private static boolean matchesVersion(String installed,String published,String minecraft,String loader){
+        if(installed==null)return false;
+        if(installed.equals(published))return true;
+        return minecraft!=null&&loader!=null&&published.equals(installed+"+"+loader+"-"+minecraft);
     }
 
     private JsonNode request(String path) throws IOException, InterruptedException {
         if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
         JsonNode existing = cache.get(path);
         if (existing != null) return existing;
-        Response response = transport.get(URI.create(API + path));
+        Response response;
+        long started=System.nanoTime();requestCount++;
+        try{response=transport.get(URI.create(API+path));}finally{httpNanos+=System.nanoTime()-started;}
         if (response.status() == 404) return null;
         if (response.status() != 200) throw new IOException("Modrinth HTTP " + response.status());
         JsonNode result = MAPPER.readTree(response.body());

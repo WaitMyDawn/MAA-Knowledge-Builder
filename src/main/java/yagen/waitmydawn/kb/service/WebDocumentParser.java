@@ -7,7 +7,9 @@ import java.util.*;
 
 /** 在正文 DOM 中保留段落、章节和图片位置；不使用整页文本回退处理百科。 */
 final class WebDocumentParser {
-    record ImageRef(String url, String caption) {}
+    record ImageRef(String url, String caption,String stepText) {
+        ImageRef(String url,String caption){this(url,caption,"");}
+    }
     record Block(String text, String heading, List<ImageRef> images,String headingPath,String lineage,String kind,String tableId) {
         Block(String text,String heading,List<ImageRef> images) {this(text,heading,images,heading,"/root/legacy-"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(heading).substring(0,12)+"/","PARAGRAPH",null);}
     }
@@ -135,10 +137,27 @@ final class WebDocumentParser {
                 if (caption.isBlank()) caption = img.attr("title").strip();
                 Element figure = img.closest("figure");
                 if (figure != null && figure.selectFirst("figcaption") != null) caption = figure.selectFirst("figcaption").text();
-                images.putIfAbsent(url, new ImageRef(url, caption));
+                images.putIfAbsent(url, new ImageRef(url, caption,inlineContext(block,img)));
             } catch (IllegalArgumentException ignored) { }
         }
         return List.copyOf(images.values());
+    }
+    private static String inlineContext(Element block,Element image) {
+        var nodes=new ArrayList<org.jsoup.nodes.Node>();
+        org.jsoup.select.NodeTraversor.traverse(new org.jsoup.select.NodeVisitor(){
+            public void head(org.jsoup.nodes.Node node,int depth){nodes.add(node);}
+            public void tail(org.jsoup.nodes.Node node,int depth){}
+        },block);
+        var segment=new StringBuilder();String before="";boolean found=false;
+        for(var node:nodes) {
+            if(node instanceof Element element&&element.tagName().equals("img")) {
+                if(element==image){before=segment.toString().strip();segment.setLength(0);found=true;}
+                else if(found)break;else segment.setLength(0);
+            }else if(node instanceof org.jsoup.nodes.TextNode text)segment.append(text.getWholeText()).append(' ');
+            else if(node instanceof Element element&&element.tagName().equals("br"))segment.append('\n');
+        }
+        if(before.length()>=6)return before.substring(Math.max(0,before.length()-900));
+        String after=segment.toString().strip();return after.substring(0,Math.min(after.length(),900));
     }
 
     private static boolean small(String value) {

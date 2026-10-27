@@ -10,6 +10,7 @@ import yagen.waitmydawn.kb.model.ModEntry;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.jar.JarEntry;
@@ -36,7 +37,9 @@ public class ModMetadataParser {
      * 解析 JAR 文件，提取元数据。
      * 返回 ModEntry (可能为 null 表示无法解析)。
      */
-    public ModEntry parse(Path jarPath) {
+    public ModEntry parse(Path jarPath) { return parse(jarPath,null); }
+
+    public ModEntry parse(Path jarPath,yagen.waitmydawn.kb.model.GameEnvironment environment) {
         ModEntry entry = new ModEntry();
         entry.setJarPath(jarPath.toAbsolutePath().toString());
         entry.setJarFileName(jarPath.getFileName().toString());
@@ -46,7 +49,7 @@ public class ModMetadataParser {
             // 优先级 1: neoforge.mods.toml
             JarEntry neoforgeEntry = jar.getJarEntry("META-INF/neoforge.mods.toml");
             if (neoforgeEntry != null) {
-                parseToml(jar, neoforgeEntry, entry, "neoforge");
+                parseToml(jar, neoforgeEntry, entry, "neoforge",environment);
                 log.debug("Analysis successful (neoforge): {} : modId={}", jarPath.getFileName(), entry.getModId());
                 return entry;
             }
@@ -54,7 +57,7 @@ public class ModMetadataParser {
             // 优先级 2: mods.toml (Forge)
             JarEntry forgeEntry = jar.getJarEntry("META-INF/mods.toml");
             if (forgeEntry != null) {
-                parseToml(jar, forgeEntry, entry, "forge");
+                parseToml(jar, forgeEntry, entry, "forge",environment);
                 log.debug("Analysis successful (forge): {} → modId={}", jarPath.getFileName(), entry.getModId());
                 return entry;
             }
@@ -63,6 +66,7 @@ public class ModMetadataParser {
             JarEntry fabricEntry = jar.getJarEntry("fabric.mod.json");
             if (fabricEntry != null) {
                 parseFabricJson(jar, fabricEntry, entry);
+                if(environment!=null)entry.setMcVersion(environment.minecraftVersion());
                 log.debug("Analysis successful (fabric): {} → modId={}", jarPath.getFileName(), entry.getModId());
                 return entry;
             }
@@ -73,7 +77,7 @@ public class ModMetadataParser {
                 entry.setDisplayName("Minecraft");
                 entry.setLoader("vanilla");
                 entry.setSource("vanilla");
-                entry.setMcVersion(detectMcVersionFromJarName(jarPath.getFileName().toString()));
+                entry.setMcVersion(environment==null?detectMcVersionFromJarName(jarPath.getFileName().toString()):environment.minecraftVersion());
                 log.debug("识别为 Minecraft 本体: {} → mcVersion={}", jarPath.getFileName(), entry.getMcVersion());
                 return entry;
             }
@@ -81,7 +85,10 @@ public class ModMetadataParser {
             log.warn("未找到模组元数据文件: {}", jarPath.getFileName());
             return null;
 
-        } catch (IOException e) {
+        } catch (java.util.concurrent.CancellationException e) {
+            throw e;
+        } catch (IOException | RuntimeException e) {
+            if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("元数据解析已取消");
             log.error("解析 JAR 失败: {} — {}", jarPath.getFileName(), e.getMessage());
             return null;
         }
@@ -91,13 +98,13 @@ public class ModMetadataParser {
      * 解析 neoforge.mods.toml 或 mods.toml。
      * @param loader 取值为 neoforge/forge
      */
-    private void parseToml(JarFile jar, JarEntry entry, ModEntry modEntry, String loader) throws IOException {
+    private void parseToml(JarFile jar, JarEntry entry, ModEntry modEntry, String loader,yagen.waitmydawn.kb.model.GameEnvironment environment) throws IOException {
         modEntry.setLoader(loader);
 
         // 将 TOML 内容写入临时字符串，用 night-config 解析
         String content;
         try (InputStream is = jar.getInputStream(entry)) {
-            content = new String(is.readAllBytes());
+            content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
         }
 
         // night-config toml 不支持直接从字符串解析，写入临时文件
@@ -113,20 +120,21 @@ public class ModMetadataParser {
                 List<com.electronwill.nightconfig.core.Config> modsList = toml.get("mods");
                 if (modsList != null && !modsList.isEmpty()) {
                     com.electronwill.nightconfig.core.Config modSection = modsList.get(0);
-                    modEntry.setModId(modSection.get("modId"));
-                    modEntry.setDisplayName(modSection.get("displayName"));
-                    modEntry.setVersion(modSection.get("version"));
-                    modEntry.setDescription(modSection.get("description"));
-                    modEntry.setAuthors(modSection.get("authors"));
-                    modEntry.setLogoFile(modSection.get("logoFile"));
+                    modEntry.setModId(metadataText(modSection.get("modId")));
+                    modEntry.setDisplayName(metadataText(modSection.get("displayName")));
+                    modEntry.setVersion(metadataText(modSection.get("version")));
+                    modEntry.setDescription(metadataText(modSection.get("description")));
+                    modEntry.setAuthors(metadataText(modSection.get("authors")));
+                    modEntry.setLogoFile(metadataText(modSection.get("logoFile")));
                 }
 
                 // 根级别读取
-                modEntry.setLicense(toml.get("license"));
-                modEntry.setIssueTrackerUrl(toml.get("issueTrackerURL"));
+                modEntry.setLicense(metadataText(toml.get("license")));
+                modEntry.setIssueTrackerUrl(metadataText(toml.get("issueTrackerURL")));
 
                 // [[dependencies.{modId}]] → versionRange → MC 版本推断
-                inferMcVersionFromToml(toml, modEntry, loader);
+                if(environment==null)inferMcVersionFromToml(toml, modEntry, loader);
+                else modEntry.setMcVersion(environment.minecraftVersion());
             }
         } finally {
             if (tmpFile != null) {
@@ -151,8 +159,8 @@ public class ModMetadataParser {
 
         // 通过依赖关系获得MC版本
         for (com.electronwill.nightconfig.core.Config dep : allDeps) {
-            String depModId = dep.get("modId");
-            String versionRange = dep.get("versionRange");
+            String depModId = metadataText(dep.get("modId"));
+            String versionRange = metadataText(dep.get("versionRange"));
             if ("minecraft".equalsIgnoreCase(depModId) && versionRange != null) {
                 String mcVersion = extractMcFromRange(versionRange);
                 if (mcVersion != null) {
@@ -164,6 +172,14 @@ public class ModMetadataParser {
         entry.setMcVersion(null);
     }
 
+    /** TOML 字段允许字符串和列表；结构化对象不能隐式转换成注册名或版本号。 */
+    private static String metadataText(Object value) {
+        if(value instanceof String text)return text;
+        if(value instanceof Number || value instanceof Boolean)return value.toString();
+        if(value instanceof Collection<?> values)return values.stream().map(ModMetadataParser::metadataText).filter(Objects::nonNull).collect(java.util.stream.Collectors.joining(", "));
+        return null;
+    }
+
     /** Extract MC version directly from versionRange like "[1.21.1,)" */
     private String extractMcFromRange(String versionRange) {
         if (versionRange == null) return null;
@@ -173,16 +189,13 @@ public class ModMetadataParser {
         return null;
     }
 
-    /**
-     * 解析 fabric.mod.json。
-     * 未确认：不熟悉且不用fabric
-     */
+    /** 解析 Fabric 模组元数据。 */
     private void parseFabricJson(JarFile jar, JarEntry entry, ModEntry modEntry) throws IOException {
         modEntry.setLoader("fabric");
 
         String content;
         try (InputStream is = jar.getInputStream(entry)) {
-            content = new String(is.readAllBytes());
+            content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
         }
 
         JsonNode root = mapper.readTree(content);

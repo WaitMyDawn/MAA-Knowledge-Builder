@@ -398,7 +398,7 @@ public class QaPipeline {
         resolvedEntities.forEach(e->relevantMods.add(e.modId()));
         vectorResults.forEach(v->{ if(v.modId()!=null && !v.modId().isBlank()) relevantMods.add(v.modId()); });
         result.sourceScope=baseDb.findAllModEntries().stream().filter(mod->relevantMods.isEmpty() || relevantMods.contains(mod.getModId())).map(mod -> mod.getModId()+": modVersion="+mod.getVersion()
-                +", Minecraft="+mod.getMcVersion()+", loader="+mod.getLoader()+", "+KnowledgeSourcePolicy.describe(mod.getModId(), mod.getMcVersion())).collect(java.util.stream.Collectors.joining("\n"))
+                +", Minecraft="+mod.getMcVersion()+", loader="+mod.getLoader()+", "+KnowledgeSourcePolicy.describe(mod)).collect(java.util.stream.Collectors.joining("\n"))
                 +"\nnull 表示 JAR 元数据未提供版本。移植版本默认沿用原模组的百科机制知识；实际配方、注册名、纹理由安装 JAR 优先确定。仅证据指出具体差异时披露该差异，不把缺少移植版独立百科视为知识缺失。";
         var importedContext = imported;
         if (importedContext != null) {

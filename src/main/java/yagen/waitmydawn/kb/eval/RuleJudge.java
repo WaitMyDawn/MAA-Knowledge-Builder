@@ -25,6 +25,8 @@ import java.util.Locale;
  *   <li>knowledge_scope（资料快照的范围身份）</li>
  *   <li>source_url_any（回答实际引用的受控来源网址）</li>
  *   <li>answer_illustration_valid（实际展示且缓存有效的资料插图）</li>
+ *   <li>answer_image_grounding_valid（实际展示插图有来源和步骤，且没有已知操作冲突）</li>
+ *   <li>answer_image_purpose_any（实际展示且绑定有效的插图命中指定用途）</li>
  *   <li>answer_media_refs_valid（实际展示的图文引用均有效）</li>
  *   <li>answer_images_absent（本轮正文不展示图片）</li>
  * </ul>
@@ -109,7 +111,7 @@ public final class RuleJudge {
         double passedWeight = 0;
         boolean allRequiredPassed = true;
         for (GoldenSet.Assertion a : turn.assertions()) {
-            Outcome outcome = evaluate(a, obs);
+            Outcome outcome = evaluate(a, obs,turn.question());
             outcomes.add(outcome);
             double w = a.weight() > 0 ? a.weight() : 1.0;
             totalWeight += w;
@@ -134,7 +136,7 @@ public final class RuleJudge {
                 || kind.equals("answer_matches") || kind.equals("answer_contains_at_least");
     }
 
-    private static Outcome evaluate(GoldenSet.Assertion a, Observation obs) {
+    private static Outcome evaluate(GoldenSet.Assertion a, Observation obs,String question) {
         String answer = obs.answer() == null ? "" : obs.answer().replaceAll("\\[([^\\]]+)\\]\\([^)]*\\)", "$1").replace("**", "").replace("`", "");
         double weight = a.weight() > 0 ? a.weight() : 1.0;
         List<String> values = a.values() == null ? List.of() : a.values();
@@ -156,6 +158,15 @@ public final class RuleJudge {
                 int actual=obs.media()==null?0:obs.media().validIllustrations();
                 int minimum=a.min()==null?1:a.min();
                 ok=actual>=minimum;detail="valid illustrations="+actual+", min="+minimum;
+            }
+            case "answer_image_grounding_valid" -> {
+                var assessed=yagen.waitmydawn.kb.service.ImageGroundingAssessment.assess(question,obs.answer(),obs.artifacts());
+                ok=assessed.bound()>=(a.min()==null?1:a.min())&&assessed.mismatched()==0&&assessed.unbound()==0;detail=assessed.toString();
+            }
+            case "answer_image_purpose_any" -> {
+                var assessed=yagen.waitmydawn.kb.service.ImageGroundingAssessment.assess(question,obs.answer(),obs.artifacts());
+                long count=assessed.checks().stream().filter(c->c.state().equals("BOUND")&&values.contains(c.purpose())).count();
+                ok=count>=(a.min()==null?1:a.min());detail="displayed bound purpose matches="+count+"; expected="+values;
             }
             case "answer_media_refs_valid" -> {
                 ok=obs.media()!=null && obs.media().invalidReferences()==0 && obs.media().unavailable()==0;

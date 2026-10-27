@@ -62,6 +62,14 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
         });
     }
 
+    void processDocument(BuildRequest.Source source,String location,Context context)throws Exception {
+        Path file=Path.of(location).toRealPath(),root=Path.of(source.location()).toRealPath();
+        if(!file.startsWith(root)||!Files.isRegularFile(file)||Files.isSymbolicLink(Path.of(location))||Files.isSymbolicLink(Path.of(source.location()))
+                ||sensitive(file)||excluded(root,Path.of(location))||file.startsWith(dataDir.toRealPath()))throw new IOException("文档不在可读取的来源目录内");
+        String name=file.getFileName().toString();int dot=name.lastIndexOf('.');
+        if(dot<0)throw new IOException("文档没有扩展名");
+        importFile(file,name.substring(dot+1).toLowerCase(Locale.ROOT),source,context,new HashMap<>());
+    }
     private void importFile(Path file, String format, BuildRequest.Source source, Context context,
                             Map<String, Analysis> analysisCache) throws Exception {
         long max = format.equals("txt") ? 8L * 1024 * 1024 : 64L * 1024 * 1024;
@@ -77,16 +85,20 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
         if (!FORMATS.contains(format)) throw new IOException("不支持的文档格式");
         if (bytes.length > (format.equals("txt") ? 8L : 64L) * 1024 * 1024) throw new IOException("文档大小超限");
         String documentId = BuildRequest.fingerprint(location);
+        context.visitedDocuments().add(documentId);
         String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
         if (context.content().hasDocument(documentId)) {
-            if(!hash.equals(context.content().documentHash(documentId))) {
+            if(context.refresh()&&(context.reparse()||!hash.equals(context.content().documentHash(documentId)))) {
+                new SourceLifecycleStore(context.database()).clearDocumentContent(documentId);
+            } else if(!hash.equals(context.content().documentHash(documentId))) {
                 context.result().conflicts++;
                 context.result().warnings.add("文件内容已变化，补充构建保留原版本："+location+"；更新已有内容请使用完整重建");
                 return;
+            } else {
+                context.result().reusedDocuments++;
+                context.content().linkDocumentSource(documentId, source.id());
+                return;
             }
-            context.result().reusedDocuments++;
-            context.content().linkDocumentSource(documentId, source.id());
-            return;
         }
         context.content().saveDocument(new KnowledgeContent.Document(documentId, source.id(), title,
                 location, hash, mediaType(format)));
@@ -111,6 +123,7 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
                     List.of(new DocumentBlock.Picture(bytes, title, "原始图片", null, "STANDALONE"))));
         }
         writer.finish();
+        new SourceLifecycleStore(context.database()).parsedDocument(documentId,source.kind());
         String status = writer.blocks == 0 ? "EMPTY" : writer.partial ? "PARTIAL" : "INDEXED";
         context.content().saveImportReport(source.id(), location, format, status,
                 writer.partial ? "部分图片未完成内容识别，已保留原图和来源" : null, documentId);
@@ -223,6 +236,12 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
 
         void finish() throws Exception {
             var vectors = new ArrayList<TextChunker.TextChunk>();
+            var bound=new HashSet<String>();var index=new GuideImageIndex(context.database());
+            for(var raw:rawBlocks)for(String occurrence:blockImages.getOrDefault(raw.id(),List.of()))if(bound.add(occurrence)) {
+                try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT o.image_id,o.caption,a.ocr_text,o.analysis_status FROM rag_image_occurrence o JOIN rag_image_asset a ON a.id=o.image_id WHERE o.id=?")) {
+                    p.setString(1,occurrence);try(var r=p.executeQuery()){if(r.next())index.bind(occurrence,documentId,r.getString(1),r.getString(2),r.getString(3),r.getString(4),raw.ordinal());}
+                }
+            }
             int chunkOrdinal=0;
             for(var indexed:StructuredChunker.split(rawBlocks,title,null,title,"local_document",location,context.embedder())) {
                 context.checkCancelled();var chunk=indexed.chunk();String id=chunk.id();

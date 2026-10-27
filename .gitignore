@@ -15,9 +15,7 @@ src/main/resources/models/
 .DS_Store
 Thumbs.db
 
-docs/*
-!docs/mkb-export-v1.md
-!docs/recipes-r3.md
+docs/
 test-data/
 run.bat
 run.sh

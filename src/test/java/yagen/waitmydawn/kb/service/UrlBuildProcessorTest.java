@@ -12,6 +12,12 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class UrlBuildProcessorTest {
+    @Test void imagesInOneParagraphKeepTheirOwnOperationText() {
+        var parsed=WebDocumentParser.parse(Jsoup.parse("<article><h1>组装</h1><p>先制作胚料。<img src='one.png'>随后放入切石机切成身体。<img src='two.png'>最后安装核心。</p></article>"),"https://example.com/guide");
+        var images=parsed.blocks().getFirst().images();assertEquals(2,images.size());
+        assertTrue(images.getFirst().stepText().contains("先制作胚料"));assertFalse(images.getFirst().stepText().contains("切石机"));
+        assertTrue(images.getLast().stepText().contains("切石机"));assertFalse(images.getLast().stepText().contains("先制作"));
+    }
     @TempDir Path temp;
     @org.junit.jupiter.api.AfterEach void closeLogging() { yagen.waitmydawn.kb.config.LogSetup.shutdown(); }
 

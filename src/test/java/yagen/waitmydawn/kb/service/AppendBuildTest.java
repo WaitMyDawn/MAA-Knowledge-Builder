@@ -115,12 +115,15 @@ class AppendBuildTest {
         var config=config();var db=database(config);var scraped=new ArrayList<String>();var baseline=new AtomicInteger();
         var web=new WikiScraperService() {
             @Override public WebPage fetchMcWiki(String page) {baseline.incrementAndGet();return new WebPage(page,"https://example.com/wiki/"+page,"基础合成知识说明。","mcwiki",Map.of());}
-            @Override public ModScrapeResult scrapeModCatalog(String modId,ScrapeProgress progress) {
+            @Override public ModScrapeResult scrapeModCatalog(String modId,String classId,ScrapeProgress progress) {
                 scraped.add(modId);return new ModScrapeResult(List.of(),new WebCatalog(List.of(),List.of()));
             }
         };
         Path first=Files.createDirectory(temp.resolve("first")),second=Files.createDirectory(temp.resolve("second"));
         jar(first.resolve("old.jar"),"sample","1");jar(second.resolve("copy.jar"),"sample","1");jar(second.resolve("new.jar"),"another","1");
+        for(String id:List.of("sample","another")){
+            var draft=ModUrlBindingTest.mod(id,"fabric");draft.setMcmodBinding(ModUrlBindingTest.binding("10",null,"MANUAL"));new ModBindingStore(db).save(draft);
+        }
         try(var embedder=new EmbeddingService(null)) {
             var builder=new KnowledgeBuilder(config,db,embedder,null,web);
             builder.build(BuildRequest.jars(first),null);int initialBaseline=baseline.get();

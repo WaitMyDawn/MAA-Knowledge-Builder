@@ -119,10 +119,17 @@ public class WikiScraperService {
     private record CacheEntry(FetchedPage page, long expireAt) {}
     private PublicKnowledgeCache publicCache;
     private WebResourceCache resourceCache;
+    private boolean refreshBuildResources;
+    private boolean cachedBuildResourcesOnly;
+    public void setBuildRefresh(boolean value){refreshBuildResources=value;}
+    public void setBuildCacheOnly(boolean value){cachedBuildResourcesOnly=value;}
+    private yagen.waitmydawn.kb.model.DatabaseBuilder resourceDatabase;
     private final Map<String, Map<String, String>> resourceCookies = new ConcurrentHashMap<>();
-    public void setResourceDatabase(yagen.waitmydawn.kb.model.DatabaseBuilder db) { resourceCache = new WebResourceCache(db, this); }
+    public void setResourceDatabase(yagen.waitmydawn.kb.model.DatabaseBuilder db) { resourceDatabase=db;resourceCache = new WebResourceCache(db, this); }
+    yagen.waitmydawn.kb.model.DatabaseBuilder resourceDatabase(){return resourceDatabase;}
     public Resource fetchBuildResource(String url, String referer, boolean image) {
-        return resourceCache == null ? fetchResource(url, referer, image, Map.of()) : resourceCache.fetch(url, referer, image);
+        if(cachedBuildResourcesOnly)return resourceCache==null?new Resource(404,null,"",url,null,null):resourceCache.snapshot(url);
+        return resourceCache == null ? fetchResource(url, referer, image, Map.of()) : resourceCache.fetch(url, referer, image,refreshBuildResources);
     }
     public void setPublicCache(PublicKnowledgeCache cache) { this.publicCache=cache; }
 
@@ -896,24 +903,25 @@ public class WikiScraperService {
     /**
      * Find the class ID for a mod on MC百科
      */
-    private String findModClassId(String modId) {
+    public String findModCandidateUrl(String modId) {
         String canonical=KnowledgeSourcePolicy.canonicalClassId(modId);
-        if(canonical!=null) return canonical;
-        try {
+        if(canonical!=null) return "https://www.mcmod.cn/class/"+canonical+".html";
             String url = MCMOD_SEARCH_BASE + URLEncoder.encode(modId, StandardCharsets.UTF_8);
             FetchOutcome out = executeRaw(url, null, MCMOD_BASE + "/", true, 2);
-            if (out.status() != 200 || out.body() == null) return null;
+            if (out.status() != 200 || out.body() == null) throw new IllegalStateException("百科搜索请求失败 HTTP "+out.status());
             Document doc = Jsoup.parse(out.body());
             Elements links = doc.select("a[href*=/class/]");
             for (Element a : links) {
                 String href = a.attr("href");
                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("/class/(\\d+)").matcher(href);
-                if (m.find()) return m.group(1);
+                if (m.find()) return "https://www.mcmod.cn/class/"+m.group(1)+".html";
             }
-        } catch (Exception e) {
-            log.debug("mcmod.cn search failed for {}: {}", modId, e.getMessage());
-        }
         return null;
+    }
+    private String findModClassId(String modId) {
+        try {String url=findModCandidateUrl(modId);return url==null?null:yagen.waitmydawn.kb.model.ModUrlBinding.normalize(url).replaceAll("[^0-9]","");}
+        catch(java.util.concurrent.CancellationException e){throw e;}
+        catch(Exception e){log.debug("mcmod.cn search failed for {}: {}",modId,e.getMessage());return null;}
     }
 
     // ==================== Core fetch ====================

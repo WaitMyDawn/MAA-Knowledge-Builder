@@ -10,9 +10,23 @@ import java.util.*;
 public final class UrlBuildProcessor implements BuildSourceProcessor {
     private final WikiScraperService scraper;
     private final DocumentDirectoryProcessor documents;
+    private final WebImageEnricher imageEnricher;
     public UrlBuildProcessor(WikiScraperService scraper) { this(scraper, null); }
-    UrlBuildProcessor(WikiScraperService scraper, DocumentDirectoryProcessor documents) { this.scraper = scraper; this.documents = documents; }
+    UrlBuildProcessor(WikiScraperService scraper, DocumentDirectoryProcessor documents) { this(scraper,documents,new WebImageEnricher()); }
+    UrlBuildProcessor(WikiScraperService scraper,DocumentDirectoryProcessor documents,WebImageEnricher enricher){this.scraper=scraper;this.documents=documents;this.imageEnricher=enricher;}
     @Override public boolean supports(BuildRequest.Kind kind) { return kind == BuildRequest.Kind.URL; }
+    void enrichExisting(BuildRequest.Source source,Context context)throws Exception {imageEnricher.backfill(source,context,scraper.resourceDatabase());}
+    void processDocument(BuildRequest.Source source,String location,Context context)throws Exception {
+        var page=scraper.fetchBuildResource(location,source.location(),false);
+        if(page.status()!=200||page.bytes()==null)throw new IllegalStateException("网页文档获取失败 HTTP "+page.status());
+        String type=Objects.toString(page.contentType(),"").toLowerCase(Locale.ROOT);
+        if(!type.contains("html")) {
+            String format=documentFormat(type,page.url());if(documents==null||format==null)throw new IllegalArgumentException("未支持的网页文档格式");
+            documents.importBytes(location,location,format,page.bytes(),source,context,new HashMap<>());return;
+        }
+        if(page.bytes().length>4*1024*1024)throw new IllegalArgumentException("HTML 页面超过 4 MiB");
+        ingest(source,location,WebDocumentParser.parse(page.document(),page.url()),"网页资料",knownMod(context,source.location()),context);
+    }
 
     @Override public void process(BuildRequest.Source source, Context context) throws Exception {
         String url = WebUrlPolicy.normalize(source.location());
@@ -64,6 +78,12 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
             String id = path.replaceAll("[^0-9]", "");
             String modId = knownMod(context, resource.url());
             String catalogKey = modId == null ? "mcmod:class:" + id : modId;
+            if(context.refresh()) {
+                var lifecycle=new SourceLifecycleStore(context.database());
+                lifecycle.execute("DELETE FROM rag_web_category_member WHERE category_id IN (SELECT category_id FROM rag_web_category WHERE mod_id=?)",catalogKey);
+                lifecycle.execute("DELETE FROM rag_web_category WHERE mod_id=?",catalogKey);
+                lifecycle.execute("DELETE FROM rag_web_cache WHERE mod_id=?",catalogKey);
+            }
             context.content().setSourceScope(source.id(), "mcmod:class:" + id, "MOD", name, modId);
             var result = scraper.scrapeModCatalog(catalogKey, id,
                     (current, total, category, item, items, status) -> report(context, "categories", current, total, category + "：" + status));
@@ -99,17 +119,27 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
                         String sourceName, String modId, Context context) throws Exception {
         context.checkCancelled();
         String documentId = BuildRequest.fingerprint(url);
-        if (context.content().hasDocument(documentId)) {
-            context.content().linkDocumentSource(documentId, source.id()); return;
-        }
+        context.visitedDocuments().add(documentId);
         if (parsed.blocks().isEmpty()) throw new IllegalStateException("未识别到有效正文：" + url);
-        if(parsed.blocks().size()>20000) throw new IllegalArgumentException("网页原文块超过 20000");
         String fullText = parsed.blocks().stream().map(b -> b.headingPath() + "\n" + b.text() + "\n" + b.images())
                 .collect(java.util.stream.Collectors.joining("\n"));
+        if (context.content().hasDocument(documentId)) {
+            if(context.refresh()&&(context.reparse()||!BuildRequest.fingerprint(fullText).equals(context.content().documentHash(documentId)))) {
+                new SourceLifecycleStore(context.database()).clearDocumentContent(documentId);
+            } else {
+            context.result().reusedDocuments++;
+            context.content().linkDocumentSource(documentId, source.id());
+            if(!context.refresh())imageEnricher.backfill(source,context,scraper.resourceDatabase());
+            return;
+            }
+        }
+        if(parsed.blocks().size()>20000) throw new IllegalArgumentException("网页原文块超过 20000");
         context.content().saveDocument(new KnowledgeContent.Document(documentId, source.id(), parsed.title(), url,
                 BuildRequest.fingerprint(fullText), "text/html"));
         context.content().linkDocumentSource(documentId, source.id());
         context.content().setDocumentMetadata(documentId, parsed.author(), parsed.publishedAt());
+        // 清理文本旧索引必须先于图片 OCR 入库，否则会一并删除同 URL 的新 OCR 向量。
+        try(var c=context.database().getConnection();var p=c.prepareStatement("DELETE FROM rag_vectors WHERE source_path=?")){p.setString(1,url);p.executeUpdate();}
         var vectors = new ArrayList<TextChunker.TextChunk>();
         var rawBlocks=new ArrayList<KnowledgeContent.Block>();
         for(int ordinal=0;ordinal<parsed.blocks().size();ordinal++) {
@@ -135,13 +165,18 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
         int maxImages = Math.max(0, Integer.getInteger("maa.build.maxWebImages", 256));
         int pageAttempts = 0;
         int maxPageImages = Math.max(0, Integer.getInteger("maa.build.maxWebImagesPerPage", 64));
-        for (int ordinal = 0; ordinal < parsed.blocks().size(); ordinal++) {
+        record PendingImage(int blockOrdinal,int imageOrdinal,WebDocumentParser.ImageRef image) {}
+        var pendingImages=new ArrayList<PendingImage>();
+        for(int ordinal=0;ordinal<parsed.blocks().size();ordinal++)for(var image:parsed.blocks().get(ordinal).images())pendingImages.add(new PendingImage(ordinal,imageOrdinal++,image));
+        // 截图与结构图先于大量物品小图，图片身份仍使用原 DOM 序号以保持历史关联。
+        pendingImages.sort(Comparator.<PendingImage>comparingInt(p->p.image().url().matches("(?is).*/(?:item/icon|icons?)/.*")?1:0).thenComparingInt(PendingImage::imageOrdinal));
+        for(var pending:pendingImages) {
+            int ordinal=pending.blockOrdinal();var image=pending.image();
             context.checkCancelled();
             var block = parsed.blocks().get(ordinal);
             var chunkIds=blockChunks.getOrDefault(documentId+"/block/"+ordinal,List.of());
-            for (var image : block.images()) {
                 context.checkCancelled();
-                String occurrenceId = documentId + "/image/" + imageOrdinal++;
+                String occurrenceId = documentId + "/image/" + pending.imageOrdinal();
                 String status = "DEFERRED", error = "构建图片下载预算已用尽";
                 if (context.result().webImageAttempts < maxImages && pageAttempts < maxPageImages) {
                     context.result().webImageAttempts++; pageAttempts++;
@@ -150,22 +185,21 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
                         if (response.status() != 200 || response.bytes() == null) throw new java.io.IOException("HTTP " + response.status());
                         var asset = context.images().put(response.bytes());
                         context.content().saveImage(asset);
-                        context.content().saveOccurrence(new KnowledgeContent.ImageOccurrence(occurrenceId, documentId, asset.id(), image.caption(), image.url(), null, imageOrdinal - 1));
+                        context.content().saveOccurrence(new KnowledgeContent.ImageOccurrence(occurrenceId, documentId, asset.id(), image.caption(), image.url(), null, pending.imageOrdinal()));
                         for (String chunkId : chunkIds) context.content().saveLink(new KnowledgeContent.ChunkImageLink(chunkId, occurrenceId, "same_block"));
+                        imageEnricher.enrich(context,documentId,occurrenceId,asset,image.caption(),ordinal,image.stepText());
                         context.result().webImages++; status = "AVAILABLE"; error = null;
                     } catch (java.util.concurrent.CancellationException e) { throw e; }
                     catch (java.io.IOException | IllegalArgumentException e) { status = "FAILED"; error = e.getMessage(); }
                 }
                 context.content().saveImageReference(occurrenceId, documentId, image.url(), image.caption(), block.headingPath(), ordinal, status, error);
+                context.content().setImageStep(occurrenceId,image.stepText());
                 if (!status.equals("AVAILABLE")) context.result().deferredWebImages++;
-            }
         }
         // 同一网页从 JAR 和网址进入时，用带图文定位的新块替换暂存库中的旧文本块。
         // 保持向量 chunk_id 与图文内容块一致，后续才能从命中块追溯图片。
-        try (var c = context.database().getConnection(); var p = c.prepareStatement("DELETE FROM rag_vectors WHERE source_path=?")) {
-            p.setString(1, url); p.executeUpdate();
-        }
         context.vectors().storeBatch(vectors, context.embedder());
+        new SourceLifecycleStore(context.database()).parsedDocument(documentId,source.kind());
         context.result().embeddings += vectors.size();
         context.result().documents++;
         context.result().textChunks += vectors.size();

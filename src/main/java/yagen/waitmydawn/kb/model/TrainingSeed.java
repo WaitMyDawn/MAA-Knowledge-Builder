@@ -60,6 +60,9 @@ public class TrainingSeed {
         public String source = "modrinth";
         @JsonProperty("modrinthUrl")
         public String modrinthUrl;
+        @JsonProperty("mcmodBinding")
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        public ModUrlBinding mcmodBinding;
 
         public SeedMod() {}
 
@@ -73,6 +76,7 @@ public class TrainingSeed {
             sm.loader = e.getLoader();
             sm.source = e.getSource() != null ? e.getSource() : "unknown";
             sm.modrinthUrl = e.getModrinthUrl();
+            sm.mcmodBinding=e.getMcmodBinding();
             return sm;
         }
     }

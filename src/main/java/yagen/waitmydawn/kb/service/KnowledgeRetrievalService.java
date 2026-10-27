@@ -346,6 +346,8 @@ public final class KnowledgeRetrievalService {
         }
         for(var picture:artifacts.pictures()) {
             text.append("图片 [[image:").append(picture.id()).append("]]：").append(picture.caption()).append("；用途=").append(picture.role());
+            if(picture.grounding()!=null)text.append("；图示分类=").append(picture.grounding().purpose()).append("；分类依据=").append(picture.grounding().basis())
+                    .append("；绑定段落/步骤=").append(GuideImageSemantics.limit(picture.grounding().stepText(),500)).append("；OCR状态=").append(picture.grounding().analysisStatus());
             var source=sources.get(picture.sourceId());
             if(source==null) text.append("；上下文=").append(picture.context());
             else {

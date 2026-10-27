@@ -66,7 +66,8 @@ public class MaaKnowledgeBuilderApp extends Application {
     private ComboBox<KnowledgeRetrievalService.Scope> knowledgeScopeChoice;
     private CheckBox fetchKnowledgeImages;
     private TextArea builderLog, qaLog;
-    private ListView<String> modListView;
+    private ListView<ModEntry> modListView;
+    private Label scanCount,bindCount,buildCount;
     private VBox chatHistory;
     private TextArea questionField;
     private Button cancelButton;
@@ -245,7 +246,9 @@ public class MaaKnowledgeBuilderApp extends Application {
         seedPage = buildSeedPage(stage);
         metricsPage = buildMetricsPage();
         settingsPage = buildSettingsPage(stage);
-        knowledgePage = new yagen.waitmydawn.kb.ui.KnowledgeBrowser(db,worker);
+        var catalogTab=new Tab("分类目录",new yagen.waitmydawn.kb.ui.KnowledgeBrowser(db,worker));catalogTab.setClosable(false);
+        var sourcesTab=new Tab("来源管理",new yagen.waitmydawn.kb.ui.SourceManagerPane(config,db,embedder,this::runSourceMaintenance,this::reloadAfterSourceMaintenance));sourcesTab.setClosable(false);
+        var knowledgeTabs=new TabPane(catalogTab,sourcesTab);VBox.setVgrow(knowledgeTabs,Priority.ALWAYS);knowledgePage=new VBox(knowledgeTabs);
         evaluationPage = new yagen.waitmydawn.kb.ui.EvaluationBrowser(config.getDataDir());
 
         contentArea = new StackPane(builderPage); // default page
@@ -274,6 +277,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         themes.prepare(scene);
         stage.setMinWidth(1060); stage.setMinHeight(680);
         stage.setTitle("MAA Knowledge Builder");
+        yagen.waitmydawn.kb.ui.AppIcons.apply(stage);
         stage.setScene(scene);
         stage.show();
     }
@@ -379,13 +383,17 @@ public class MaaKnowledgeBuilderApp extends Application {
         folderField.setPrefWidth(400);
         Button browseMods = new Button("浏览");
         Button scanBtn = styledButton("扫描 JAR", "#6C63FF");
+        Button bindUrlBtn=styledButton("Bind Url", "#2563eb");
+        bindUrlBtn.setOnAction(e->onBindUrls());
         scanBtn.setOnAction(e -> onScan());
         browseMods.setOnAction(e -> {
+            if(busy())return;
             DirectoryChooser dc = new DirectoryChooser();
             File f = dc.showDialog(stage);
             if (f != null) folderField.setText(f.getAbsolutePath());
         });
-        HBox folderRow = new HBox(8, folderField, browseMods, scanBtn);
+        var restoreScanBtn=new Button("读取预处理记录");restoreScanBtn.setOnAction(e->onRestoreScan());
+        HBox folderRow = new HBox(8, folderField, browseMods, scanBtn,bindUrlBtn,restoreScanBtn);
         HBox.setHgrow(folderField,Priority.ALWAYS);
         folderRow.setAlignment(Pos.CENTER_LEFT);
 
@@ -413,16 +421,17 @@ public class MaaKnowledgeBuilderApp extends Application {
             }
         });
 
+        if(folderField.getText().isBlank()){var last=new ScanEnvironmentStore(db).lastFolder();if(last!=null&&Files.isDirectory(last))folderField.setText(last.toString());}
         // Step 2: Mod list
         modListView = new ListView<>();
-        modListView.setPrefHeight(100);
+        modListView.setPrefHeight(180);
+        modListView.setCellFactory(view->new yagen.waitmydawn.kb.ui.ModListCell(entry->{if(!busy())showSlugEditor(entry,stage);}));
+        folderField.textProperty().addListener((o,a,b)->{scannedMods=null;modListView.getItems().clear();resetCounts();try{if(!busy()&&JarScanCache.exists(Path.of(b)))Platform.runLater(this::onRestoreScan);}catch(Exception ignored){}});
+        buildTargetField.textProperty().addListener((o,a,b)->{scannedMods=null;modListView.getItems().clear();resetCounts();});
         modListView.setOnMouseClicked(ev -> {
             if (ev.getClickCount() == 2 && !busy()) {
-                int idx = modListView.getSelectionModel().getSelectedIndex();
-                if (idx >= 0 && idx < scannedMods.size()) {
-                    ModEntry e = scannedMods.get(idx);
-                    showSlugEditor(e, stage);
-                }
+                ModEntry selected=modListView.getSelectionModel().getSelectedItem();
+                if(selected!=null)showSlugEditor(selected,stage);
             }
         });
 
@@ -448,12 +457,16 @@ public class MaaKnowledgeBuilderApp extends Application {
         builderLog.setStyle("-fx-font-family: 'Consolas'; -fx-font-size: 11px;");
 
         SplitPane splitPane = new SplitPane();
+        scanCount=new Label("Scan 0/0");scanCount.setId("scan-count");scanCount.getStyleClass().add("scan-progress-label");
+        bindCount=new Label("Bind Url 0/0");bindCount.setId("bind-count");bindCount.getStyleClass().add("bind-progress-label");
+        buildCount=new Label("Build 0/0");buildCount.setId("build-count");buildCount.getStyleClass().add("build-progress-label");
+        var modsCard=card("已识别模组",modListView);var modsTitle=modsCard.getChildren().getFirst();modsCard.getChildren().removeFirst();modsCard.getChildren().addFirst(new HBox(18,modsTitle,scanCount,bindCount,buildCount));
         VBox topSection = new VBox(8,
                 card("目标知识库与构建方式", targetRow),
                 card("模组目录", folderRow),
+                modsCard,
                 card("网址来源", buildUrlsField),
-                card("资料目录", new VBox(6, buildDocumentsField, browseDocuments)),
-                card("已识别模组", modListView));
+                card("资料目录", new VBox(6, buildDocumentsField, browseDocuments)));
         VBox.setVgrow(modListView, Priority.ALWAYS);
         VBox bottomSection = new VBox(8,
                 card("开始构建", new VBox(6, new Label("补充保留旧知识并跳过重复内容；版本或文件内容冲突保留旧版本并报告。重建按所选全部来源替换基础库。"), buildRow)),
@@ -464,6 +477,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         sourcesScroll.setFitToWidth(true);
         splitPane.getItems().addAll(sourcesScroll, bottomSection);
         splitPane.setDividerPositions(0.6);
+        try{if(!folderField.getText().isBlank()&&JarScanCache.exists(Path.of(folderField.getText())))Platform.runLater(this::onRestoreScan);}catch(Exception ignored){}
         VBox.setVgrow(splitPane, Priority.ALWAYS);
 
         page.getChildren().addAll(title, splitPane);
@@ -486,80 +500,89 @@ public class MaaKnowledgeBuilderApp extends Application {
             return;
         }
 
-        logText("Scanning: " + folderPath);
-        setStatus("正在扫描 JAR…", true);
-        modListView.getItems().clear();
-        operationInFlight = true;
-
-        submitOperation(() -> {
-            try(var target=BuildTarget.open(targetDirectory,config,db)) {
-            JarScannerService scanner = new JarScannerService();
-            ModMetadataParser parser = new ModMetadataParser();
-            ModrinthBinder binder = new ModrinthBinder();
-            List<Path> jars = scanner.scan(dir);
-            java.util.List<ModEntry> entries = new java.util.ArrayList<>();
-
-            for (Path jar : jars) {
-                if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("扫描已取消");
-                ModEntry modEntry = parser.parse(jar);
-                if (modEntry != null) {
-                    var status=append?new JarBuildIndex(target.database()).inspect(modEntry,JarBuildIndex.hash(jar)):JarBuildIndex.Status.NEW;
-                    if(status!=JarBuildIndex.Status.NEW) {
-                        entries.add(modEntry);
-                        String label="["+status+"] "+formatEntry(modEntry);
-                        Platform.runLater(() -> modListView.getItems().add(label));
-                        continue;
-                    }
-                    // Don't search slug for vanilla or already-known
-                    if (!"minecraft".equals(modEntry.getModId()) && !"vanilla".equals(modEntry.getLoader())) {
-                        ModrinthBinder.BindResult bind = binder.bind(
-                                jar, modEntry.getModId(),
-                                modEntry.getDisplayName(),
-                                modEntry.getVersion(),
-                                modEntry.getMcVersion(),
-                                modEntry.getLoader());
-                        if (bind != null && bind.slug() != null) {
-                            modEntry.setSlug(bind.slug());
-                            modEntry.setModrinthUrl(bind.modrinthUrl());
-                            modEntry.setSource(bind.source());
-                        } else if (bind != null) {
-                            modEntry.setSource(bind.source());
-                        }
-                    }
-                    ModrinthBinder.preserveKnownBinding(modEntry, target.database().findModEntry(modEntry.getModId()));
-                    entries.add(modEntry);
-                    ModEntry fe = modEntry;
-                    Platform.runLater(() -> modListView.getItems().add(formatEntry(fe)));
-                } else {
-                    String name = jar.getFileName().toString();
-                    Platform.runLater(() -> modListView.getItems().add("[?] " + name));
-                }
-            }
-            scannedMods = entries;
-            List<ModEntry> fEntries = entries;
-            Platform.runLater(() -> {
-                logText("Scanned " + fEntries.size() + " mods.");
-                setStatus("就绪", false);
-            });
-            } catch (Exception ex) {
-                Platform.runLater(() -> showError("Scan failed: " + ex.getMessage()));
-            } finally { Platform.runLater(() -> { operationInFlight = false; setStatus("就绪", false); }); }
+        scannedMods=null;modListView.getItems().clear();
+        operationInFlight=true;setStatus("正在定位 Minecraft 本体 JAR…",true);
+        submitOperation(()->{
+            try{
+                var candidates=new GameEnvironmentDetector().discover(dir);
+                Platform.runLater(()->{
+                    operationInFlight=false;setStatus("就绪",false);
+                    if(!folderField.getText().trim().equals(folderPath)||!Path.of(buildTargetField.getText()).equals(targetDirectory))return;
+                    if(candidates.isEmpty()){showError("未找到 Minecraft 客户端本体 JAR。请将本体 JAR 放在所选文件夹，或选择准确的游戏实例 mods 文件夹（程序也会检查其直属上级目录）。");return;}
+                    var dialog=new yagen.waitmydawn.kb.ui.ScanEnvironmentDialog(folderField.getScene().getWindow(),candidates);themes.prepare(dialog.getDialogPane().getScene());
+                    dialog.showAndWait().ifPresent(environment->scanConfirmed(dir,targetDirectory,append,environment));
+                });
+            }catch(Exception failure){Platform.runLater(()->{operationInFlight=false;setStatus("就绪",false);showError("游戏环境识别失败："+failure.getMessage());});}
         });
     }
 
-    private String formatEntry(ModEntry e) {
-        StringBuilder sb = new StringBuilder(e.getSlug() != null ? "[V] " : "[?] ");
-        sb.append(e.getModId());
-        if (e.getDisplayName() != null && !e.getDisplayName().equals(e.getModId()))
-            sb.append(" - ").append(e.getDisplayName());
-        if (e.getVersion() != null) sb.append(" v").append(e.getVersion());
-        if (e.getMcVersion() != null) sb.append(" [MC ").append(e.getMcVersion()).append("]");
-        if (e.getLoader() != null) sb.append(" (").append(e.getLoader()).append(")");
-        if ("modrinth-unavailable".equals(e.getSource())) sb.append("  [Modrinth 网络不可用，待重试]");
-        else if ("modrinth-no-match".equals(e.getSource())) sb.append("  [未找到精确版本匹配]");
-        if (e.getSlug() != null) sb.append("  <<slug=").append(e.getSlug()).append(">>");
-        else sb.append("  <<no slug - click to set>>");
-        return sb.toString();
+    private void resetCounts(){if(scanCount!=null)scanCount.setText("Scan 0/0");if(bindCount!=null)bindCount.setText("Bind Url 0/0");if(buildCount!=null)buildCount.setText("Build 0/0");}
+    private void scanConfirmed(Path dir,Path targetDirectory,boolean append,GameEnvironment environment){
+        runScan(dir,targetDirectory,append,environment,false);
+    }
+    private void onRestoreScan(){
+        if(busy())return;
+        try{
+            Path dir=Path.of(folderField.getText().strip());var cache=new JarScanCache(dir);var environment=cache.environment();
+            if(environment==null)throw new IllegalStateException("没有可用的 Scan 记录，请先 Scan。");
+            if(!Files.isRegularFile(Path.of(environment.jarPath())))throw new IllegalStateException("记录中的本体 JAR 已不存在，请重新 Scan 确认环境。");
+            runScan(dir,Path.of(buildTargetField.getText()),buildModeChoice.getValue()==BuildRequest.Mode.APPEND,environment,true);
+        }catch(Exception failure){showError(failure.getMessage());}
+    }
+    private void runScan(Path dir,Path targetDirectory,boolean append,GameEnvironment environment,boolean restoreOnly){
+        folderField.setDisable(true);logText((restoreOnly?"恢复 Scan 记录：":"确认游戏环境：")+environment.summary());
+        scanCount.setText("Scan 0/0");bindCount.setText("Bind Url 0/0");buildCount.setText("Build 0/0");
+        setStatus(restoreOnly?"正在校验 Scan 记录…":"正在扫描 JAR…",true);modListView.getItems().clear();scannedMods=null;operationInFlight=true;
+        submitOperation(()->{
+            try(var target=BuildTarget.open(targetDirectory,config,db)){
+                var environments=new ScanEnvironmentStore(target.database());var existing=environments.forFolder(dir);
+                if(restoreOnly&&existing!=null&&!existing.equals(environment))throw new IllegalStateException("记录与当前来源的确认环境不同，请重新 Scan。");
+                environments.save(dir,environment);
+                var retryScan=new java.util.concurrent.atomic.AtomicInteger();
+                var result=new ModScanService().scan(dir,environment,target.database(),append,new ModrinthBinder(),restoreOnly,(done,total,entry,message)->Platform.runLater(()->{
+                    if(entry!=null&&!JarScanCache.scanReady(entry))retryScan.incrementAndGet();
+                    scanCount.setText("Scan "+(done-retryScan.get())+"/"+total);scanCount.setTooltip(new Tooltip(message));progressBar.setProgress(total==0?0:(double)done/total);
+                    if(entry!=null){modListView.getItems().add(entry);modListView.getItems().sort(ModUrlBinding.reviewOrder());}
+                    if(entry==null&&done>0)logText(message);
+                }));
+                Platform.runLater(()->{
+                    if(result.completed()==result.total())scannedMods=result.mods();
+                    else logText("记录校验有效 "+result.completed()+"/"+result.total()+"；存在新增或变化文件，请重新 Scan 补齐后再 Bind Url。");
+                    scanCount.setText("Scan "+result.scanPrepared()+"/"+result.total());
+                    long bound=JarScanCache.bindingCompleted(result.mods());bindCount.setText("Bind Url "+bound+"/"+result.mods().size());
+                    if(result.scanPrepared()<result.completed())logText("Scan 有 "+(result.completed()-result.scanPrepared())+" 项网络查询失败，可再次 Scan 重试；已识别模组仍可用于 Bind Url。");
+                    if(result.scanPrepared()==result.total())logText(bound==result.mods().size()?"Scan 与 Bind Url 均已完成，可继续 Build。":"预处理进度：Bind Url 尚有 "+(result.mods().size()-bound)+" 项待处理或重试。");
+                    logText(result.metrics().summary());if(result.warning()!=null)logText(result.warning());
+                    logText(restoreOnly?"已恢复 "+result.mods().size()+" 个模组；未发起网络查询。":"Scan 完成，已识别 "+result.mods().size()+" 个模组。记录位置："+dir.resolve(JarScanCache.FILE_NAME));
+                });
+            }catch(Exception failure){Platform.runLater(()->showError("Scan 失败："+failure.getMessage()));}
+            finally{Platform.runLater(()->{operationInFlight=false;folderField.setDisable(false);setStatus("就绪",false);});}
+        });
+    }
+
+    private void onBindUrls(){
+        if(busy())return;
+        if(scannedMods==null||scannedMods.isEmpty()){showError("请先 Scan 扫描 JAR。");return;}
+        var entries=List.copyOf(scannedMods);Path targetDirectory=Path.of(buildTargetField.getText());
+        operationInFlight=true;folderField.setDisable(true);bindCount.setText("Bind Url "+JarScanCache.bindingCompleted(entries)+"/"+entries.size());setStatus("正在绑定百科候选…",true);
+        submitOperation(()->{
+            try(var target=BuildTarget.open(targetDirectory,config,db)) {
+                var scraper=new WikiScraperService();scraper.setResourceDatabase(target.database());var binder=new ModUrlBinder(scraper);var store=new ModBindingStore(target.database());int done=0;var cache=new JarScanCache(Path.of(folderField.getText()));
+                try{
+                for(var entry:entries){
+                    if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("绑定已取消，已完成的草稿已保留");
+                    var previous=entry.getMcmodBinding();
+                    if(previous==null||!java.util.Set.of("FOUND","NOT_FOUND","DISABLED","BUILTIN").contains(previous.status()))entry.setMcmodBinding(binder.bind(entry));
+                    store.save(entry);cache.updateBinding(entry);int current=++done;
+                    if(done%10==0&&cache.environment()!=null)cache.save(cache.environment());
+                    Platform.runLater(()->{bindCount.setText("Bind Url "+JarScanCache.bindingCompleted(entries)+"/"+entries.size());bindCount.setTooltip(new Tooltip("已处理 "+current+"/"+entries.size()+"；未找到计为完成，网络失败保留为待重试"));modListView.getItems().sort(ModUrlBinding.reviewOrder());modListView.refresh();progressBar.setProgress((double)current/entries.size());logText("[Bind Url "+current+"/"+entries.size()+"] "+entry.getModId()+"："+(entry.getMcmodBinding()==null?"未绑定":entry.getMcmodBinding().statusLabel()));});
+                }
+                }finally{if(cache.environment()!=null&&!cache.save(cache.environment()))Platform.runLater(()->logText(cache.warning()));}
+                Platform.runLater(()->{long remaining=entries.size()-JarScanCache.bindingCompleted(entries);if(remaining>0)logText("Bind Url 尚有 "+remaining+" 项失败或未完成，可再次点击重试。");});
+                Platform.runLater(()->logText("候选绑定处理结束。可点击字段或双击条目校对；浏览量不表示身份已验证。已建库模组换绑后请通过来源管理刷新。"));
+            }catch(Exception failure){Platform.runLater(()->showError(failure.getMessage()));}
+            finally{Platform.runLater(()->{operationInFlight=false;folderField.setDisable(false);setStatus("就绪",false);});}
+        });
     }
 
     private BuildRequest readBuildRequest() {
@@ -580,17 +603,22 @@ public class MaaKnowledgeBuilderApp extends Application {
         try {
             request = readBuildRequest();
         } catch (Exception ex) { showError(ex.getMessage()); return; }
+        buildCount.setText("Build 0/"+request.sources().size());
         logText(request.mode()+"："+targetDirectory+"；来源数量：" + request.sources().size());
         setStatus("正在构建知识库…", true);
         operationInFlight = true;
         submitOperation(() -> {
             try(var target=BuildTarget.open(targetDirectory,config,db)) {
+            for(var source:request.sources())if(source.kind()==BuildRequest.Kind.JAR_DIRECTORY&&new ScanEnvironmentStore(target.database()).forFolder(Path.of(source.location()))==null)
+                throw new IllegalStateException("请先 Scan 并确认该模组目录的游戏环境："+source.location());
             new KnowledgeContentStore(target.database()).saveDraft(request);
             var builder=target.external()?new KnowledgeBuilder(target.config(),target.database(),embedder):knowledgeBuilder;
             builder.setScannedMods(scanned);
             KnowledgeBuilder.BuildResult r = builder.build(request,
                     (phase, cur, total, msg) -> Platform.runLater(() -> {
                         if (total > 0) progressBar.setProgress((double) cur / total);
+                        if(phase.startsWith("progress:")){String step=phase.substring(9);buildCount.setText("Build "+cur+"/"+total+" · "+step);buildCount.setTooltip(new Tooltip("Build 按当前阶段统计已完成/总计："+step));return;}
+                        if(phase.equals("done"))buildCount.setText("Build "+cur+"/"+total+(msg.contains("没有新增内容")?" · 无变化":" · 已发布"));
                         logText("[" + phase + "] " + msg);
                     }));
             if(target.external()) {
@@ -617,11 +645,23 @@ public class MaaKnowledgeBuilderApp extends Application {
                 setStatus("就绪", false);
             });
             } catch (Exception ex) {
-                Platform.runLater(() -> { if(ex instanceof java.util.concurrent.CancellationException) logText("构建已取消，保留原基础知识库。"); else showError("构建失败，保留原基础知识库："+ex.getMessage()); });
+                Platform.runLater(() -> { buildCount.setText(buildCount.getText()+(ex instanceof java.util.concurrent.CancellationException?" · 已取消":" · 失败"));if(ex instanceof java.util.concurrent.CancellationException) logText("构建已取消，保留原基础知识库。"); else showError("构建失败，保留原基础知识库："+ex.getMessage()); });
             } finally { Platform.runLater(() -> { operationInFlight = false; setStatus("就绪", false); }); }
         });
     }
 
+    private void runSourceMaintenance(Runnable task){
+        if(operationInFlight){showError("已有任务执行中，请等待完成或取消后再操作来源。");return;}
+        operationInFlight=true;setStatus("正在管理来源…",true);
+        submitOperation(()->{try{task.run();}finally{Platform.runLater(()->{operationInFlight=false;setStatus("就绪",false);});}});
+    }
+    private void reloadAfterSourceMaintenance(){
+        rendererService.clearCache();
+        entityAgent=new EntityAgent(ragAgent,db,embedder,vectorStore);
+        qaPipeline=new QaPipeline(classifyAgent,entityAgent,new UrlAgent(ragAgent,db,embedder),answerAgent,ragAgent,vectorStore,embedder,db,dbManager,config.getDataDir());
+        metricsHistoryService=qaPipeline.getMetricsHistory();if(currentSession!=null)qaPipeline.restoreHistory(currentSession.messages);
+        Platform.runLater(()->{refreshKnowledgeScopes();refreshIconProfiles();});
+    }
     private void logBuildResult(KnowledgeBuilder.BuildResult result) {
         logText("构建完成；新增模组："+result.parsed+"，跳过JAR："+result.skipped+"，冲突："+result.conflicts);
         logText("新增文档："+result.documents+"，复用文档："+result.reusedDocuments+"，跳过网址："+result.reusedSources);
@@ -629,6 +669,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         logText("新增向量："+result.addedEmbeddings+"，总向量："+result.embeddings+"，配方："+result.recipes);
         logText("教程："+result.tutorials+"，网页图片："+result.webImages+"，未缓存图片："+result.deferredWebImages);
         logText("本地图片："+result.localImages+"，OCR："+result.ocrImages+"，视觉描述："+result.visionImages);
+        logText("网页图片分析："+result.enrichedWebImages+"，网页OCR："+result.webOcrImages+"，OCR文本块："+result.webOcrChunks+"，复用分析："+result.reusedImageAnalyses+"，待分析："+result.deferredImageAnalyses);
+        logText("实机图标："+result.nativeIcons+"，完全透明："+result.transparentNativeIcons+"，失败或不支持："+result.failedNativeIcons);
         result.warnings.forEach(this::logText);
         logText("耗时："+(result.durationMs/1000.0)+"s");
     }
@@ -756,7 +798,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             try {
                 new ItemIconStore(db).selectProfile(selected.id());
                 if(rendererService!=null)rendererService.clearCache();
-                if(qaLog!=null)qaLog.appendText("配方图标环境："+selected+"；仅用于默认物品状态，不确认整合包配方规则。\n");
+                if(qaLog!=null)qaLog.appendText("配方图标环境："+selected+"；使用默认或精确匹配的物品状态，不确认整合包配方规则。\n");
                 iconProfileChoice.setTooltip(new Tooltip(Objects.toString(selected.location(),"仅使用当前库的平面候选或缺失占位")));
             }catch(Exception failure){showError(failure.getMessage());refreshIconProfiles();}
         });
@@ -1431,6 +1473,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         var prewarmNote = new Label("建库时预取不同生物分类的少量正文，并补充已配置的关系页面，减少首次问答的请求。0 为关闭；所有请求共享站点限速与冷却。设置从下次构建生效。");
         prewarmNote.setWrapText(true); prewarmNote.getStyleClass().add("muted");
         page.getChildren().addAll(pageTitle("外观"), card("主题设置", themeRow),
+                card("模组条目字段配色",new yagen.waitmydawn.kb.ui.ModPalettePane(config,()->{themes.refreshPalette();if(modListView!=null)modListView.refresh();})),
                 pageTitle("构建准备"), card("预取常用详情", new VBox(10, prewarmRow, prewarmNote)));
         page.getChildren().addAll(dirTitle, dirCard, dirNote, authorTitle, authorCard,
                 apiTitle, apiCard, apiNote, visionPane, embedLabel, embedCard);
@@ -1534,54 +1577,60 @@ public class MaaKnowledgeBuilderApp extends Application {
     }
 
     private void showSlugEditor(ModEntry entry, Stage owner) {
-        Stage d = new Stage();
-        d.initOwner(owner);
-        d.setTitle("Edit Slug - " + entry.getModId());
-
-        VBox root = new VBox(10);
-        root.setPadding(new Insets(16));
-        root.getChildren().add(new Label("Mod: " + entry.getModId() + " - " + entry.getDisplayName()));
-
-        TextField slugField = new TextField(entry.getSlug() != null ? entry.getSlug() : "");
-        slugField.setPrefWidth(350);
-        root.getChildren().add(new HBox(8, new Label("Slug:"), slugField));
-
-        Button openModrinth = new Button("打开 Modrinth 页面");
-        openModrinth.getStyleClass().add("link-button");
-        openModrinth.setOnAction(ev -> {
-            String slug = slugField.getText().trim();
-            if (!slug.isEmpty()) {
-                try {
-                    java.awt.Desktop.getDesktop().browse(java.net.URI.create("https://modrinth.com/mod/" + slug));
-                } catch (Exception ignored) {
-                }
-            }
+        Stage dialog=new Stage();dialog.initOwner(owner);dialog.initModality(javafx.stage.Modality.WINDOW_MODAL);
+        dialog.setTitle("模组绑定 · "+entry.getModId());
+        var original=ModUrlBinding.vanilla(entry)?ModUrlBinding.vanilla():entry.getMcmodBinding();var pending=new java.util.concurrent.atomic.AtomicReference<ModUrlBinding>(original);
+        var slug=new TextField(Objects.toString(entry.getSlug(),""));
+        var url=new TextField(original==null?"":Objects.toString(original.url(),""));
+        var chinese=new TextField(original==null?"":Objects.toString(original.chineseName(),""));
+        var english=new TextField(original==null?"":Objects.toString(original.englishName(),""));
+        var info=new Label(original==null?"尚未绑定":original.statusLabel()+" · 总浏览："+Objects.toString(original.views(),"未知"));info.setWrapText(true);
+        var fetch=new Button("获取页面信息");var search=new Button("重新搜索");var save=new Button("保存");var cancel=new Button("取消");
+        var open=new Button("打开百科");open.setOnAction(e->{try{getHostServices().showDocument(ModUrlBinding.normalize(url.getText()));}catch(Exception failure){info.setText(failure.getMessage());}});
+        var modrinth=new Button("打开 Modrinth");modrinth.setOnAction(e->{String value=slug.getText().strip();if(value.matches("[A-Za-z0-9_-]+"))getHostServices().showDocument("https://modrinth.com/mod/"+value);});
+        var form=new GridPane();form.setHgap(10);form.setVgap(10);
+        form.addRow(0,new Label("modid"),new Label(entry.getModId()));form.addRow(1,new Label("Slug"),slug);
+        form.addRow(2,new Label("百科 URL"),url);form.addRow(3,new Label("中文别名"),chinese);form.addRow(4,new Label("英文别名"),english);
+        for(var field:List.of(slug,url,chinese,english)){field.setPrefWidth(490);GridPane.setHgrow(field,Priority.ALWAYS);}
+        var root=new VBox(12,form,new HBox(8,search,fetch,open,modrinth),info,new Label("URL 留空并保存：仅使用本地资料。已建库模组换绑后需在来源管理刷新。"),new HBox(8,save,cancel));root.setPadding(new Insets(18));
+        boolean vanilla=ModUrlBinding.vanilla(entry);form.setDisable(vanilla);search.setDisable(vanilla);fetch.setDisable(vanilla);open.setDisable(vanilla);modrinth.setDisable(vanilla);
+        Path directory=Path.of(buildTargetField.getText());
+        java.util.function.Consumer<Boolean> lookup=bySearch->{
+            if(busy())return;final String requested;
+            try{requested=bySearch?null:ModUrlBinding.normalize(url.getText());}catch(Exception failure){info.setText(failure.getMessage());return;}
+            operationInFlight=true;root.setDisable(true);setStatus("正在获取百科候选…",true);
+            submitOperation(()->{
+                try(var target=BuildTarget.open(directory,config,db)){
+                    var scraper=new WikiScraperService();scraper.setResourceDatabase(target.database());var binder=new ModUrlBinder(scraper);
+                    var candidate=new ModEntry();candidate.setModId(entry.getModId());candidate.setDisplayName(entry.getDisplayName());candidate.setLoader(entry.getLoader());
+                    var result=bySearch?binder.bind(candidate):binder.inspect(requested,"MANUAL");
+                    Platform.runLater(()->{pending.set(result);url.setText(Objects.toString(result.url(),""));chinese.setText(Objects.toString(result.chineseName(),""));english.setText(Objects.toString(result.englishName(),""));info.setText(result.statusLabel()+" · 总浏览："+Objects.toString(result.views(),"未知")+" · "+Objects.toString(result.note(),"保存后生效"));});
+                }catch(Exception failure){Platform.runLater(()->info.setText(failure.getMessage()));}
+                finally{Platform.runLater(()->{operationInFlight=false;root.setDisable(false);form.setDisable(vanilla);setStatus("就绪",false);});}
+            });
+        };
+        fetch.setOnAction(e->lookup.accept(false));search.setOnAction(e->lookup.accept(true));
+        save.setOnAction(e->{
+            if(busy())return;String value=slug.getText().strip();if(!value.isEmpty()&&!value.matches("[A-Za-z0-9_-]+")){info.setText("Slug 只能包含字母、数字、下划线和连字符。");return;}
+            final ModUrlBinding binding;
+            try{
+                String selected=url.getText().isBlank()?null:ModUrlBinding.normalize(url.getText());var metadata=pending.get();
+                boolean same=metadata!=null&&Objects.equals(selected,metadata.url());
+                binding=vanilla?ModUrlBinding.vanilla():new ModUrlBinding(selected,chinese.getText().strip(),english.getText().strip(),same?metadata.views():null,selected==null?"DISABLED":"FOUND","MANUAL",java.time.Instant.now().toString(),same?metadata.note():"人工设置，浏览量待获取");
+            }catch(Exception failure){info.setText(failure.getMessage());return;}
+            operationInFlight=true;root.setDisable(true);
+            submitOperation(()->{
+                try(var target=BuildTarget.open(directory,config,db)){
+                    var draft=new ModEntry();draft.setModId(entry.getModId());draft.setLoader(entry.getLoader());draft.setVersion(entry.getVersion());draft.setSlug(vanilla?null:value.isEmpty()?null:value);draft.setMcmodBinding(binding);
+                    new ModBindingStore(target.database()).save(draft);
+                    draft.setJarPath(entry.getJarPath());draft.setSource("manual");var cache=new JarScanCache(Path.of(folderField.getText()));cache.updateBinding(draft);if(cache.environment()!=null)cache.save(cache.environment());
+                    Platform.runLater(()->{entry.setSlug(draft.getSlug());entry.setModrinthUrl(draft.getSlug()==null?null:"https://modrinth.com/mod/"+draft.getSlug());entry.setMcmodBinding(binding);modListView.getItems().sort(ModUrlBinding.reviewOrder());modListView.refresh();dialog.close();});
+                }catch(Exception failure){Platform.runLater(()->info.setText(failure.getMessage()));}
+                finally{Platform.runLater(()->{operationInFlight=false;root.setDisable(false);form.setDisable(vanilla);setStatus("就绪",false);});}
+            });
         });
-        root.getChildren().add(openModrinth);
-
-        HBox btns = new HBox(8);
-        Button save = styledButton("保存", "#10b981");
-        save.setOnAction(ev -> {
-            String newSlug = slugField.getText().trim();
-            entry.setSlug(newSlug.isEmpty() ? null : newSlug);
-            if (entry.getSlug() != null) {
-                entry.setModrinthUrl("https://modrinth.com/mod/" + entry.getSlug());
-                entry.setSource("modrinth");
-            }
-            // Refresh list display
-            int idx = scannedMods.indexOf(entry);
-            if (idx >= 0) modListView.getItems().set(idx, formatEntry(entry));
-            d.close();
-        });
-        Button cancel = new Button("取消");
-        cancel.setOnAction(ev -> d.close());
-        btns.getChildren().addAll(save, cancel);
-        root.getChildren().add(btns);
-
-        var scene = new Scene(root, 420, 200);
-        themes.prepare(scene);
-        d.setScene(scene);
-        d.showAndWait();
+        cancel.setOnAction(e->{if(!busy())dialog.close();});dialog.setOnCloseRequest(e->{if(busy())e.consume();});
+        var scene=new Scene(root,760,400);themes.prepare(scene);dialog.setScene(scene);dialog.showAndWait();
     }
 
     /**

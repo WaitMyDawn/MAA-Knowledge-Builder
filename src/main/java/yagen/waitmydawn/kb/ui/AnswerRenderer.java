@@ -91,14 +91,22 @@ public final class AnswerRenderer {
             if (image.isError() || image.getWidth() <= 0) throw new IllegalArgumentException("图片无法解码");
             var view = new ImageView(image); view.setPreserveRatio(true); view.setSmooth(!"RECIPE".equals(picture.role()));
             double preferred = "RECIPE".equals(picture.role()) ? Math.max(260, image.getWidth()) : Math.max(96, image.getWidth());
+            double widthLimit = "RECIPE".equals(picture.role()) ? 1040 : 640;
             view.fitWidthProperty().bind(javafx.beans.binding.Bindings.createDoubleBinding(
-                    () -> Math.min(preferred, Math.min(640, Math.max(120, box.getWidth() - 12))), box.widthProperty()));
+                    () -> Math.min(preferred, Math.min(widthLimit, Math.max(120, box.getWidth() - 12))), box.widthProperty()));
             view.setStyle("-fx-cursor: hand;"); view.setOnMouseClicked(event -> preview(image, caption));
             box.getChildren().add(view);
         } catch (Exception missing) { box.getChildren().add(new Label("图片缓存不可用：" + caption + "。可继续阅读说明和来源。")); }
         String role = switch (Objects.toString(picture.role(), "")) { case "SCAN_PAGE" -> "扫描页 · "; case "PAGE_PREVIEW" -> "整页预览 · "; default -> ""; };
         var label = new Label(role + caption); label.setWrapText(true); label.getStyleClass().add("markdown-muted");
         box.getChildren().add(label);
+        if(picture.grounding()!=null) {
+            var grounding=picture.grounding();String inference=Objects.equals(grounding.basis(),"CONTEXT_INFERRED")?"（按上下文推定）":"";
+            String anchor=Objects.toString(grounding.stepText(),"未确定对应步骤");
+            if(anchor.isBlank())anchor="未确定对应步骤";
+            var step=new Label(yagen.waitmydawn.kb.service.GuideImageSemantics.label(grounding.purpose())+inference+" · "+(anchor.length()>180?anchor.substring(0,180)+"…":anchor));
+            step.setWrapText(true);step.getStyleClass().add("markdown-muted");step.setTooltip(new Tooltip("用途依据："+grounding.basis()+"\n图片文字识别："+grounding.analysisStatus()+"\n"+anchor));box.getChildren().add(step);
+        }
         if (source != null) box.getChildren().add(sourceLink(source));
         return box;
     }

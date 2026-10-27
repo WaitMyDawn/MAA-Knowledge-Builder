@@ -273,7 +273,7 @@ public final class EvalRunner {
         rec.put("evalTotalMs", elapsed + renderMs + judgeMs);
         rec.put("rule", ruleMap(verdict));
         rec.put("judge", judgeMap(judgeOutcome));
-        rec.put("observation", observationMap(observation));
+        rec.put("observation", observationMap(observation,turn.question()));
         rec.put("metrics", metricsMap(result == null ? null : result.metrics));
         rec.put("retrievalPlan", result == null ? null : result.retrievalPlan);
         rec.put("retrievalEvidence", retrievalEvidence(result));
@@ -491,7 +491,7 @@ public final class EvalRunner {
         return map;
     }
 
-    private static Map<String, Object> observationMap(RuleJudge.Observation obs) {
+    private static Map<String, Object> observationMap(RuleJudge.Observation obs,String question) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("tier", obs.tier());
         map.put("retrievalHit", obs.retrievalHit());
@@ -514,6 +514,7 @@ public final class EvalRunner {
         map.put("subPageLabels", obs.subPageLabels());
         map.put("subPageUrls", obs.subPageUrls());
         map.put("artifacts",obs.artifacts());
+        map.put("imageGrounding",yagen.waitmydawn.kb.service.ImageGroundingAssessment.assess(question,obs.answer(),obs.artifacts()));
         var media=obs.media()==null?AnswerMedia.Assessment.empty():obs.media();
         map.put("media",Map.of("candidates",media.candidates(),"displayed",media.displayed(),"valid",media.valid(),
                 "validIllustrations",media.validIllustrations(),"unavailable",media.unavailable(),"citedSources",media.citedSources(),"invalidReferences",media.invalidReferences()));

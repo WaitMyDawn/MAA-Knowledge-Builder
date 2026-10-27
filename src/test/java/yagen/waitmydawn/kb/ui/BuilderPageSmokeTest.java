@@ -35,6 +35,8 @@ class BuilderPageSmokeTest {
                 var scene=new Scene(root,1150,900);root.applyCss();root.layout();
                 var mode=(ComboBox<?>)field(app,"buildModeChoice",null);
                 assertEquals(BuildRequest.Mode.APPEND,mode.getValue());
+                assertEquals("Scan 0/0",((Label)root.lookup("#scan-count")).getText());assertEquals("Bind Url 0/0",((Label)root.lookup("#bind-count")).getText());assertEquals("Build 0/0",((Label)root.lookup("#build-count")).getText());
+                assertTrue(root.lookupAll(".button").stream().anyMatch(node->node instanceof Button b&&b.getText().equals("读取预处理记录")));
                 assertTrue(root.lookupAll(".button").stream().anyMatch(node -> node instanceof Button b && b.getText().equals("选择已有知识库")));
                 var snapshot=scene.snapshot(null);int width=(int)snapshot.getWidth(),height=(int)snapshot.getHeight();
                 int[] pixels=new int[width*height];snapshot.getPixelReader().getPixels(0,0,width,height,javafx.scene.image.PixelFormat.getIntArgbInstance(),pixels,0,width);

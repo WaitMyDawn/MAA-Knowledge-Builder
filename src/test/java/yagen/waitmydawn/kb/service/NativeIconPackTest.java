@@ -30,6 +30,36 @@ class NativeIconPackTest {
     }
     void write(Path root,JsonNode doc)throws Exception{json.writerWithDefaultPrettyPrinter().writeValue(root.resolve("manifest.json").toFile(),doc);}
     long count(DatabaseBuilder db,String table)throws Exception{try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT COUNT(*) FROM "+table)){r.next();return r.getLong(1);}}
+    @Test void transparentIconsAreImportedSeparatelyAndRenderedWithoutStaticFallback()throws Exception {
+        Path pack=temp.resolve("transparent");var doc=fixture(pack);Path png=pack.resolve("icons/demo/widget.png");
+        ImageIO.write(new BufferedImage(32,32,BufferedImage.TYPE_INT_ARGB),"png",png.toFile());
+        var row=(ObjectNode)doc.path("icons").get(0);row.put("status","TRANSPARENT");row.put("sha256",ArtifactFingerprint.sha256(png));write(pack,doc);
+        var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));var db=new DatabaseBuilder(config);db.initDatabase();
+        try(var embedder=new EmbeddingService(null)) {
+            var result=new KnowledgeBuilder(config,db,embedder).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
+            assertEquals(1,result.transparentNativeIcons);assertEquals(0,result.nativeIcons);assertEquals(1,result.failedNativeIcons);
+            var store=new ItemIconStore(db);String profile=store.profiles().getFirst().id();store.selectProfile(profile);
+            assertTrue(store.hasUsableIcons());assertEquals(1,store.profiles().getFirst().icons());assertTrue(store.findDefault(profile,"demo:widget").isPresent());
+            var red=new BufferedImage(32,32,BufferedImage.TYPE_INT_ARGB);red.setRGB(0,0,0xffff0000);var bytes=new java.io.ByteArrayOutputStream();ImageIO.write(red,"png",bytes);
+            var flat=new ImageAssetStore(config.getDataDir()).put(bytes.toByteArray());new KnowledgeContentStore(db).saveImage(flat);
+            try(var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_item_static_icon VALUES('demo:widget',?,'model','demo','FLAT_MODEL')")){p.setString(1,flat.id());p.executeUpdate();}
+            var icons=new ItemIconService(db,config.getDataDir()).snapshot();var icon=icons.item("demo:widget",false);
+            assertEquals("NATIVE_TRANSPARENT",icon.source());assertNotNull(icon.image());assertTrue(icon.detail().contains("完全透明"));
+            String recipe="{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[{\"item\":\"demo:widget\"}],\"result\":{\"item\":\"demo:widget\"}}";
+            var batch=new RendererService(config,db).renderDetailed(List.of(new QaPipeline.RecipeMatch(recipe,"demo:widget","demo","TEST_FIXTURE")));
+            assertEquals("NATIVE_TRANSPARENT",batch.cards().getFirst().output().source());assertTrue(batch.diagnostics().isEmpty());
+            new KnowledgeContentStore(db).validate();assertEquals(0,new VectorStore(db,384).count());
+            Files.delete(new ImageAssetStore(config.getDataDir()).resolve(icon.assetId(),store.findDefault(profile,"demo:widget").orElseThrow().relativePath()));
+            assertEquals("MISSING",new ItemIconService(db,config.getDataDir()).snapshot().item("demo:widget",false).source());
+        }finally{db.shutdown();}
+    }
+    @Test void transparentDeclarationRequiresZeroAlphaButLegacyBlankOkRemainsReadable()throws Exception {
+        Path pack=temp.resolve("declared");var doc=fixture(pack);var row=(ObjectNode)doc.path("icons").get(0);row.put("status","TRANSPARENT");write(pack,doc);
+        assertThrows(java.io.IOException.class,()->NativeIconPack.read(pack));
+        Path png=pack.resolve("icons/demo/widget.png");ImageIO.write(new BufferedImage(32,32,BufferedImage.TYPE_INT_ARGB),"png",png.toFile());row.put("sha256",ArtifactFingerprint.sha256(png));write(pack,doc);
+        assertEquals("TRANSPARENT",NativeIconPack.read(pack).icons().stream().filter(i->i.itemId().equals("demo:widget")).findFirst().orElseThrow().status());
+        row.put("status","OK");write(pack,doc);assertDoesNotThrow(()->NativeIconPack.read(pack));
+    }
     @Test void fileEntryStoresIconsWithoutOcrVectorsOrDocumentsAndRetainsCorpusGeneration()throws Exception {
         Path pack=temp.resolve("renamed-folder");fixture(pack);assertTrue(NativeIconPack.detected(pack));
         var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));
@@ -53,7 +83,7 @@ class NativeIconPackTest {
             String fingerprint=db.contentFingerprint();var again=builder.build(new BuildRequest(List.of(source),BuildRequest.Mode.APPEND),null);
             assertEquals(1,again.reusedIconPacks);assertEquals(fingerprint,db.contentFingerprint());
             var doc=json.readTree(pack.resolve("manifest.json").toFile());((ObjectNode)doc.path("exporter")).put("version","fixture-2");write(pack,doc);
-            assertEquals(1,builder.build(new BuildRequest(List.of(source),BuildRequest.Mode.APPEND),null).conflicts);assertEquals(fingerprint,db.contentFingerprint());
+            assertEquals(1,builder.build(new BuildRequest(List.of(source),BuildRequest.Mode.APPEND),null).nativeIconPacks);assertEquals(2,icons.profiles().size());assertEquals("existing-corpus",db.buildGeneration());
             Files.delete(pack.resolve("icons/demo/widget.png"));assertTrue(new ImageAssetStore(config.getDataDir()).available(stored.assetId(),stored.relativePath()));
         } finally {db.shutdown();}
     }
@@ -75,7 +105,7 @@ class NativeIconPackTest {
         doc=fixture(pack);((ObjectNode)doc.path("icons").get(0)).put("variant","dyed");write(pack,doc);assertThrows(java.io.IOException.class,()->NativeIconPack.read(pack));
         doc=fixture(pack);((ObjectNode)doc.path("icons").get(1)).put("itemId","demo:widget");write(pack,doc);assertThrows(java.io.IOException.class,()->NativeIconPack.read(pack));
         doc=fixture(pack);((ObjectNode)doc.path("rendering")).put("width",64);write(pack,doc);assertThrows(java.io.IOException.class,()->NativeIconPack.read(pack));
-        doc=fixture(pack);((ObjectNode)doc).put("schemaVersion",2);write(pack,doc);assertThrows(java.io.IOException.class,()->NativeIconPack.read(pack));
+        doc=fixture(pack);((ObjectNode)doc).put("schemaVersion",3);write(pack,doc);assertThrows(java.io.IOException.class,()->NativeIconPack.read(pack));
     }
     @Test void compatibleMetadataIsNotAnAssertionOfIdenticalResources()throws Exception {
         Path pack=temp.resolve("pack");var doc=fixture(pack);var read=NativeIconPack.read(pack);

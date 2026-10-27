@@ -8,12 +8,12 @@ import java.io.*;
 import java.nio.file.*;
 import java.util.*;
 
-/** 实机图标协议 v1：精确注册名、默认状态、环境隔离及有界资源校验。 */
+/** 实机图标协议 v1/v2：精确注册名与状态、环境隔离及有界资源校验。 */
 public final class NativeIconPack {
     private static final ObjectMapper JSON=new ObjectMapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
     public static final String FORMAT="mkb-export";
     private static final long MAX_MANIFEST=16L*1024*1024,MAX_ICON=8L*1024*1024,MAX_TOTAL=512L*1024*1024;
-    public record Icon(String itemId,String status,String file,String sha256,String error) {}
+    public record Icon(String itemId,String status,String file,String sha256,String error,String variant,JsonNode state) {}
     public record Pack(Path root,String manifestHash,String environmentHash,String origin,String exporterVersion,
                        String minecraftVersion,String loader,JsonNode environment,JsonNode rendering,
                        String manifestJson,List<Icon> icons) {}
@@ -47,7 +47,8 @@ public final class NativeIconPack {
             tree=JSON.readTree(bytes);
         }
         fields(tree,"format","schemaVersion","origin","exportedAt","exporter","environment","rendering","icons");
-        if(!FORMAT.equals(text(tree,"format",40)) || !tree.path("schemaVersion").isIntegralNumber() || !tree.path("schemaVersion").canConvertToInt() || tree.path("schemaVersion").asInt()!=1) throw new IOException("不支持的 MKB-Export 格式版本");
+        if(!FORMAT.equals(text(tree,"format",40)) || !tree.path("schemaVersion").isIntegralNumber() || !tree.path("schemaVersion").canConvertToInt() || !Set.of(1,2).contains(tree.path("schemaVersion").asInt())) throw new IOException("不支持的 MKB-Export 格式版本");
+        int schema=tree.path("schemaVersion").asInt();
         if(tree.has("exportedAt"))text(tree,"exportedAt",128);
         String origin=text(tree,"origin",40);if(!Set.of("GAME_GUI","FIXTURE").contains(origin)) throw new IOException("origin 必须为 GAME_GUI 或 FIXTURE");
         var exporter=tree.path("exporter");fields(exporter,"id","version");
@@ -71,26 +72,28 @@ public final class NativeIconPack {
         var rows=array(tree,"icons",50000);if(rows.isEmpty())throw new IOException("导出清单没有物品记录");
         var icons=new ArrayList<Icon>();ids.clear();long total=0;
         for(var row:rows) {
-            cancelled();fields(row,"itemId","variant","status","file","sha256","error");
+            cancelled();fields(row,"itemId","variant","status","file","sha256","error","state");
             String item=text(row,"itemId",500);
-            if(!item.matches("[a-z0-9_.-]+:[a-z0-9_./-]+") || item.contains("..") || !ids.add(item)) throw new IOException("物品注册名无效或重复："+item);
-            if(!"default".equals(text(row,"variant",40)))throw new IOException("协议 v1 仅支持 default 状态，不能将变体冒充默认图标");
+            String variant=text(row,"variant",80);JsonNode state=row.get("state");
+            if(!item.matches("[a-z0-9_.-]+:[a-z0-9_./-]+") || item.contains("..") || !ids.add(item+"|"+variant)) throw new IOException("物品注册名或状态无效或重复："+item);
+            if(schema==1&&(!variant.equals("default")||state!=null))throw new IOException("协议 v1 仅支持 default 状态");
+            if(!variant.equals(stateVariant(state)))throw new IOException("状态身份与内容哈希不符");
             String status=text(row,"status",32);
-            if(status.equals("OK")) {
+            if(Set.of("OK","TRANSPARENT").contains(status)) {
                 String file=text(row,"file",1000),sha=text(row,"sha256",64);hash(sha);
                 if(!file.startsWith("icons/") || !file.endsWith(".png") || row.has("error")) throw new IOException("成功图标必须引用 icons/ 内的 PNG");
-                var icon=new Icon(item,status,file,sha,null);
+                var icon=new Icon(item,status,file,sha,null,variant,state);
                 total+=validate(root,icon,width);if(total>MAX_TOTAL)throw new IOException("导出图标总量超过 512 MiB");icons.add(icon);
             } else if(Set.of("FAILED","UNSUPPORTED").contains(status)) {
                 if(row.has("file") || row.has("sha256"))throw new IOException("失败记录不能携带可用图标映射");
-                icons.add(new Icon(item,status,null,null,text(row,"error",2000)));
+                icons.add(new Icon(item,status,null,null,text(row,"error",2000),variant,state));
             } else throw new IOException("未知图标状态："+status);
         }
-        icons.sort(Comparator.comparing(Icon::itemId));
+        icons.sort(Comparator.comparing(Icon::itemId).thenComparing(Icon::variant));
         ObjectNode normalized=((ObjectNode)tree).deepCopy();normalized.remove("exportedAt");
         var sortedMods=new ArrayList<JsonNode>();mods.forEach(sortedMods::add);sortedMods.sort(Comparator.comparing(m -> m.path("id").asText()));
         var sortedArray=JSON.createArrayNode();sortedMods.forEach(sortedArray::add);((ObjectNode)normalized.path("environment")).set("mods",sortedArray);
-        var sortedIcons=new ArrayList<JsonNode>();rows.forEach(sortedIcons::add);sortedIcons.sort(Comparator.comparing(m -> m.path("itemId").asText()));
+        var sortedIcons=new ArrayList<JsonNode>();rows.forEach(sortedIcons::add);sortedIcons.sort(Comparator.comparing((JsonNode m) -> m.path("itemId").asText()).thenComparing(m->m.path("variant").asText()));
         var iconArray=JSON.createArrayNode();sortedIcons.forEach(iconArray::add);normalized.set("icons",iconArray);
         String canonical=canonical(normalized).toString(),environment=canonical(normalized.path("environment")).toString();
         return new Pack(root.toRealPath(),yagen.waitmydawn.kb.model.BuildRequest.fingerprint(canonical),yagen.waitmydawn.kb.model.BuildRequest.fingerprint(environment),origin,exporterVersion,version,loader,normalized.path("environment"),rendering,canonical,List.copyOf(icons));
@@ -106,6 +109,8 @@ public final class NativeIconPack {
                 reader.setInput(input);
                 if(!reader.getFormatName().equalsIgnoreCase("png") || reader.getWidth(0)!=width || reader.getHeight(0)!=width)throw new IOException("PNG 尺寸与清单不符："+icon.itemId());
                 var image=reader.read(0);if(image==null || !image.getColorModel().hasAlpha())throw new IOException("图标缺少 Alpha 通道："+icon.itemId());
+                if(icon.status().equals("TRANSPARENT"))for(int y=0;y<width;y++)for(int x=0;x<width;x++)
+                    if((image.getRGB(x,y)>>>24)!=0)throw new IOException("声明完全透明的图标含可见像素："+icon.itemId());
             } finally {reader.dispose();}
         }
         return Files.size(file);
@@ -113,6 +118,14 @@ public final class NativeIconPack {
     static JsonNode canonical(JsonNode value) {
         if(value.isObject()) {var result=JSON.createObjectNode();var names=new ArrayList<String>();value.fieldNames().forEachRemaining(names::add);Collections.sort(names);for(String name:names)result.set(name,canonical(value.get(name)));return result;}
         if(value.isArray()) {var result=JSON.createArrayNode();value.forEach(v -> result.add(canonical(v)));return result;}return value;
+    }
+    public static String stateVariant(JsonNode state)throws IOException {
+        if(state==null)return "default";
+        if(!state.isObject()||state.size()!=1||!(state.has("components")&&state.path("components").isObject()&&!state.path("components").isEmpty()
+                ||state.has("nbt")&&state.path("nbt").isTextual()&&!state.path("nbt").asText().isBlank()))throw new IOException("状态必须包含非空 components 对象或 nbt 字符串");
+        String value=canonical(state).toString().replace("\u2028","\\u2028").replace("\u2029","\\u2029");
+        if(value.length()>65536)throw new IOException("状态超过 64 KiB");
+        return "state:"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(value);
     }
     private static void fields(JsonNode node,String... allowed) throws IOException {
         if(node==null || !node.isObject())throw new IOException("清单字段必须为对象");var names=Set.of(allowed);

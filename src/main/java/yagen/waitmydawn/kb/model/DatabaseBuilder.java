@@ -54,10 +54,13 @@ public class DatabaseBuilder {
             "rag_texture_cache", "rag_entity_registry", "rag_web_cache", "rag_web_category", "rag_web_category_member", "rag_vectors", "rag_vector_profile", "rag_build_metadata",
             "rag_knowledge_source", "rag_document", "rag_content_chunk", "rag_image_asset", "rag_image_occurrence", "rag_chunk_image",
             "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block","rag_item_icon_profile","rag_item_icon",
-            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import");
+            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import","rag_image_analysis","rag_image_grounding","rag_source_state","rag_jar_source","rag_source_event","rag_document_parser","rag_jar_parser");
 
     /** 网络与解析工作在临时库完成，发布事务只包含已校验的数据复制。 */
     public void replaceBuildDataFrom(DatabaseBuilder staging) {
+        replaceBuildDataFrom(staging,List.of());
+    }
+    public void replaceBuildDataFrom(DatabaseBuilder staging,java.util.Collection<String> invalidateUrls) {
         try (var target = getConnection(); var source = staging.getConnection()) {
             target.setAutoCommit(false);
             try {
@@ -87,6 +90,12 @@ public class DatabaseBuilder {
                             }
                             insert.executeBatch();
                         }
+                    }
+                }
+                for(String table:List.of("rag_public_page","rag_public_embedding")) {
+                    boolean exists;try(var tables=target.getMetaData().getTables(null,null,table,null)){exists=tables.next();}
+                    if(exists&&!invalidateUrls.isEmpty())try(var p=target.prepareStatement("DELETE FROM "+table+" WHERE "+(table.equals("rag_public_page")?"url":"source_url")+"=?")) {
+                        for(String url:invalidateUrls){p.setString(1,url);p.addBatch();}p.executeBatch();
                     }
                 }
                 target.commit();
@@ -238,6 +247,7 @@ public class DatabaseBuilder {
                 )
                 """);
 
+            stmt.execute("ALTER TABLE rag_mod_info ADD COLUMN IF NOT EXISTS mcmod_binding CLOB");
             // rag_recipe — 配方
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS rag_recipe (
@@ -354,15 +364,21 @@ public class DatabaseBuilder {
 
     /** 保存模组元数据到 rag_mod_info */
     public void saveModEntry(ModEntry entry) {
+        try (Connection conn = getConnection()) {
+        Long existingId=null;
+        // 未声明游戏版本的元数据也需要原位更新；MERGE 的复合 KEY 不匹配 NULL。
+        try(var find=conn.prepareStatement("SELECT MIN(id) FROM rag_mod_info WHERE mod_id=? AND loader IS NOT DISTINCT FROM ? AND mc_version IS NOT DISTINCT FROM ?")){
+            find.setString(1,entry.getModId());find.setString(2,entry.getLoader());find.setString(3,entry.getMcVersion());
+            try(var row=find.executeQuery()){if(row.next()){long id=row.getLong(1);if(!row.wasNull())existingId=id;}}
+        }
         String sql = """
             MERGE INTO rag_mod_info (mod_id, display_name, version, description, authors, license,
                 logo_file, issue_tracker_url, loader, mc_version, slug, modrinth_url, source,
-                jar_path, jar_file_name, updated_at)
-            KEY (mod_id, loader, mc_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """;
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+                jar_path, jar_file_name, mcmod_binding, updated_at%s)
+            KEY (%s)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP%s)
+            """.formatted(existingId==null?"":", id",existingId==null?"mod_id, loader, mc_version":"id",existingId==null?"":", ?");
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, entry.getModId());
             ps.setString(2, entry.getDisplayName());
             ps.setString(3, entry.getVersion());
@@ -378,8 +394,11 @@ public class DatabaseBuilder {
             ps.setString(13, entry.getSource());
             ps.setString(14, entry.getJarPath());
             ps.setString(15, entry.getJarFileName());
+            ps.setString(16,yagen.waitmydawn.kb.service.ModBindingStore.encode(entry.getMcmodBinding()));
+            if(existingId!=null)ps.setLong(17,existingId);
             ps.executeUpdate();
             log.debug("ModEntry saved: {}", entry.getModId());
+        }
         } catch (SQLException e) {
             log.error("Save ModEntry failed: {}", e.getMessage(), e);
             throw new IllegalStateException("Save ModEntry failed", e);
@@ -577,6 +596,7 @@ public class DatabaseBuilder {
         e.setSource(rs.getString("source"));
         e.setJarPath(rs.getString("jar_path"));
         e.setJarFileName(rs.getString("jar_file_name"));
+        for(int i=1;i<=rs.getMetaData().getColumnCount();i++)if(rs.getMetaData().getColumnName(i).equalsIgnoreCase("mcmod_binding"))e.setMcmodBinding(yagen.waitmydawn.kb.service.ModBindingStore.decode(rs.getString(i)));
         return e;
     }
 }

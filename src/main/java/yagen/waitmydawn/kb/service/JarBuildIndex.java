@@ -51,6 +51,7 @@ public final class JarBuildIndex {
     public void save(ModEntry entry,String hash) {
         try(var c=db.getConnection();var p=c.prepareStatement("MERGE INTO rag_jar_import(id,content_hash) KEY(id) VALUES(?,?)")) {
             p.setString(1,entry.getModId());p.setString(2,hash);p.executeUpdate();
+            new SourceLifecycleStore(db).execute("MERGE INTO rag_jar_parser KEY(id) VALUES(?,?)",entry.getModId(),SourceLifecycleStore.parserVersion(yagen.waitmydawn.kb.model.BuildRequest.Kind.JAR_DIRECTORY));
         } catch(java.sql.SQLException e) {throw new IllegalStateException("JAR 指纹保存失败",e);}
     }
 

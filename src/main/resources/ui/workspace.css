@@ -13,6 +13,13 @@
     -app-danger: #ff9eb1; -app-danger-bg: #422432; -app-code: #ffadb9;
     -app-success: #6be3b8; -app-warning: #f2c56b;
 }
+.root { -progress-scan-color: #4d4d4a; -progress-bind-color: #166534; -progress-build-color: #6d28d9; -mod-id-color: #075985; -mod-slug-color: #92400e; -mod-url-color: #166534; }
+.root.theme-dark { -progress-scan-color: #b2dea3; -progress-bind-color: #86efac; -progress-build-color: #c4b5fd; -mod-id-color: #67e8f9; -mod-slug-color: #fcd34d; -mod-url-color: #86efac; }
+.mod-list-cell .mod-field-id { -fx-fill: -mod-id-color; -fx-font-weight: bold; }
+.mod-list-cell .mod-field-slug { -fx-fill: -mod-slug-color; }
+.mod-list-cell .mod-field-url { -fx-fill: -mod-url-color; }
+.mod-list-cell .mod-field-plain { -fx-fill: -app-text; }
+.mod-list-cell .mod-field-muted { -fx-fill: -app-muted; }
 .root { -fx-font-family: "Microsoft YaHei", "Segoe UI"; -fx-font-size: 13px; -fx-base: -app-surface; -fx-control-inner-background: -app-surface; -fx-text-base-color: -app-text; -fx-text-background-color: -app-text; -fx-background: -app-background; -fx-accent: #4f46e5; -fx-focus-color: #818cf8; -fx-faint-focus-color: transparent; }
 .workspace-page { -fx-background-color: -app-background; }
 .page-title { -fx-font-size: 24px; -fx-font-weight: bold; -fx-text-fill: -app-text; }
@@ -71,3 +78,7 @@
 .context-menu { -fx-background-color: -app-surface; }
 .menu-item .label { -fx-text-fill: -app-text; }
 .menu-item:focused { -fx-background-color: -app-selection; }
+
+.scan-progress-label { -fx-text-fill: -progress-scan-color; -fx-font-weight: bold; }
+.bind-progress-label { -fx-text-fill: -progress-bind-color; -fx-font-weight: bold; }
+.build-progress-label { -fx-text-fill: -progress-build-color; -fx-font-weight: bold; }

@@ -47,7 +47,10 @@ public final class ThemeService implements AutoCloseable {
         if (!scene.getStylesheets().contains(css)) scene.getStylesheets().add(css);
         scene.getRoot().getStyleClass().removeAll("theme-dark", "theme-light");
         scene.getRoot().getStyleClass().add(dark ? "theme-dark" : "theme-light");
+        String style=scene.getRoot().getStyle().replaceAll("-progress-(?:scan|bind|build)-color\\s*:[^;]+;?","").replaceAll("-mod-(?:id|slug|url)-color\\s*:[^;]+;?","");
+        scene.getRoot().setStyle(style+";-mod-id-color:"+config.getModFieldColor(dark,"modid")+";-mod-slug-color:"+config.getModFieldColor(dark,"slug")+";-mod-url-color:"+config.getModFieldColor(dark,"url")+";-progress-scan-color:"+config.getProgressColor(dark,"scan")+";-progress-bind-color:"+config.getProgressColor(dark,"bind")+";-progress-build-color:"+config.getProgressColor(dark,"build")+";");
     }
+    public void refreshPalette(){for(Window window:Window.getWindows())apply(window);}
     private boolean resolve() {
         return config.getThemeMode() == ThemeMode.DARK ||
                 (config.getThemeMode() == ThemeMode.SYSTEM && windows != null && windows.darkSystemTheme());
@@ -60,6 +63,7 @@ public final class ThemeService implements AutoCloseable {
     }
     private void apply(Window window) {
         if (window.getScene() != null) prepare(window.getScene());
+        if(window instanceof Stage stage&&stage.getIcons().isEmpty())AppIcons.apply(stage);
         if (windows != null && window instanceof Stage stage) {
             try { windows.applyTitleBar(stage.getTitle(), dark); }
             catch (RuntimeException | LinkageError e) {

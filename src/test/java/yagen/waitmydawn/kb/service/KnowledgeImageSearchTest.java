@@ -125,4 +125,19 @@ class KnowledgeImageSearchTest {
         var result=new KnowledgeImageSearch(db,temp).search("傀儡组装升级",artifacts,diagnostics());
         assertTrue(result.pictures().isEmpty());assertEquals("WEAK_TOPIC_MATCH",result.audit().candidates().getFirst().reason());
     }
+    @Test void sameChapterCannotDonateTheWrongOperationStep()throws Exception {
+        block("upgrade",1,"组装","/root/s1/","第2步：升级傀儡，把升级模块放入升级菜单。");
+        picture("assembly","seed","傀儡组装结构示意",null,"ILLUSTRATION");picture("upgrade","upgrade","傀儡升级界面",null,"ILLUSTRATION");
+        var source=new AnswerArtifacts.Source("s1","doc","指南","https://example.com/guide","组装",null,"NATIVE","第1步：组装傀儡。第2步：升级傀儡，把升级模块放入升级菜单。");
+        var result=new KnowledgeImageSearch(db,temp).search("傀儡升级",new AnswerArtifacts("pack","资料",List.of(source),List.of()),diagnostics());
+        assertEquals(1,result.pictures().size());assertTrue(result.pictures().getFirst().grounding().stepText().contains("第2步"));
+        assertTrue(result.audit().candidates().stream().anyMatch(d->d.reason().equals("STEP_ACTION_MISMATCH")));
+    }
+    @Test void numberedStepsAndDecorativeImagesAreExplicitNegativeCases()throws Exception {
+        block("step",2,"组装","/root/s1/","第1步：将傀儡核心放到底座。");picture("wrongStep","step","傀儡核心操作示意",null,"ILLUSTRATION");
+        picture("logo","seed","傀儡手册站点标志",null,"ILLUSTRATION");
+        var result=new KnowledgeImageSearch(db,temp).search("傀儡核心第2步",artifacts(),diagnostics());
+        assertTrue(result.pictures().isEmpty());assertTrue(result.audit().candidates().stream().anyMatch(d->d.reason().equals("STEP_NUMBER_MISMATCH")));
+        assertTrue(result.audit().candidates().stream().anyMatch(d->d.reason().equals("DECORATIVE_IMAGE")));
+    }
 }

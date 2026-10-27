@@ -29,6 +29,8 @@ class SessionReviewSmokeTest {
         var done=new CompletableFuture<Void>();
         Platform.startup(()->{
             try {
+                var iconStage=new javafx.stage.Stage();AppIcons.apply(iconStage);
+                assertEquals(7,iconStage.getIcons().size());assertEquals(256,iconStage.getIcons().getLast().getWidth());iconStage.close();
                 var app=new MaaKnowledgeBuilderApp();
                 field(app,"config",config);field(app,"db",db);field(app,"dbManager",manager);field(app,"chatHistoryService",history);
                 var method=MaaKnowledgeBuilderApp.class.getDeclaredMethod("buildQAPage");method.setAccessible(true);

@@ -37,7 +37,7 @@
     },
     "icons": {"type": "array", "minItems": 1, "maxItems": 50000, "items": {"oneOf": [
       {"type": "object", "additionalProperties": false, "required": ["itemId", "variant", "status", "file", "sha256"], "properties": {
-        "itemId": {"$ref": "#/$defs/itemId"}, "variant": {"const": "default"}, "status": {"const": "OK"},
+        "itemId": {"$ref": "#/$defs/itemId"}, "variant": {"const": "default"}, "status": {"enum": ["OK", "TRANSPARENT"]},
         "file": {"type": "string", "pattern": "^icons/.*\\.png$", "maxLength": 1000}, "sha256": {"$ref": "#/$defs/hash"}
       }},
       {"type": "object", "additionalProperties": false, "required": ["itemId", "variant", "status", "error"], "properties": {

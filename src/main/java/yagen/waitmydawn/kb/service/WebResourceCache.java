@@ -22,6 +22,9 @@ final class WebResourceCache {
     }
 
     synchronized WikiScraperService.Resource fetch(String input, String referer, boolean image) {
+        return fetch(input,referer,image,false);
+    }
+    synchronized WikiScraperService.Resource fetch(String input, String referer, boolean image,boolean refresh) {
         String url = WebUrlPolicy.normalize(input);
         WikiScraperService.Resource cached = null;
         long fetchedAt = 0;
@@ -35,7 +38,7 @@ final class WebResourceCache {
                 }
             }
         } catch (java.sql.SQLException e) { throw new IllegalStateException("网页资源缓存读取失败", e); }
-        if (cached != null && System.currentTimeMillis() - fetchedAt < TTL) {
+        if (!refresh && cached != null && System.currentTimeMillis() - fetchedAt < TTL) {
             RetrievalTelemetry.pageHit(true); return cached;
         }
         var headers = new java.util.LinkedHashMap<String, String>();
@@ -51,6 +54,12 @@ final class WebResourceCache {
         return fetched;
     }
 
+    WikiScraperService.Resource snapshot(String input) {
+        String url=WebUrlPolicy.normalize(input);
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT final_url,body,content_type,etag,last_modified FROM rag_public_resource WHERE url=?")) {
+            p.setString(1,url);try(var r=p.executeQuery()){return r.next()?new WikiScraperService.Resource(200,r.getBytes(2),r.getString(3),r.getString(1),r.getString(4),r.getString(5)):new WikiScraperService.Resource(404,null,"",url,null,null);}
+        }catch(java.sql.SQLException e){throw new IllegalStateException("原始网页缓存读取失败",e);}
+    }
     private void put(String url, WikiScraperService.Resource value) {
         try (var c = db.getConnection()) {
             c.setAutoCommit(false);

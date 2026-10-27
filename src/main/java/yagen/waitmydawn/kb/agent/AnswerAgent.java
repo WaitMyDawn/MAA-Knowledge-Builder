@@ -100,6 +100,10 @@ public class AnswerAgent {
             Cite imported evidence using the provided [[source:ID]] markers. Insert [[image:ID]] immediately
             after the explanation it supports. Use only listed IDs; never emit image URLs, local paths or
             kb-image/kb-source links. Do not claim to have visually inspected an image from captions alone.
+            Image purpose and step labels are retrieval metadata, not verified visual facts. Use an image only
+            beside the matching bound paragraph or operation. Do not reuse an assembly image for an upgrade
+            instruction or use a sibling chapter's screenshot to fill an unsupported mechanism. CONTEXT_INFERRED
+            is a positional inference; UNKNOWN does not establish an image's contents.
 
             [Data Quality Tiers — choose your approach based on what's available]
             - TIER A (rich data): Recipes + detailed vector chunks available → answer fully from data.

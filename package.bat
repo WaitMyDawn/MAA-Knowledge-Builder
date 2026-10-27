@@ -28,6 +28,8 @@ if errorlevel 1 (
 )
 
 echo [2/2] Creating portable package with jpackage...
+java scripts\PrepareAppIcon.java src\main\resources\icon.png target\app-icon.ico
+if errorlevel 1 exit /b 1
 
 REM --- Staging dir: ONLY the shaded JAR (no JavaFX) ---
 REM jpackage puts everything in --input onto classpath.
@@ -41,6 +43,7 @@ jpackage ^
   --name "MAA-Knowledge-Builder" ^
   --description "MAA Agentic RAG Knowledge Builder" ^
   --vendor "Yagen" ^
+  --icon target\app-icon.ico ^
   --app-version "1.0.0" ^
   --input target\jpackage-staging ^
   --main-jar MAA-Knowledge-Builder-shaded.jar ^

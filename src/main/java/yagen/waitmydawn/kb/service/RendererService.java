@@ -60,7 +60,7 @@ public class RendererService {
                 for(var slot:plan.slots()) {
                     var selected=icons.ingredient(slot.ingredient());var icon=selected.icon();
                     var warnings=new ArrayList<>(selected.warnings());
-                    if(!icon.source().equals("NATIVE"))warnings.add(Objects.toString(icon.itemId(),slot.role())+"："+icon.detail());
+                    if(!Set.of("NATIVE","NATIVE_TRANSPARENT").contains(icon.source()))warnings.add(Objects.toString(icon.itemId(),slot.role())+"："+icon.detail());
                     notes.addAll(warnings);
                     String constraints=slot.ingredient().unsupported()!=null?slot.ingredient().unsupported():slot.ingredient().alternatives().stream().map(RecipePlan.Alternative::label).collect(java.util.stream.Collectors.joining(" / "));
                     String preview=icon.itemId()==null?"未确定":icon.name()+" ("+icon.itemId()+")";
@@ -69,7 +69,7 @@ public class RendererService {
                     inputs.add(new RecipeCardRenderer.Input(slot,visual(icon),description));
                     evidence.add(new SlotEvidence(slot.index(),slot.role(),slot.ingredient().count(),slot.ingredient().alternatives(),selected.candidates(),proof(icon),warnings));
                 }
-                var output=icons.item(plan.output().itemId(),plan.output().stateful()||plan.output().dynamic());
+                var output=icons.item(plan.output().itemId(),plan.output().stateful()||plan.output().dynamic(),plan.output().state());
                 if(!output.source().equals("NATIVE"))notes.add("产物："+output.detail());
                 var counts=new TreeMap<String,Integer>();inputs.forEach(i->counts.merge(origin(i.visual().source()),1,Integer::sum));counts.merge(origin(output.source()),1,Integer::sum);
                 metadata.add("图标槽位："+counts);
@@ -107,7 +107,7 @@ public class RendererService {
     }
     private static RecipeCardRenderer.Visual visual(ItemIconService.Icon icon){return new RecipeCardRenderer.Visual(icon.itemId(),icon.name(),icon.image(),icon.source(),icon.detail());}
     private static IconEvidence proof(ItemIconService.Icon icon){return new IconEvidence(icon.itemId(),icon.assetId(),icon.source(),icon.detail());}
-    private static String origin(String value){return switch(value){case "NATIVE"->"实机";case "JAR_FLAT"->"JAR 平面";default->"缺失/动态";};}
+    private static String origin(String value){return switch(value){case "NATIVE"->"实机";case "NATIVE_TRANSPARENT"->"实机透明";case "JAR_FLAT"->"JAR 平面";default->"缺失/动态";};}
     private static String cachedHash(Path file,Path sidecar,String fingerprint) {
         try {
             if(!Files.isRegularFile(file,LinkOption.NOFOLLOW_LINKS)||!Files.isRegularFile(sidecar,LinkOption.NOFOLLOW_LINKS)||Files.size(sidecar)>16*1024*1024)return null;
