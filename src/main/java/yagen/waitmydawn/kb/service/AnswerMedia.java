@@ -153,7 +153,8 @@ public final class AnswerMedia {
             var card=cards.get(picture.id());if(card==null){pictures.add(picture);continue;}
             String sourceId="s"+BuildRequest.fingerprint("recipe:"+card.key()).substring(0,20);
             String evidence=card.summary()+"\n原始配方：\n"+card.recipeJson();if(evidence.length()>24000)evidence=evidence.substring(0,24000);
-            if(sources.stream().noneMatch(s -> s.id().equals(sourceId)))sources.add(new AnswerArtifacts.Source(sourceId,"recipe:"+card.fingerprint(),card.recipeId(),"jar:"+card.sourceMod()+"!/"+card.recipeId(),card.plan().kind().label,null,card.sourceType(),evidence));
+            String location=card.sourceType().equals("RUNTIME_SNAPSHOT")?"mkb-runtime:"+Objects.toString(card.profileId(),"active")+"/"+card.recipeId():"jar:"+card.sourceMod()+"!/"+card.recipeId();
+            if(sources.stream().noneMatch(s -> s.id().equals(sourceId)))sources.add(new AnswerArtifacts.Source(sourceId,"recipe:"+card.fingerprint(),card.recipeId(),location,card.plan().kind().label,null,card.sourceType(),evidence));
             pictures.add(new AnswerArtifacts.Picture(picture.id(),picture.assetId(),picture.relativePath(),card.plan().kind().station+" · "+picture.caption(),sourceId,"RECIPE",List.of(),card.summary()));
         }
         result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());

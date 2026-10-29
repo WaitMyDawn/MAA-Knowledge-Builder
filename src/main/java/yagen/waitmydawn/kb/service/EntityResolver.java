@@ -31,6 +31,12 @@ public class EntityResolver {
 
     /** Rebuild index from vector DB's lang_items chunks */
     public void rebuildFromDB(yagen.waitmydawn.kb.model.DatabaseBuilder db) {
+        if(RuntimeKnowledgeStore.active(db)!=null) {
+            cnToEn.clear();enToCn.clear();
+            try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT item_id,display_name FROM "+RuntimeKnowledgeStore.nameRelation(db)+" ORDER BY item_id,language")) {
+                while(r.next()){String id=r.getString(1),name=r.getString(2);cnToEn.put(name,id);enToCn.putIfAbsent(id,name);}return;
+            }catch(Exception failure){throw new IllegalStateException("运行时名称索引读取失败",failure);}
+        }
         try (var c = db.getConnection();
              var s = c.createStatement();
              var r = s.executeQuery("SELECT chunk_text FROM rag_vectors WHERE chunk_type = 'lang_items' LIMIT 1000")) {

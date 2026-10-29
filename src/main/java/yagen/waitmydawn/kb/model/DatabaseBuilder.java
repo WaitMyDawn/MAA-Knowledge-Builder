@@ -54,7 +54,7 @@ public class DatabaseBuilder {
             "rag_texture_cache", "rag_entity_registry", "rag_web_cache", "rag_web_category", "rag_web_category_member", "rag_vectors", "rag_vector_profile", "rag_build_metadata",
             "rag_knowledge_source", "rag_document", "rag_content_chunk", "rag_image_asset", "rag_image_occurrence", "rag_chunk_image",
             "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block","rag_item_icon_profile","rag_item_icon",
-            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import","rag_image_analysis","rag_image_grounding","rag_source_state","rag_jar_source","rag_source_event","rag_document_parser","rag_jar_parser");
+            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import","rag_image_analysis","rag_image_grounding","rag_source_state","rag_jar_source","rag_source_event","rag_document_parser","rag_jar_parser","rag_runtime_snapshot","rag_runtime_record","rag_runtime_name","rag_runtime_recipe");
 
     /** 网络与解析工作在临时库完成，发布事务只包含已校验的数据复制。 */
     public void replaceBuildDataFrom(DatabaseBuilder staging) {
@@ -119,7 +119,8 @@ public class DatabaseBuilder {
                     String order = table.equals("rag_build_metadata") ? "name"
                             : table.equals("rag_web_category") ? "category_id"
                             : table.equals("rag_web_category_member") ? "category_id,item_url"
-                            : table.equals("rag_chunk_image") ? "chunk_id,occurrence_id" : table.equals("rag_chunk_block")?"chunk_id,block_id":"id";
+                            : table.equals("rag_chunk_image") ? "chunk_id,occurrence_id" : table.equals("rag_chunk_block")?"chunk_id,block_id"
+                            : table.equals("rag_runtime_snapshot")?"source_id":table.equals("rag_runtime_record")?"profile_id,category,record_id":table.equals("rag_runtime_name")?"profile_id,item_id,language":"id";
                     try (var s = c.createStatement(); var rows = s.executeQuery("SELECT * FROM " + table + " ORDER BY " + order)) {
                         var metadata = rows.getMetaData();
                         while (rows.next()) for (int i = 1; i <= metadata.getColumnCount(); i++) {

@@ -37,6 +37,20 @@ class BuilderPageSmokeTest {
                 assertEquals(BuildRequest.Mode.APPEND,mode.getValue());
                 assertEquals("Scan 0/0",((Label)root.lookup("#scan-count")).getText());assertEquals("Bind Url 0/0",((Label)root.lookup("#bind-count")).getText());assertEquals("Build 0/0",((Label)root.lookup("#build-count")).getText());
                 assertTrue(root.lookupAll(".button").stream().anyMatch(node->node instanceof Button b&&b.getText().equals("读取预处理记录")));
+                assertTrue(root.lookupAll(".button").stream().anyMatch(node->node instanceof Button b&&b.getText().equals("查找导出目录")));
+                assertTrue(((Label)root.lookup("#snapshot-build-status")).getText().contains("重建"));
+                for(String text:List.of("选择游戏快照…","使用已关联快照","校验快照"))assertTrue(root.lookupAll(".button").stream().anyMatch(n->n instanceof Button b&&b.getText().equals(text)));
+                Path mods=Files.createDirectories(temp.resolve("instance/mods")),export=Files.createDirectory(temp.resolve("instance/MKB-Export-test"));
+                var documents=(TextArea)field(app,"buildDocumentsField",null);documents.setText(temp.resolve("notes").toString());
+                var choose=MaaKnowledgeBuilderApp.class.getDeclaredMethod("chooseSiblingExport",Path.class,javafx.stage.Stage.class);choose.setAccessible(true);
+                Platform.runLater(()->{
+                    for(var window:List.copyOf(javafx.stage.Window.getWindows()))if(window.isShowing()) {
+                        var pane=(DialogPane)window.getScene().lookup(".dialog-pane");
+                        if(pane!=null)((Button)pane.lookupButton(ButtonType.OK)).fire();
+                    }
+                });
+                choose.invoke(app,mods,null);
+                assertEquals(temp.resolve("notes")+"\n"+export,documents.getText());
                 assertTrue(root.lookupAll(".button").stream().anyMatch(node -> node instanceof Button b && b.getText().equals("选择已有知识库")));
                 var snapshot=scene.snapshot(null);int width=(int)snapshot.getWidth(),height=(int)snapshot.getHeight();
                 int[] pixels=new int[width*height];snapshot.getPixelReader().getPixels(0,0,width,height,javafx.scene.image.PixelFormat.getIntArgbInstance(),pixels,0,width);

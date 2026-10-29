@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MKB runtime category payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "schemaVersion",
+    "category",
+    "authoritative",
+    "records"
+  ],
+  "properties": {
+    "format": {
+      "const": "mkb-data"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "category": {
+      "enum": [
+        "mod_metadata",
+        "registries",
+        "language",
+        "recipes",
+        "tags",
+        "loot_tables",
+        "loot_modifiers",
+        "entity_icons"
+      ]
+    },
+    "authoritative": {
+      "const": true
+    },
+    "exclusions": {
+      "type": "array",
+      "maxItems": 250000,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "maxItems": 250000,
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "error": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "normalizationStatus": {
+            "enum": [
+              "STATIC",
+              "DYNAMIC",
+              "UNSUPPORTED"
+            ]
+          },
+          "serialization": {
+            "enum": [
+              "CODEC_JSON",
+              "RUNTIME_ADAPTER",
+              "NETWORK_ONLY"
+            ]
+          },
+          "runtimeLoaded": {
+            "const": true
+          },
+          "definition": {
+            "type": "object"
+          },
+          "renderJson": {
+            "type": "object"
+          },
+          "members": {
+            "type": "array",
+            "maxItems": 100000,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "translations": {
+            "type": "object",
+            "maxProperties": 250000,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 65536
+            }
+          }
+        }
+      }
+    },
+    "adapterWarnings": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "maxLength": 2000
+      }
+    },
+    "imageStorage": {
+      "const": "EXTERNAL_PNG"
+    },
+    "imageReferencesVersion": {
+      "const": 1
+    },
+    "blockedEntitySpawns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "worldSpawnHooks": {
+      "type": "boolean"
+    }
+  },
+  "$comment": "Cross-record identity, category-specific fields, accounting and hash consistency are enforced by RuntimeSnapshotData and ExportSnapshotPreflight.",
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "imageStorage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "category": {
+            "const": "entity_icons"
+          },
+          "records": {
+            "items": {
+              "not": {
+                "required": [
+                  "pngBase64"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

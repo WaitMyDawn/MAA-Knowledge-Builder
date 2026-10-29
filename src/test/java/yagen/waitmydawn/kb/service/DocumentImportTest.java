@@ -78,7 +78,7 @@ class DocumentImportTest {
         LocalOcrEngine engine = image -> { calls.incrementAndGet(); return new LocalOcrEngine.Result(image.getWidth() > 500 ? "GOLEM CORE 1234" : "CORE LABEL", "OK", "test"); };
         try (var embedder = new EmbeddingService(null)) {
             var result = new KnowledgeBuilder(config, db, embedder,
-                    List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(request(folder), null);
+                    List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null);
             assertEquals(5, result.documents);
             assertTrue(result.localImages >= 4); assertTrue(calls.get() >= 3);
             assertEquals(5, count(db, "SELECT COUNT(*) FROM rag_document_import WHERE status='INDEXED'"));
@@ -98,7 +98,7 @@ class DocumentImportTest {
         var calls = new AtomicInteger();
         LocalOcrEngine engine = image -> { calls.incrementAndGet(); return new LocalOcrEngine.Result("SCANNED UNIQUE PHRASE", "OK", "test"); };
         try (var embedder = new EmbeddingService(null)) {
-            new KnowledgeBuilder(config, db, embedder, List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(request(folder), null);
+            new KnowledgeBuilder(config, db, embedder, List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null);
             assertEquals(1, calls.get());
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_content_chunk WHERE page_number=2 AND content LIKE '%SCANNED UNIQUE PHRASE%'"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_content_chunk WHERE page_number=1 AND extraction_method='NATIVE'"));
@@ -111,7 +111,7 @@ class DocumentImportTest {
         ImageIO.write(textImage(), "png", folder.resolve("unknown.png").toFile());
         LocalOcrEngine engine = image -> new LocalOcrEngine.Result("", "UNAVAILABLE", "");
         try (var embedder = new EmbeddingService(null)) {
-            var result = new KnowledgeBuilder(config, db, embedder, List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(request(folder), null);
+            var result = new KnowledgeBuilder(config, db, embedder, List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null);
             assertEquals(1, result.documents); assertFalse(result.warnings.isEmpty());
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_document_import WHERE status='PARTIAL'"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_content_chunk WHERE extraction_method='METADATA_ONLY'"));
@@ -126,11 +126,11 @@ class DocumentImportTest {
         Files.writeString(folder.resolve("credentials.txt"), "excluded fixture");
         try (var embedder = new EmbeddingService(null)) {
             var builder = new KnowledgeBuilder(config, db, embedder);
-            builder.build(request(folder), null);
+            builder.build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null);
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_document"));
             String before = db.contentFingerprint();
             Files.writeString(folder.resolve("corrupt.pdf"), "invalid fixture");
-            assertThrows(IllegalStateException.class, () -> builder.build(request(folder), null));
+            assertThrows(IllegalStateException.class, () -> builder.build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null));
             assertEquals(before, db.contentFingerprint());
         } finally { db.shutdown(); }
     }
@@ -156,7 +156,7 @@ class DocumentImportTest {
         String before = db.contentFingerprint();
         try (var embedder = new EmbeddingService(null)) {
             assertThrows(java.util.concurrent.CancellationException.class, () -> new KnowledgeBuilder(config, db, embedder,
-                    List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(request(folder), null));
+                    List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null));
             assertEquals(before, db.contentFingerprint());
         } finally { db.shutdown(); }
     }
@@ -175,7 +175,7 @@ class DocumentImportTest {
         try (var embedder = new EmbeddingService(null)) {
             var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL, url)));
             new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web,
-                    new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config))))).build(request, null);
+                    new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config))))).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_document WHERE location='https://example.com/guide.pdf' AND media_type='application/pdf'"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_knowledge_source WHERE scope_kind='WEB_DOCUMENT'"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_content_chunk WHERE page_number=1 AND extraction_method='NATIVE'"));
@@ -194,7 +194,7 @@ class DocumentImportTest {
         Files.delete(file);
         LocalOcrEngine engine = image -> { fail("原生文字页预览不应再做整页 OCR"); return null; };
         try (var embedder = new EmbeddingService(null)) {
-            new KnowledgeBuilder(config, db, embedder, List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(request(folder), null);
+            new KnowledgeBuilder(config, db, embedder, List.of(new DocumentDirectoryProcessor(config, engine, new VisionDescriptionService(config)))).build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null);
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_image_occurrence WHERE role='PAGE_PREVIEW' AND analysis_status='NATIVE_TEXT_ONLY'"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_content_chunk WHERE extraction_method='NATIVE'"));
         } finally { db.shutdown(); }

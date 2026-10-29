@@ -20,6 +20,7 @@
         "minecraftVersion": {"type": "string", "minLength": 1, "maxLength": 64},
         "loader": {"enum": ["neoforge", "forge", "fabric", "quilt", "vanilla"]},
         "loaderVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+        "language": {"type": "string", "pattern": "^[a-z0-9_]+$", "maxLength": 32},
         "mods": {"type": "array", "maxItems": 4096, "items": {
           "type": "object", "additionalProperties": false, "required": ["id", "version"],
           "properties": {"id": {"type": "string", "pattern": "^[a-z0-9_.-]+$", "maxLength": 255}, "version": {"type": "string", "minLength": 1, "maxLength": 128}, "sha256": {"$ref": "#/$defs/hash"}}

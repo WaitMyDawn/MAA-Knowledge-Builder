@@ -15,7 +15,7 @@ public final class KnowledgeContentStore {
     public static final List<String> BUILD_TABLES = List.of("rag_knowledge_source", "rag_document",
             "rag_content_chunk", "rag_image_asset", "rag_image_occurrence", "rag_chunk_image",
             "rag_document_source", "rag_web_image_reference", "rag_document_import", "rag_jar_import","rag_content_block","rag_chunk_block","rag_item_icon_profile","rag_item_icon",
-            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import","rag_image_analysis","rag_image_grounding","rag_source_state","rag_jar_source","rag_source_event","rag_document_parser","rag_jar_parser");
+            "rag_item_tag_file","rag_item_name","rag_item_static_icon","rag_recipe_resource_import","rag_image_analysis","rag_image_grounding","rag_source_state","rag_jar_source","rag_source_event","rag_document_parser","rag_jar_parser","rag_runtime_snapshot","rag_runtime_record","rag_runtime_name","rag_runtime_recipe");
     private final DatabaseBuilder db;
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -24,6 +24,7 @@ public final class KnowledgeContentStore {
     public static void init(Connection connection) throws SQLException {
         ItemIconStore.init(connection);
         RecipeResourceStore.init(connection);
+        RuntimeKnowledgeStore.init(connection);
         GuideImageIndex.init(connection);
         SourceLifecycleStore.init(connection);
         ModBindingStore.init(connection);

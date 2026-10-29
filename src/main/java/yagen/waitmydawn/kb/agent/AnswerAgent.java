@@ -241,6 +241,7 @@ public class AnswerAgent {
                 context.append(String.format("Recipe #%d: output=%s, source=%s\n",
                         i + 1, rm.outputItem(), rm.sourceMod()));
                 context.append("Recipe provenance: ").append(rm.sourceType()).append('\n');
+                if("RUNTIME_SNAPSHOT".equals(rm.sourceType()))context.append("该定义来自单人世界实际加载的配方快照，包含该次导出时已落实到配方管理器的修改；不据此推断未导出的阶段限制或任意事件行为。\n");
                 if(yagen.waitmydawn.kb.service.RecipeSummary.describe(rm.recipeJson(),rm.outputItem()).contains("保留原始 JSON"))
                     context.append(rm.recipeJson()).append('\n');
             }

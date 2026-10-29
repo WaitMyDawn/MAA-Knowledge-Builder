@@ -19,6 +19,20 @@ public final class JarBuildIndex {
     public Status inspect(ModEntry entry, String hash) {
         var previous=db.findModEntry(entry.getModId());
         if(previous==null) return Status.NEW;
+        if(RuntimeBuildContract.migrated(db)) {
+            try {
+                var rows=new SourceLifecycleStore(db).strings("SELECT p.manifest_json FROM rag_runtime_snapshot s JOIN rag_item_icon_profile p ON p.id=s.profile_id");
+                if(rows.size()==1) {
+                    var environment=new com.fasterxml.jackson.databind.ObjectMapper().readTree(rows.getFirst()).path("environment");
+                    for(var mod:environment.path("mods"))if(mod.path("id").asText().equals(entry.getModId())) {
+                        if(!Objects.equals(entry.getVersion(),mod.path("version").asText()))return Status.CONFLICT;
+                        if(entry.getModId().equals("minecraft"))return Status.DUPLICATE;
+                        if(mod.hasNonNull("sha256"))return hash.equals(mod.path("sha256").asText())?Status.DUPLICATE:Status.CONFLICT;
+                        return Status.LEGACY;
+                    }
+                }
+            }catch(java.io.IOException failure){throw new IllegalStateException("快照身份摘要读取失败",failure);}
+        }
         try(var c=db.getConnection();var p=c.prepareStatement("SELECT content_hash FROM rag_jar_import WHERE id=?")) {
             p.setString(1,entry.getModId());
             try(var r=p.executeQuery()) {

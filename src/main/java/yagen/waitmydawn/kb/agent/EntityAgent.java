@@ -305,7 +305,7 @@ public class EntityAgent {
     }
 
     private boolean hasVanillaRecipe(String registry) {
-        try(var c=db.getConnection(); var p=c.prepareStatement("SELECT 1 FROM rag_recipe WHERE output_item=? AND source_mod='minecraft' LIMIT 1")) {
+        try(var c=db.getConnection(); var p=c.prepareStatement("SELECT 1 FROM "+yagen.waitmydawn.kb.service.RuntimeKnowledgeStore.recipeRelation(db)+" WHERE output_item=? AND source_mod='minecraft' LIMIT 1")) {
             p.setString(1,registry);try(var r=p.executeQuery()) { return r.next(); }
         } catch(Exception e) { return false; }
     }

@@ -26,7 +26,7 @@ class UrlBuildLiveTest {
         System.setProperty("maa.build.maxWebImagesPerPage", "2");
         try (var embedder = new EmbeddingService(null)) {
             var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL, "https://www.mcmod.cn/modpack/737.html")));
-            var result = new KnowledgeBuilder(config, db, embedder).build(request, null);
+            var result = new KnowledgeBuilder(config, db, embedder).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             var tutorials = new ArrayList<String>();
             int chunks, images, webp;
             try (var c = db.getConnection(); var s = c.createStatement()) {

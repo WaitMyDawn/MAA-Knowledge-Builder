@@ -48,6 +48,7 @@ public final class JarScanCache {
     public Path file(){return file;}
     public String warning(){return warning;}
     public GameEnvironment environment(){return snapshot==null?null:snapshot.environment();}
+    public Snapshot snapshot(){return snapshot==null?null:new Snapshot(2,snapshot.environment(),List.copyOf(items.values()),progress());}
     public void begin(GameEnvironment environment){if(!matches(environment)){items.clear();inventoryTotal=0;snapshot=new Snapshot(2,environment,List.of(),new Progress(new Step(0,0),new Step(0,0)));}}
     public boolean matches(GameEnvironment environment){return Objects.equals(environment(),environment);}
     public ModEntry reusable(Path path,String hash,GameEnvironment environment){

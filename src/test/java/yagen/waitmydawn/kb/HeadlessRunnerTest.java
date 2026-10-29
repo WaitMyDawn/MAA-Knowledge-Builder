@@ -8,6 +8,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class HeadlessRunnerTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path temp;
+
+    @Test void missingSnapshotIsRejectedBeforeConfigurationOrDatabaseCreation(){
+        var output=temp.resolve("uncreated");
+        assertThrows(IllegalArgumentException.class,()->HeadlessRunner.main(new String[]{"--isolated","--data-dir",output.toString(),"--build",temp.toString()}));
+        org.junit.jupiter.api.Assertions.assertFalse(java.nio.file.Files.exists(output));
+    }
+
+    @Test void cleanCannotRemoveHistoryBeforeBuildValidation()throws Exception {
+        var history=java.nio.file.Files.createDirectories(temp.resolve("sessions")).resolve("keep.json");java.nio.file.Files.writeString(history,"history");
+        assertThrows(IllegalArgumentException.class,()->HeadlessRunner.main(new String[]{"--isolated","--data-dir",temp.toString(),"--clean","--build",temp.toString()}));
+        assertEquals("history",java.nio.file.Files.readString(history));
+    }
 
     @Test
     void parsesDialogueIndexes() {

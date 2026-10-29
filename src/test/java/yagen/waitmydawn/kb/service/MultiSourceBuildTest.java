@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -65,11 +66,11 @@ class MultiSourceBuildTest {
         var request = request(docs); var content = new KnowledgeContentStore(db);
         try (var embedder = new EmbeddingService(null)) {
             content.saveDraft(request);
-            var result = new KnowledgeBuilder(config, db, embedder).build(request, null);
+            var result = new KnowledgeBuilder(config, db, embedder).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(2, result.documents);
             assertEquals(1, result.warnings.size());
             assertEquals(request, content.draft().orElseThrow());
-            assertEquals(request, content.publishedRequest().orElseThrow());
+            assertEquals(Set.copyOf(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()).sources()), Set.copyOf(content.publishedRequest().orElseThrow().sources()));
             content.validate();
             var hits = new VectorStore(db, 384).search(embedder.embed("傀儡组装"), 5);
             assertEquals(2, hits.size());
@@ -87,20 +88,20 @@ class MultiSourceBuildTest {
         try (var embedder = new EmbeddingService(null)) {
             var builder = new KnowledgeBuilder(config, db, embedder);
             var oldRequest = request(docs);
-            builder.build(oldRequest, null);
+            builder.build(RuntimeBuildFixtures.withSnapshot(oldRequest,config.getDataDir()), null);
             String before = db.contentFingerprint();
             var urls = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL, "https://www.mcmod.cn/modpack/737.html")));
             var content = new KnowledgeContentStore(db);
             content.saveDraft(urls);
             assertThrows(IllegalArgumentException.class, () -> new KnowledgeBuilder(config, db, embedder,
-                    List.of(new DocumentDirectoryProcessor(config))).build(urls, null));
+                    List.of(new DocumentDirectoryProcessor(config))).build(RuntimeBuildFixtures.withSnapshot(urls,config.getDataDir()), null));
             assertEquals(before, db.contentFingerprint());
             assertEquals(urls, content.draft().orElseThrow());
-            assertEquals(oldRequest, content.publishedRequest().orElseThrow());
+            assertEquals(Set.copyOf(RuntimeBuildFixtures.withSnapshot(oldRequest,config.getDataDir()).sources()), Set.copyOf(content.publishedRequest().orElseThrow().sources()));
             var empty = request(Files.createDirectories(temp.resolve("empty")));
-            assertThrows(IllegalStateException.class, () -> builder.build(empty, null));
+            assertThrows(IllegalArgumentException.class, () -> builder.build(empty, null));
             assertEquals(before, db.contentFingerprint());
-            assertThrows(CancellationException.class, () -> builder.build(oldRequest, (phase, current, total, message) -> {
+            assertThrows(CancellationException.class, () -> builder.build(RuntimeBuildFixtures.withSnapshot(oldRequest,config.getDataDir()), (phase, current, total, message) -> {
                 if (phase.equals("documents")) Thread.currentThread().interrupt();
             }));
             Thread.interrupted();
@@ -175,10 +176,10 @@ class MultiSourceBuildTest {
         };
         try (var embedder = new EmbeddingService(null)) {
             var builder = new KnowledgeBuilder(config, db, embedder, List.of(processor));
-            builder.build(request, null);
+            builder.build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             String before = db.contentFingerprint();
             corrupt.set(true);
-            assertThrows(IllegalStateException.class, () -> builder.build(request, null));
+            assertThrows(IllegalStateException.class, () -> builder.build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null));
             assertEquals(before, db.contentFingerprint());
             Path image;
             try (var c = db.getConnection(); var s = c.createStatement(); var r = s.executeQuery("SELECT relative_path FROM rag_image_asset")) {
@@ -186,7 +187,7 @@ class MultiSourceBuildTest {
             }
             var folder = Files.createDirectories(temp.resolve("next"));
             Files.writeString(folder.resolve("guide.txt"), "另一个资料集的有效正文。");
-            new KnowledgeBuilder(config, db, embedder).build(request(folder), null);
+            new KnowledgeBuilder(config, db, embedder).build(RuntimeBuildFixtures.withSnapshot(request(folder),config.getDataDir()), null);
             assertTrue(Files.isRegularFile(image));
             assertEquals(1, new VectorStore(db, 384).count());
         } finally { db.shutdown(); }

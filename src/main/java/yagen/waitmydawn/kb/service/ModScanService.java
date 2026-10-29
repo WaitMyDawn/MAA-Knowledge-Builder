@@ -16,7 +16,7 @@ public final class ModScanService {
     public Result scan(Path folder,GameEnvironment environment,DatabaseBuilder db,boolean append,ModrinthBinder binder,boolean restoreOnly,Progress progress)throws Exception{
         return scan(folder,environment,db,append,binder,restoreOnly,progress,new JarScanCache(folder));
     }
-    Result scan(Path folder,GameEnvironment environment,DatabaseBuilder db,boolean append,ModrinthBinder binder,boolean restoreOnly,Progress progress,JarScanCache cache)throws Exception{
+    public Result scan(Path folder,GameEnvironment environment,DatabaseBuilder db,boolean append,ModrinthBinder binder,boolean restoreOnly,Progress progress,JarScanCache cache)throws Exception{
         long initialRequests=binder.requestCount();long started=System.nanoTime(),hashTime=0,metadataTime=0,lookupTime=0;int hits=0,skipped=0,done=0,valid=0;
         var jars=new JarScannerService().scan(folder).stream().sorted().toList();var mods=new ArrayList<ModEntry>();var drafts=new ModBindingStore(db);var parser=new ModMetadataParser();
         if(restoreOnly&&!cache.matches(environment))throw new IllegalStateException("没有匹配当前游戏环境的 Scan 记录，请先 Scan。");

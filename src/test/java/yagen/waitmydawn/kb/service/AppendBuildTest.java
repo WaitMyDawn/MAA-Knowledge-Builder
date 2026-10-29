@@ -32,24 +32,24 @@ class AppendBuildTest {
         }) {
             Path docs=Files.createDirectory(temp.resolve("docs"));Files.writeString(docs.resolve("one.txt"),"旧资料：傀儡核心需要在装配台组装。");
             var builder=new KnowledgeBuilder(config,db,embedder);
-            builder.build(documents(docs,BuildRequest.Mode.REBUILD),null);
+            builder.build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.REBUILD),config.getDataDir()),null);
             var history=new ChatHistoryService(config.getDataDir());var session=history.newSession("原有会话",config.getDataDir());
             history.addMessage(session,"maa","旧回答");history.save(session);
             var oldHits=new VectorStore(db,384).search(embedder.embed("傀儡核心"),10);
             var oldVector=new VectorStore(db,384).loadEmbeddings(oldHits,embedder.profile());
             int before=calls.get();
             Files.writeString(docs.resolve("two.txt"),"新增资料：女仆能够进行钓鱼工作。");
-            var result=builder.build(documents(docs,BuildRequest.Mode.APPEND),null);
+            var result=builder.build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.APPEND),config.getDataDir()),null);
             assertEquals(1,result.reusedDocuments);assertEquals(1,result.addedEmbeddings);assertEquals(before+1,calls.get());
             assertEquals(2,count(db,"rag_document"));
             var retained=new VectorStore(db,384).loadEmbeddings(oldHits,embedder.profile());
             oldVector.forEach((id,vector) -> assertArrayEquals(vector,retained.get(id)));
             assertEquals("旧回答",history.load(session.sessionId).messages.getFirst().content());
             String fingerprint=db.contentFingerprint();int after=calls.get();
-            var repeated=builder.build(documents(docs,BuildRequest.Mode.APPEND),null);
+            var repeated=builder.build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.APPEND),config.getDataDir()),null);
             assertEquals(0,repeated.addedEmbeddings);assertEquals(after,calls.get());assertEquals(fingerprint,db.contentFingerprint());
             Files.writeString(docs.resolve("one.txt"),"已修改但不应覆盖旧内容。");
-            var changed=builder.build(documents(docs,BuildRequest.Mode.APPEND),null);
+            var changed=builder.build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.APPEND),config.getDataDir()),null);
             assertEquals(1,changed.conflicts);assertEquals(0,changed.addedEmbeddings);assertEquals(fingerprint,db.contentFingerprint());
         } finally {db.shutdown();}
     }
@@ -66,11 +66,11 @@ class AppendBuildTest {
         var two=BuildRequest.Source.of(BuildRequest.Kind.URL,"https://example.com/two");
         try(var embedder=new EmbeddingService(null)) {
             var builder=new KnowledgeBuilder(config,db,embedder,List.of(new UrlBuildProcessor(web)));
-            builder.build(new BuildRequest(List.of(one)),null);
-            builder.build(new BuildRequest(List.of(two),BuildRequest.Mode.APPEND),null);
-            assertEquals(2,calls.get());assertEquals(2,count(db,"rag_document"));assertEquals(2,count(db,"rag_knowledge_source"));
+            builder.build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(one)),config.getDataDir()),null);
+            builder.build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(two),BuildRequest.Mode.APPEND),config.getDataDir()),null);
+            assertEquals(2,calls.get());assertEquals(2,count(db,"rag_document"));assertEquals(3,count(db,"rag_knowledge_source"));
             String fingerprint=db.contentFingerprint();
-            var repeated=builder.build(new BuildRequest(List.of(one,two),BuildRequest.Mode.APPEND),null);
+            var repeated=builder.build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(one,two),BuildRequest.Mode.APPEND),config.getDataDir()),null);
             assertEquals(2,repeated.reusedSources);assertEquals(2,calls.get());assertEquals(fingerprint,db.contentFingerprint());
         } finally {db.shutdown();}
     }
@@ -79,7 +79,7 @@ class AppendBuildTest {
         var config=config();var db=database(config);
         try(var embedder=new EmbeddingService(null)) {
             Path docs=Files.createDirectory(temp.resolve("docs"));Files.writeString(docs.resolve("one.txt"),"旧资料有完整的傀儡组装步骤。");
-            var builder=new KnowledgeBuilder(config,db,embedder);builder.build(documents(docs,BuildRequest.Mode.REBUILD),null);
+            var builder=new KnowledgeBuilder(config,db,embedder);builder.build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.REBUILD),config.getDataDir()),null);
             String fingerprint=db.contentFingerprint();
             BuildSourceProcessor failing=new BuildSourceProcessor() {
                 @Override public boolean supports(BuildRequest.Kind kind) {return kind==BuildRequest.Kind.URL;}
@@ -89,11 +89,11 @@ class AppendBuildTest {
                 }
             };
             var request=new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL,"https://example.com/fail")),BuildRequest.Mode.APPEND);
-            assertThrows(IllegalStateException.class,()->new KnowledgeBuilder(config,db,embedder,List.of(failing)).build(request,null));
+            assertThrows(IllegalStateException.class,()->new KnowledgeBuilder(config,db,embedder,List.of(failing)).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()),null));
             assertEquals(fingerprint,db.contentFingerprint());
             Files.writeString(docs.resolve("two.txt"),"新增资料应在取消后保持未发布。");
             try {
-                assertThrows(java.util.concurrent.CancellationException.class,()->builder.build(documents(docs,BuildRequest.Mode.APPEND),
+                assertThrows(java.util.concurrent.CancellationException.class,()->builder.build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.APPEND),config.getDataDir()),
                         (phase,current,total,message) -> {if(phase.equals("documents")) Thread.currentThread().interrupt();}));
             } finally {Thread.interrupted();}
             assertEquals(fingerprint,db.contentFingerprint());
@@ -103,36 +103,11 @@ class AppendBuildTest {
     @Test void appendRejectsDifferentEmbeddingProfileBeforeProcessing() throws Exception {
         var config=config();var db=database(config);Path docs=Files.createDirectory(temp.resolve("docs"));
         Files.writeString(docs.resolve("one.txt"),"傀儡组装资料。");
-        try(var embedder=new EmbeddingService(null)) {new KnowledgeBuilder(config,db,embedder).build(documents(docs,BuildRequest.Mode.REBUILD),null);}
+        try(var embedder=new EmbeddingService(null)) {new KnowledgeBuilder(config,db,embedder).build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.REBUILD),config.getDataDir()),null);}
         String fingerprint=db.contentFingerprint();
         try(var other=new EmbeddingService(null) {@Override public String profile(){return "different-model:384";}}) {
-            assertThrows(IllegalStateException.class,()->new KnowledgeBuilder(config,db,other).build(documents(docs,BuildRequest.Mode.APPEND),null));
+            assertThrows(IllegalStateException.class,()->new KnowledgeBuilder(config,db,other).build(RuntimeBuildFixtures.withSnapshot(documents(docs,BuildRequest.Mode.APPEND),config.getDataDir()),null));
             assertEquals(fingerprint,db.contentFingerprint());
-        } finally {db.shutdown();}
-    }
-
-    @Test void jarAppendExtractsOnlyNewModsAndDoesNotRescrapeExistingMods() throws Exception {
-        var config=config();var db=database(config);var scraped=new ArrayList<String>();var baseline=new AtomicInteger();
-        var web=new WikiScraperService() {
-            @Override public WebPage fetchMcWiki(String page) {baseline.incrementAndGet();return new WebPage(page,"https://example.com/wiki/"+page,"基础合成知识说明。","mcwiki",Map.of());}
-            @Override public ModScrapeResult scrapeModCatalog(String modId,String classId,ScrapeProgress progress) {
-                scraped.add(modId);return new ModScrapeResult(List.of(),new WebCatalog(List.of(),List.of()));
-            }
-        };
-        Path first=Files.createDirectory(temp.resolve("first")),second=Files.createDirectory(temp.resolve("second"));
-        jar(first.resolve("old.jar"),"sample","1");jar(second.resolve("copy.jar"),"sample","1");jar(second.resolve("new.jar"),"another","1");
-        for(String id:List.of("sample","another")){
-            var draft=ModUrlBindingTest.mod(id,"fabric");draft.setMcmodBinding(ModUrlBindingTest.binding("10",null,"MANUAL"));new ModBindingStore(db).save(draft);
-        }
-        try(var embedder=new EmbeddingService(null)) {
-            var builder=new KnowledgeBuilder(config,db,embedder,null,web);
-            builder.build(BuildRequest.jars(first),null);int initialBaseline=baseline.get();
-            var result=builder.build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,second.toString())),BuildRequest.Mode.APPEND),null);
-            assertEquals(1,result.parsed);assertEquals(1,result.skipped);assertEquals(List.of("sample","another"),scraped);
-            assertEquals(initialBaseline,baseline.get());assertEquals(2,db.findAllModEntries().size());
-            jar(second.resolve("copy.jar"),"sample","2");
-            result=builder.build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,second.toString())),BuildRequest.Mode.APPEND),null);
-            assertEquals(0,result.parsed);assertEquals(1,result.conflicts);assertEquals("1",db.findModEntry("sample").getVersion());
         } finally {db.shutdown();}
     }
 
@@ -161,41 +136,4 @@ class AppendBuildTest {
         } finally {db.shutdown();}
     }
 
-    @Test void duplicateJarBackfillsRecipeResourcesWithoutChangingTextCorpus() throws Exception {
-        var config=config();var db=database(config);
-        Path directory=Files.createDirectory(temp.resolve("mods")),file=directory.resolve("sample.jar");
-        try(var out=new JarOutputStream(Files.newOutputStream(file))) {
-            for(var entry:Map.of("fabric.mod.json","{\"schemaVersion\":1,\"id\":\"sample\",\"version\":\"1\",\"name\":\"Sample\"}",
-                    "data/sample/tags/items/materials.json","{\"values\":[\"sample:ingot\"]}",
-                    "assets/sample/lang/zh_cn.json","{\"item.sample.ingot\":\"示例锭\"}").entrySet()) {
-                out.putNextEntry(new JarEntry(entry.getKey()));out.write(entry.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8));out.closeEntry();
-            }
-        }
-        try(var embedder=new EmbeddingService(null)) {
-            var entry=new ModMetadataParser().parse(file);db.saveModEntry(entry);new JarBuildIndex(db).save(entry,JarBuildIndex.hash(file));
-            var vectors=new VectorStore(db,384);
-            vectors.storeBatch(List.of(new TextChunker.TextChunk("retained","既有配方说明","sample","示例","recipe","old")),embedder);
-            db.setBuildGeneration("existing-corpus");
-            try(var forbidden=new EmbeddingService(null) {
-                @Override public float[] embed(String text){throw new AssertionError("Resource backfill must not embed");}
-                @Override public List<float[]> embedBatch(List<String> texts){throw new AssertionError("Resource backfill must not embed");}
-            }) {
-                var request=new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,directory.toString())),BuildRequest.Mode.APPEND);
-                var builder=new KnowledgeBuilder(config,db,forbidden);
-                var result=builder.build(request,null);
-                assertEquals(0,result.parsed);assertEquals(1,result.skipped);assertEquals(1,result.itemTagFiles);assertEquals(1,result.itemNames);
-                assertEquals(1,vectors.count());assertEquals("existing-corpus",db.buildGeneration());
-                String fingerprint=db.contentFingerprint();
-                result=builder.build(request,null);
-                assertEquals(0,result.itemTagFiles);assertEquals(0,result.itemNames);assertEquals(fingerprint,db.contentFingerprint());
-            }
-        } finally {db.shutdown();}
-    }
-
-    private void jar(Path path,String id,String version) throws Exception {
-        try(var jar=new JarOutputStream(Files.newOutputStream(path))) {
-            var entry=new JarEntry("fabric.mod.json");entry.setTime(0);jar.putNextEntry(entry);
-            jar.write(("{\"schemaVersion\":1,\"id\":\""+id+"\",\"version\":\""+version+"\",\"name\":\""+id+"\",\"description\":\"傀儡组装与核心升级资料\"}").getBytes(java.nio.charset.StandardCharsets.UTF_8));jar.closeEntry();
-        }
-    }
 }

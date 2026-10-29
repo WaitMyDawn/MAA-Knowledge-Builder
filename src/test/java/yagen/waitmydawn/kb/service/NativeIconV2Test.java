@@ -21,7 +21,7 @@ class NativeIconV2Test {
         variant.set("state",state);variant.put("variant",NativeIconPack.stateVariant(state));variant.put("status","TRANSPARENT");variant.put("file","icons/demo/invisible.png");variant.put("sha256",ArtifactFingerprint.sha256(png));((ArrayNode)doc.path("icons")).add(variant);fixture.write(pack,doc);
         var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));var db=new DatabaseBuilder(config);db.initDatabase();
         try(var embedder=new EmbeddingService(null)) {
-            var result=new KnowledgeBuilder(config,db,embedder).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
+            var result=new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedder).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
             assertEquals(1,result.nativeIcons);assertEquals(1,result.transparentNativeIcons);assertEquals(1,result.failedNativeIcons);
             var store=new ItemIconStore(db);store.selectProfile(store.profiles().getFirst().id());var icons=new ItemIconService(db,config.getDataDir()).snapshot();
             assertEquals("NATIVE",icons.item("demo:widget",false).source());assertEquals("NATIVE_TRANSPARENT",icons.item("demo:widget",true,state).source());
@@ -35,7 +35,7 @@ class NativeIconV2Test {
         assertEquals(3,NativeIconPack.read(pack).icons().size());
         var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));var db=new DatabaseBuilder(config);db.initDatabase();
         try(var embedder=new EmbeddingService(null)) {
-            new KnowledgeBuilder(config,db,embedder).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
+            new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedder).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
             var store=new ItemIconStore(db);store.selectProfile(store.profiles().getFirst().id());
             var icons=new ItemIconService(db,config.getDataDir()).snapshot();
             assertEquals("NATIVE",icons.item("demo:widget",false).source());assertEquals("NATIVE",icons.item("demo:widget",true,state).source());
@@ -52,7 +52,7 @@ class NativeIconV2Test {
         Path pack=temp.resolve("pack");var fixture=new NativeIconPackTest();var doc=fixture.fixture(pack);
         var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));var db=new DatabaseBuilder(config);db.initDatabase();
         try(var embedder=new EmbeddingService(null)) {
-            var builder=new KnowledgeBuilder(config,db,embedder);var request=new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND);
+            var builder=new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedder);var request=new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND);
             builder.build(request,null);db.setBuildGeneration("preserved-text");var store=new ItemIconStore(db);String previous=store.profiles().getFirst().id();store.selectProfile(previous);
             var old=store.findDefault(previous,"demo:widget").orElseThrow();
             var image=javax.imageio.ImageIO.read(pack.resolve("icons/demo/widget.png").toFile());image.setRGB(12,12,0xff11bb33);javax.imageio.ImageIO.write(image,"png",pack.resolve("icons/demo/widget.png").toFile());

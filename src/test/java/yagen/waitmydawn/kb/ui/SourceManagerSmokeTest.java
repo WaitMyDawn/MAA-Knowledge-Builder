@@ -23,22 +23,22 @@ class SourceManagerSmokeTest {
         var worker=Executors.newSingleThreadExecutor();var ready=new CompletableFuture<Void>();
         try(var embedding=new EmbeddingService(null)) {
             Path folder=Files.createDirectory(temp.resolve("docs"));Files.writeString(folder.resolve("guide.txt"),"傀儡操作指南：先组装核心。");
-            new KnowledgeBuilder(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,folder.toString()))),null);
+            new KnowledgeBuilder(config,db,embedding).build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,folder.toString()))),config.getDataDir()),null);
             Platform.startup(()->ready.complete(null));ready.get(10,TimeUnit.SECONDS);
             var pane=fx(()->new SourceManagerPane(config,db,embedding,worker::execute,()->{}));
             var scene=fx(()->{var value=new Scene(pane,1250,820);pane.applyCss();pane.layout();return value;});
             assertTrue(fx(()->button(pane,"执行已预览操作").isDisabled()));
             fx(()->{button(pane,"读取来源").fire();return null;});
-            waitFor(()->list(pane).getItems().size()==1);
-            fx(()->{list(pane).getSelectionModel().select(0);return null;});
+            waitFor(()->list(pane).getItems().size()==2);
+            fx(()->{for(int i=0;i<list(pane).getItems().size();i++)if(((SourceLifecycleService.Entry)list(pane).getItems().get(i)).source().location().equals(folder.toString()))list(pane).getSelectionModel().select(i);return null;});
             waitFor(()->field(pane,"items",ComboBox.class).getItems().size()==1);
             fx(()->{button(pane,"预览影响范围").fire();return null;});waitFor(()->!button(pane,"执行已预览操作").isDisabled());
             fx(()->{
                 pane.applyCss();pane.layout();var snapshot=scene.snapshot(null);int w=(int)snapshot.getWidth(),h=(int)snapshot.getHeight();var image=new java.awt.image.BufferedImage(w,h,2);var pixels=new int[w*h];snapshot.getPixelReader().getPixels(0,0,w,h,javafx.scene.image.PixelFormat.getIntArgbInstance(),pixels,0,w);image.setRGB(0,0,w,h,pixels,0,w);javax.imageio.ImageIO.write(image,"png",Path.of("target/r6-source-manager-preview.png").toFile());
                 @SuppressWarnings("unchecked") var operation=(ComboBox<SourceLifecycleService.Operation>)field(pane,"operation",ComboBox.class);operation.setValue(SourceLifecycleService.Operation.DELETE);assertTrue(button(pane,"执行已预览操作").isDisabled());button(pane,"预览影响范围").fire();return null;
             });
-            waitFor(()->!button(pane,"执行已预览操作").isDisabled());fx(()->{button(pane,"执行已预览操作").fire();return null;});waitFor(()->list(pane).getItems().isEmpty());
-            assertTrue(new SourceLifecycleService(config,db,embedding).entries().isEmpty());assertEquals(0,new VectorStore(db,384).count());
+            waitFor(()->!button(pane,"执行已预览操作").isDisabled());fx(()->{button(pane,"执行已预览操作").fire();return null;});waitFor(()->list(pane).getItems().size()==1);
+            assertEquals(1,new SourceLifecycleService(config,db,embedding).entries().size());assertEquals(0,new VectorStore(db,384).count());
         }finally{worker.shutdownNow();worker.awaitTermination(5,TimeUnit.SECONDS);Platform.exit();db.shutdown();LogSetup.shutdown();}
     }
     private static <T>T fx(Callable<T> action)throws Exception {var result=new CompletableFuture<T>();Platform.runLater(()->{try{result.complete(action.call());}catch(Throwable e){result.completeExceptionally(e);}});return result.get(10,TimeUnit.SECONDS);}

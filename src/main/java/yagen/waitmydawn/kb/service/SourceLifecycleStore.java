@@ -19,7 +19,7 @@ public final class SourceLifecycleStore {
             s.execute("CREATE TABLE IF NOT EXISTS rag_jar_parser(id VARCHAR(255) PRIMARY KEY,parser_version VARCHAR(200) NOT NULL)");
         }
     }
-    public static String parserVersion(BuildRequest.Kind kind){return switch(kind){case URL->"web-r6.1/images-v1";case DOCUMENT_DIRECTORY->"documents-r6.1/native-v3.3";case JAR_DIRECTORY->"jar-r6.2/recipes-v3.3/lang-v2";};}
+    public static String parserVersion(BuildRequest.Kind kind){return switch(kind){case URL->"web-r6.1/images-v1";case DOCUMENT_DIRECTORY->"documents-r6.1/native-v4/runtime-v2";case JAR_DIRECTORY->"scan-identities-v1/wiki-bindings-v1";};}
     public record State(String logicalId,String parserVersion,String hash,String indexedAt,long revision) {}
     public State state(String id){try(var c=db.getConnection();var p=c.prepareStatement("SELECT * FROM rag_source_state WHERE id=?")){p.setString(1,id);try(var r=p.executeQuery()){return r.next()?new State(r.getString("logical_id"),r.getString("parser_version"),r.getString("content_hash"),r.getString("indexed_at"),r.getLong("revision")):null;}}catch(SQLException e){throw new IllegalStateException(e);}}
     public List<BuildRequest.Source> sources(){return new KnowledgeContentStore(db).publishedRequest().map(BuildRequest::sources).orElse(List.of());}
@@ -77,7 +77,7 @@ public final class SourceLifecycleStore {
         clearDocumentContent(doc);execute("DELETE FROM rag_document_import WHERE document_id=?",doc);execute("DELETE FROM rag_document_source WHERE document_id=?",doc);execute("DELETE FROM rag_document WHERE id=?",doc);
     }
     public void clearMod(String mod){
-        execute("DELETE FROM rag_vectors WHERE mod_id=? AND chunk_id NOT IN (SELECT id FROM rag_content_chunk)",mod);
+        execute("DELETE FROM rag_vectors WHERE mod_id=? AND chunk_id NOT IN (SELECT id FROM rag_content_chunk) AND chunk_type NOT LIKE 'runtime_%'",mod);
         for(String table:List.of("rag_recipe","rag_item_tag_file","rag_item_name","rag_item_static_icon"))execute("DELETE FROM "+table+" WHERE source_mod=?",mod);
         execute("DELETE FROM rag_texture_cache WHERE mod_source=?",mod);execute("DELETE FROM rag_entity_registry WHERE mod_id=?",mod);
         execute("DELETE FROM rag_mod_info WHERE mod_id=?",mod);
@@ -87,14 +87,28 @@ public final class SourceLifecycleStore {
             execute("DELETE FROM rag_web_category_member WHERE category_id IN (SELECT category_id FROM rag_web_category WHERE mod_id=?)",mod);execute("DELETE FROM rag_web_category WHERE mod_id=?",mod);
         }
     }
+    public void clearWiki(String mod){
+        execute("DELETE FROM rag_vectors WHERE mod_id=? AND chunk_type IN ('mcmod','entity_alias') AND chunk_id NOT IN (SELECT id FROM rag_content_chunk)",mod);
+        if(strings("SELECT id FROM rag_knowledge_source WHERE mod_id=?",mod).isEmpty()) {
+            execute("DELETE FROM rag_web_cache WHERE mod_id=?",mod);
+            execute("DELETE FROM rag_web_category_member WHERE category_id IN (SELECT category_id FROM rag_web_category WHERE mod_id=?)",mod);
+            execute("DELETE FROM rag_web_category WHERE mod_id=?",mod);
+        }
+    }
     public void rehomeMod(String mod){
         var paths=strings("SELECT jar_path FROM rag_jar_source WHERE mod_id=? ORDER BY source_id",mod);
         if(!paths.isEmpty())execute("UPDATE rag_mod_info SET jar_path=?,jar_file_name=? WHERE mod_id=?",paths.getFirst(),Path.of(paths.getFirst()).getFileName().toString(),mod);
     }
+    public void releaseMod(String mod){
+        if(!strings("SELECT id FROM rag_jar_source WHERE mod_id=?",mod).isEmpty()){rehomeMod(mod);return;}
+        if(strings("SELECT record_id FROM rag_runtime_record WHERE category='mod_metadata' AND record_id=?",mod).isEmpty())clearMod(mod);
+        else {clearWiki(mod);execute("UPDATE rag_mod_info SET jar_path=NULL,jar_file_name=NULL WHERE mod_id=?",mod);}
+    }
     public void deleteSource(BuildRequest.Source source){
+        try{new RuntimeKnowledgeStore(db).deleteSource(source.id());}catch(SQLException e){throw new IllegalStateException("运行时来源清理失败",e);}
         for(String doc:documents(source.id()))unlinkDocument(source.id(),doc);
         var mods=mods(source);execute("DELETE FROM rag_jar_source WHERE source_id=?",source.id());
-        for(String mod:mods)if(strings("SELECT id FROM rag_jar_source WHERE mod_id=?",mod).isEmpty())clearMod(mod);else rehomeMod(mod);
+        for(String mod:mods)releaseMod(mod);
         execute("DELETE FROM rag_build_metadata WHERE name='icon_profile' AND meta_value IN (SELECT id FROM rag_item_icon_profile WHERE source_id=?)",source.id());
         execute("DELETE FROM rag_item_icon WHERE profile_id IN (SELECT id FROM rag_item_icon_profile WHERE source_id=?)",source.id());
         execute("DELETE FROM rag_item_icon_profile WHERE source_id=?",source.id());execute("DELETE FROM rag_document_import WHERE source_id=?",source.id());execute("DELETE FROM rag_source_state WHERE id=?",source.id());execute("DELETE FROM rag_knowledge_source WHERE id=?",source.id());

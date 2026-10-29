@@ -16,7 +16,7 @@ class RecipeRenderingTest {
         var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));var db=new DatabaseBuilder(config);db.initDatabase();
         Path pack=temp.resolve("pack");new NativeIconPackTest().fixture(pack);
         try(var embedding=new EmbeddingService(null){@Override public float[] embed(String value){fail("Icons must not embed");return null;}}) {
-            new KnowledgeBuilder(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
+            new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
             var service=new RendererService(config,db);var matches=List.of(new QaPipeline.RecipeMatch(recipe,"demo:widget","demo","JAR_PARSE"));
             var noProfile=service.renderDetailed(matches);assertEquals("MISSING",noProfile.cards().getFirst().output().source());
             var store=new ItemIconStore(db);var profile=store.profiles().getFirst();String generation=db.buildGeneration();store.selectProfile(profile.id());assertEquals(generation,db.buildGeneration());
@@ -25,7 +25,7 @@ class RecipeRenderingTest {
             Path other=temp.resolve("other-pack");var fixture=new NativeIconPackTest();var json=fixture.fixture(other);
             var image=javax.imageio.ImageIO.read(other.resolve("icons/demo/widget.png").toFile());image.setRGB(12,12,0xff00ee00);javax.imageio.ImageIO.write(image,"png",other.resolve("icons/demo/widget.png").toFile());
             ((com.fasterxml.jackson.databind.node.ObjectNode)json.path("icons").get(0)).put("sha256",ArtifactFingerprint.sha256(other.resolve("icons/demo/widget.png")));fixture.write(other,json);
-            new KnowledgeBuilder(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,other.toString())),BuildRequest.Mode.APPEND),null);
+            new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,other.toString())),BuildRequest.Mode.APPEND),null);
             store.selectProfile(store.profiles().stream().filter(p->!p.id().equals(profile.id())).findFirst().orElseThrow().id());
             var alternate=service.renderDetailed(matches);assertNotEquals(nativeCard.cards().getFirst().output().assetId(),alternate.cards().getFirst().output().assetId());assertNotEquals(nativeCard.images(),alternate.images());
             store.selectProfile(profile.id());assertEquals(nativeCard.images(),service.renderDetailed(matches).images());
@@ -41,7 +41,7 @@ class RecipeRenderingTest {
     @Test void incompatibleProfileCannotBeActivatedAndCustomRecipeGetsDiagnostic() throws Exception {
         var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));var db=new DatabaseBuilder(config);db.initDatabase();Path pack=temp.resolve("pack");new NativeIconPackTest().fixture(pack);
         try(var embedding=new EmbeddingService(null)) {
-            new KnowledgeBuilder(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
+            new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
             var mod=new ModEntry();mod.setModId("demo");mod.setDisplayName("Demo");mod.setVersion("2.0");mod.setMcVersion("1.20.1");mod.setLoader("forge");db.saveModEntry(mod);
             var store=new ItemIconStore(db);assertEquals("CONFLICT",store.profiles().getFirst().compatibility());assertThrows(IllegalArgumentException.class,()->store.selectProfile(store.profiles().getFirst().id()));assertNull(store.activeProfileId());
             var batch=new RendererService(config,db).renderDetailed(List.of(new QaPipeline.RecipeMatch(recipe.replace("minecraft:crafting_shapeless","custom:crafting_shapeless"),"demo:widget","demo")));

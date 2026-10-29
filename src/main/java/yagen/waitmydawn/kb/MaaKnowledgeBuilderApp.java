@@ -79,6 +79,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     private Label statusText;
     private ProgressBar progressBar;
     private List<ModEntry> scannedMods;
+    private JarScanCache.Snapshot scannedPreparation;
     private VectorStore vectorStore;
     private EntityResolver entityResolver = new EntityResolver();
     private QaPipeline qaPipeline;
@@ -367,12 +368,12 @@ public class MaaKnowledgeBuilderApp extends Application {
             if(selected==null) return;
             if(!Files.isRegularFile(selected.toPath().resolve("rag_data.mv.db"))) {showError("该目录没有基础数据库 rag_data.mv.db");return;}
             buildTargetField.setText(selected.getAbsolutePath());buildModeChoice.setValue(BuildRequest.Mode.APPEND);
-            scannedMods=null;modListView.getItems().clear();
+            scannedMods=null;scannedPreparation=null;modListView.getItems().clear();
         });
         Button currentTarget=new Button("使用当前知识库");
         currentTarget.setOnAction(event -> {
             if(busy()) return;
-            buildTargetField.setText(config.getDataDir().toString());scannedMods=null;modListView.getItems().clear();
+            buildTargetField.setText(config.getDataDir().toString());scannedMods=null;scannedPreparation=null;modListView.getItems().clear();
         });
         var targetRow=new HBox(8,buildTargetField,chooseTarget,currentTarget,buildModeChoice);
         HBox.setHgrow(buildTargetField,Priority.ALWAYS);
@@ -390,10 +391,11 @@ public class MaaKnowledgeBuilderApp extends Application {
             if(busy())return;
             DirectoryChooser dc = new DirectoryChooser();
             File f = dc.showDialog(stage);
-            if (f != null) folderField.setText(f.getAbsolutePath());
+            if (f != null) {folderField.setText(f.getAbsolutePath());chooseSiblingExport(f.toPath(),stage);}
         });
         var restoreScanBtn=new Button("读取预处理记录");restoreScanBtn.setOnAction(e->onRestoreScan());
-        HBox folderRow = new HBox(8, folderField, browseMods, scanBtn,bindUrlBtn,restoreScanBtn);
+        var findExportBtn=new Button("查找导出目录");findExportBtn.setOnAction(e->{if(!busy())try{chooseSiblingExport(Path.of(folderField.getText()),stage);}catch(java.nio.file.InvalidPathException invalid){showError("请先选择有效的模组文件夹。");}});
+        HBox folderRow = new HBox(8, folderField, browseMods, scanBtn,bindUrlBtn,restoreScanBtn,findExportBtn);
         HBox.setHgrow(folderField,Priority.ALWAYS);
         folderRow.setAlignment(Pos.CENTER_LEFT);
 
@@ -401,13 +403,34 @@ public class MaaKnowledgeBuilderApp extends Application {
         buildUrlsField.setPromptText("每行一个网址；支持百科模组、整合包和普通网页");
         buildUrlsField.setPrefRowCount(2);
         buildDocumentsField = new TextArea();
-        buildDocumentsField.setPromptText("每行一个目录；支持 TXT、DOC、DOCX、PDF、图片，或含 manifest.json 的 MKB-Export 图标包");
+        buildDocumentsField.setPromptText("必须包含一个完整 MKB-Export；其余每行可添加 TXT、DOC、DOCX、PDF、图片资料目录");
         buildDocumentsField.setPrefRowCount(2);
         Button browseDocuments = new Button("添加资料目录");
         browseDocuments.setOnAction(e -> {
             DirectoryChooser chooser = new DirectoryChooser();
             File selected = chooser.showDialog(stage);
             if (selected != null) buildDocumentsField.appendText((buildDocumentsField.getText().isBlank() ? "" : "\n") + selected.getAbsolutePath());
+        });
+        var snapshotHint=new Label(Objects.toString(RuntimeBuildContract.migrationWarning(db),"必须选择单人世界 /mkb_export all 的完整导出目录。JAR 只用于 Scan、Bind Url 与环境核对。"));snapshotHint.setWrapText(true);snapshotHint.setId("snapshot-build-status");
+        var chooseSnapshot=new Button("选择游戏快照…");chooseSnapshot.setOnAction(event->{
+            if(busy())return;var chooser=new DirectoryChooser();chooser.setTitle("选择完整 MKB-Export 导出目录");var selected=chooser.showDialog(stage);
+            if(selected!=null)buildDocumentsField.setText(ExportDirectoryDiscovery.selectSnapshot(buildDocumentsField.getText(),selected.toPath()));
+        });
+        var reuseSnapshot=new Button("使用已关联快照");reuseSnapshot.setOnAction(event->{
+            if(busy())return;
+            try(var target=BuildTarget.open(Path.of(buildTargetField.getText()),config,db)){
+                var source=RuntimeBuildContract.associated(target.database());buildDocumentsField.setText(ExportDirectoryDiscovery.selectSnapshot(buildDocumentsField.getText(),Path.of(source.location())));
+            }catch(Exception failure){showError(failure.getMessage());}
+        });
+        var inspectSnapshot=new Button("校验快照");inspectSnapshot.setOnAction(event->{
+            if(busy())return;final BuildRequest request;try{request=readBuildRequest();}catch(Exception invalid){showError(invalid.getMessage());return;}
+            Path targetPath=Path.of(buildTargetField.getText());var prep=scannedPreparation;String folder=folderField.getText();operationInFlight=true;setStatus("正在校验游戏快照…",true);
+            submitOperation(()->{try(var target=BuildTarget.open(targetPath,config,db)){
+                var memory=prep==null?Map.<Path,JarScanCache.Snapshot>of():Map.of(Path.of(folder).toAbsolutePath().normalize(),prep);
+                var prepared=RuntimeBuildContract.prepare(request,target.database(),memory);
+                Platform.runLater(()->snapshotHint.setText("校验通过："+prepared.pack().loader()+" "+prepared.pack().minecraftVersion()+"；"+prepared.pack().icons().size()+" 个物品图标记录。"));
+            }catch(Exception failure){Platform.runLater(()->{snapshotHint.setText("校验失败："+failure.getMessage());showError(failure.getMessage());});}
+            finally{Platform.runLater(()->{operationInFlight=false;setStatus("就绪",false);});}});
         });
         var sourceStore = new KnowledgeContentStore(db);
         var savedSources = sourceStore.draft().or(sourceStore::publishedRequest);
@@ -426,8 +449,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         modListView = new ListView<>();
         modListView.setPrefHeight(180);
         modListView.setCellFactory(view->new yagen.waitmydawn.kb.ui.ModListCell(entry->{if(!busy())showSlugEditor(entry,stage);}));
-        folderField.textProperty().addListener((o,a,b)->{scannedMods=null;modListView.getItems().clear();resetCounts();try{if(!busy()&&JarScanCache.exists(Path.of(b)))Platform.runLater(this::onRestoreScan);}catch(Exception ignored){}});
-        buildTargetField.textProperty().addListener((o,a,b)->{scannedMods=null;modListView.getItems().clear();resetCounts();});
+        folderField.textProperty().addListener((o,a,b)->{scannedMods=null;scannedPreparation=null;modListView.getItems().clear();resetCounts();try{if(!busy()&&JarScanCache.exists(Path.of(b)))Platform.runLater(this::onRestoreScan);}catch(Exception ignored){}});
+        buildTargetField.textProperty().addListener((o,a,b)->{scannedMods=null;scannedPreparation=null;modListView.getItems().clear();resetCounts();});
         modListView.setOnMouseClicked(ev -> {
             if (ev.getClickCount() == 2 && !busy()) {
                 ModEntry selected=modListView.getSelectionModel().getSelectedItem();
@@ -466,10 +489,10 @@ public class MaaKnowledgeBuilderApp extends Application {
                 card("模组目录", folderRow),
                 modsCard,
                 card("网址来源", buildUrlsField),
-                card("资料目录", new VBox(6, buildDocumentsField, browseDocuments)));
+                card("资料目录与必选游戏快照", new VBox(6, snapshotHint,buildDocumentsField,new HBox(8,browseDocuments,chooseSnapshot,reuseSnapshot,inspectSnapshot))));
         VBox.setVgrow(modListView, Priority.ALWAYS);
         VBox bottomSection = new VBox(8,
-                card("开始构建", new VBox(6, new Label("补充保留旧知识并跳过重复内容；版本或文件内容冲突保留旧版本并报告。重建按所选全部来源替换基础库。"), buildRow)),
+                card("开始构建", new VBox(6, new Label("补充保留网址与资料；游戏快照整体更新，已有模组移除或内容变化须重建。旧库迁移须完整重建，历史会话和图片保留。"), buildRow)),
                 card("构建日志", builderLog));
         VBox.setVgrow(builderLog, Priority.ALWAYS);
         splitPane.setOrientation(javafx.geometry.Orientation.VERTICAL);
@@ -500,7 +523,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             return;
         }
 
-        scannedMods=null;modListView.getItems().clear();
+        scannedMods=null;scannedPreparation=null;modListView.getItems().clear();
         operationInFlight=true;setStatus("正在定位 Minecraft 本体 JAR…",true);
         submitOperation(()->{
             try{
@@ -532,21 +555,21 @@ public class MaaKnowledgeBuilderApp extends Application {
     private void runScan(Path dir,Path targetDirectory,boolean append,GameEnvironment environment,boolean restoreOnly){
         folderField.setDisable(true);logText((restoreOnly?"恢复 Scan 记录：":"确认游戏环境：")+environment.summary());
         scanCount.setText("Scan 0/0");bindCount.setText("Bind Url 0/0");buildCount.setText("Build 0/0");
-        setStatus(restoreOnly?"正在校验 Scan 记录…":"正在扫描 JAR…",true);modListView.getItems().clear();scannedMods=null;operationInFlight=true;
+        setStatus(restoreOnly?"正在校验 Scan 记录…":"正在扫描 JAR…",true);modListView.getItems().clear();scannedMods=null;scannedPreparation=null;operationInFlight=true;
         submitOperation(()->{
             try(var target=BuildTarget.open(targetDirectory,config,db)){
                 var environments=new ScanEnvironmentStore(target.database());var existing=environments.forFolder(dir);
                 if(restoreOnly&&existing!=null&&!existing.equals(environment))throw new IllegalStateException("记录与当前来源的确认环境不同，请重新 Scan。");
                 environments.save(dir,environment);
-                var retryScan=new java.util.concurrent.atomic.AtomicInteger();
+                var retryScan=new java.util.concurrent.atomic.AtomicInteger();var scanCache=new JarScanCache(dir);
                 var result=new ModScanService().scan(dir,environment,target.database(),append,new ModrinthBinder(),restoreOnly,(done,total,entry,message)->Platform.runLater(()->{
                     if(entry!=null&&!JarScanCache.scanReady(entry))retryScan.incrementAndGet();
                     scanCount.setText("Scan "+(done-retryScan.get())+"/"+total);scanCount.setTooltip(new Tooltip(message));progressBar.setProgress(total==0?0:(double)done/total);
                     if(entry!=null){modListView.getItems().add(entry);modListView.getItems().sort(ModUrlBinding.reviewOrder());}
                     if(entry==null&&done>0)logText(message);
-                }));
+                }),scanCache);
                 Platform.runLater(()->{
-                    if(result.completed()==result.total())scannedMods=result.mods();
+                    if(result.completed()==result.total()){scannedMods=result.mods();scannedPreparation=scanCache.snapshot();}
                     else logText("记录校验有效 "+result.completed()+"/"+result.total()+"；存在新增或变化文件，请重新 Scan 补齐后再 Bind Url。");
                     scanCount.setText("Scan "+result.scanPrepared()+"/"+result.total());
                     long bound=JarScanCache.bindingCompleted(result.mods());bindCount.setText("Bind Url "+bound+"/"+result.mods().size());
@@ -595,11 +618,29 @@ public class MaaKnowledgeBuilderApp extends Application {
         return new BuildRequest(sources,buildModeChoice.getValue());
     }
 
+    private void chooseSiblingExport(Path mods, javafx.stage.Stage owner) {
+        try {
+            var candidates=ExportDirectoryDiscovery.siblings(mods);
+            if(candidates.isEmpty())return;
+            var choice=new ChoiceDialog<Path>(candidates.getFirst(),candidates);
+            if(owner!=null)choice.initOwner(owner);
+            choice.setTitle("选择 MKB-Export 导出目录");
+            choice.setHeaderText("发现同级导出目录；选择后替换旧导出目录，保留普通资料");
+            choice.setContentText("导出目录：");
+            choice.getDialogPane().setPrefWidth(900);
+            choice.showAndWait().ifPresent(selected->{
+                buildDocumentsField.setText(ExportDirectoryDiscovery.selectSnapshot(buildDocumentsField.getText(),selected));
+                logText("已添加导出目录："+selected+"；Build 时校验内容。");
+            });
+        } catch(java.io.IOException failure) {logText("无法查找同级导出目录，可手动添加："+failure.getMessage());}
+    }
+
     private void onBuild() {
         if (busy()) return;
         final BuildRequest request;
         final Path targetDirectory=Path.of(buildTargetField.getText());
         final List<ModEntry> scanned=scannedMods==null?List.of():List.copyOf(scannedMods);
+        final var preparedScan=scannedPreparation;final String preparedFolder=folderField.getText();
         try {
             request = readBuildRequest();
         } catch (Exception ex) { showError(ex.getMessage()); return; }
@@ -609,11 +650,10 @@ public class MaaKnowledgeBuilderApp extends Application {
         operationInFlight = true;
         submitOperation(() -> {
             try(var target=BuildTarget.open(targetDirectory,config,db)) {
-            for(var source:request.sources())if(source.kind()==BuildRequest.Kind.JAR_DIRECTORY&&new ScanEnvironmentStore(target.database()).forFolder(Path.of(source.location()))==null)
-                throw new IllegalStateException("请先 Scan 并确认该模组目录的游戏环境："+source.location());
             new KnowledgeContentStore(target.database()).saveDraft(request);
             var builder=target.external()?new KnowledgeBuilder(target.config(),target.database(),embedder):knowledgeBuilder;
-            builder.setScannedMods(scanned);
+            builder.setScannedMods(scanned);builder.clearScanPreparations();
+            if(preparedScan!=null)builder.setScanPreparation(Path.of(preparedFolder),preparedScan);
             KnowledgeBuilder.BuildResult r = builder.build(request,
                     (phase, cur, total, msg) -> Platform.runLater(() -> {
                         if (total > 0) progressBar.setProgress((double) cur / total);
@@ -666,11 +706,14 @@ public class MaaKnowledgeBuilderApp extends Application {
         logText("构建完成；新增模组："+result.parsed+"，跳过JAR："+result.skipped+"，冲突："+result.conflicts);
         logText("新增文档："+result.documents+"，复用文档："+result.reusedDocuments+"，跳过网址："+result.reusedSources);
         logText("图标包："+result.nativeIconPacks+"，新增图标："+result.nativeIcons+"，失败记录："+result.failedNativeIcons+"，复用图标包："+result.reusedIconPacks);
-        logText("新增向量："+result.addedEmbeddings+"，总向量："+result.embeddings+"，配方："+result.recipes);
+        logText("新增向量："+result.addedEmbeddings+"，总向量："+result.embeddings+"，本次导入配方："+result.recipes);
         logText("教程："+result.tutorials+"，网页图片："+result.webImages+"，未缓存图片："+result.deferredWebImages);
         logText("本地图片："+result.localImages+"，OCR："+result.ocrImages+"，视觉描述："+result.visionImages);
         logText("网页图片分析："+result.enrichedWebImages+"，网页OCR："+result.webOcrImages+"，OCR文本块："+result.webOcrChunks+"，复用分析："+result.reusedImageAnalyses+"，待分析："+result.deferredImageAnalyses);
         logText("实机图标："+result.nativeIcons+"，完全透明："+result.transparentNativeIcons+"，失败或不支持："+result.failedNativeIcons);
+        logText("实体图片：可见 "+result.entityVisible+"，透明 "+result.entityTransparent+"，失败 "+result.entityFailed+"，跳过 "+result.entityExcluded+"，取景待复核 "+result.entityUncertain);
+        logText("实体图片资产："+result.entityUniqueImages+" 张；复用状态："+result.entityImageAliases);
+        logText("组成诊断：完整 "+result.entityCompositionComplete+"，部分 "+result.entityCompositionPartial+"，未验证 "+result.entityCompositionUnverified+"，异常空图 "+result.entityUnexpectedEmpty);
         result.warnings.forEach(this::logText);
         logText("耗时："+(result.durationMs/1000.0)+"s");
     }
@@ -798,12 +841,12 @@ public class MaaKnowledgeBuilderApp extends Application {
             try {
                 new ItemIconStore(db).selectProfile(selected.id());
                 if(rendererService!=null)rendererService.clearCache();
-                if(qaLog!=null)qaLog.appendText("配方图标环境："+selected+"；使用默认或精确匹配的物品状态，不确认整合包配方规则。\n");
+                if(qaLog!=null)qaLog.appendText("游戏快照 / 配方图标："+selected+"；存在多个知识快照时，此选项同时决定问答所用的游戏环境；只有一个时自动使用其知识。\n");
                 iconProfileChoice.setTooltip(new Tooltip(Objects.toString(selected.location(),"仅使用当前库的平面候选或缺失占位")));
             }catch(Exception failure){showError(failure.getMessage());refreshIconProfiles();}
         });
         var refreshIcons=new Button("刷新图标环境");refreshIcons.setOnAction(event -> {if(!busy())refreshIconProfiles();});
-        HBox iconRow=new HBox(8,new Label("配方图标："),iconProfileChoice,refreshIcons);HBox.setHgrow(iconProfileChoice,Priority.ALWAYS);
+        HBox iconRow=new HBox(8,new Label("游戏快照 / 配方图标："),iconProfileChoice,refreshIcons);HBox.setHgrow(iconProfileChoice,Priority.ALWAYS);
         refreshIconProfiles();
 
         questionField = new TextArea();
@@ -826,7 +869,10 @@ public class MaaKnowledgeBuilderApp extends Application {
         var detailSection = new TitledPane("检索与性能详情",qaLog); detailSection.setExpanded(false);
         VBox qaLayout = new VBox(12,chatSection,detailSection); VBox.setVgrow(chatSection,Priority.ALWAYS);
 
-        chatArea.getChildren().addAll(pageTitle("知识问答"), qaLayout);
+        chatArea.getChildren().add(pageTitle("知识问答"));
+        String migration=RuntimeBuildContract.migrationWarning(db);
+        if(migration!=null){var warning=new Label(migration);warning.setWrapText(true);chatArea.getChildren().add(warning);}
+        chatArea.getChildren().add(qaLayout);
         VBox.setVgrow(qaLayout, Priority.ALWAYS);
         HBox.setHgrow(chatArea, Priority.ALWAYS);
 

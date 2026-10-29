@@ -78,8 +78,8 @@ public class HeadlessRunner {
         boolean webDumpFetch = false;
 
         // Parse CLI args
-        // # 完整流水线: clean + build + test
-        // ./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --clean --build D:/Minecraft/mods --test"
+        // # 完整流水线：完整游戏快照 + JAR 身份 + 问答测试
+        // ./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --build D:/Minecraft/mods --build-documents D:/Minecraft/MKB-Export --test"
         //
         // # 仅测试（使用已有数据库）
         // ./mvnw exec:java "-Dexec.args=--data-dir D:/Minecraft/MKB-Database --test"
@@ -182,6 +182,13 @@ public class HeadlessRunner {
         System.out.println("  MAA Knowledge Builder — Headless Mode");
         System.out.println("══════════════════════════════════════════");
 
+        if(doBuild && doClean)throw new IllegalArgumentException("--clean 不能与 Build 同用；重建会保留历史会话和图片。");
+        if(appendBuild && !doBuild)throw new IllegalArgumentException("--append 需要构建来源");
+        if(doBuild){
+            if(additionalSources.isEmpty())throw new IllegalArgumentException("Build 必须使用 --build-documents 指定一个完整 MKB-Export 快照目录。");
+            RuntimeBuildContract.validateComplete(ExportSnapshotPreflight.requireBuildSnapshot(new BuildRequest(additionalSources),null,List.of()));
+        }
+
         // Init config
         if (useSavedKey && !isolated) throw new IllegalArgumentException("--use-saved-key requires --isolated");
         AppConfig config = isolated ? AppConfig.forIsolatedRun(useSavedKey) : AppConfig.getInstance();
@@ -261,6 +268,7 @@ public class HeadlessRunner {
         KnowledgeBuilder knowledgeBuilder = null;
         VectorStore vectorStore = null;
         var scannedEntries=new java.util.ArrayList<ModEntry>();
+        JarScanCache scanPreparation=null;
 
         if (doScan && modsFolder != null) {
             Path modsPath = Path.of(modsFolder);
@@ -277,7 +285,8 @@ public class HeadlessRunner {
             new ScanEnvironmentStore(db).save(modsPath,environment);
             System.out.println("[Scan environment] "+environment.summary());
             System.out.println("\n[Scan] Scanning JARs in: " + modsFolder);
-            var scan=new ModScanService().scan(modsPath,environment,db,appendBuild,new ModrinthBinder(),false,(done,total,entry,message)->System.out.println("[Scan "+done+"/"+total+"] "+message));
+            scanPreparation=new JarScanCache(modsPath);
+            var scan=new ModScanService().scan(modsPath,environment,db,appendBuild,new ModrinthBinder(),false,(done,total,entry,message)->System.out.println("[Scan "+done+"/"+total+"] "+message),scanPreparation);
             scannedEntries.addAll(scan.mods());System.out.println(scan.metrics().summary());if(scan.warning()!=null)System.out.println(scan.warning());
 
         }
@@ -296,6 +305,7 @@ public class HeadlessRunner {
             System.out.println("\n[Build] Starting knowledge base build...");
             knowledgeBuilder = new KnowledgeBuilder(config, db, embedder);
             knowledgeBuilder.setScannedMods(scannedEntries);
+            if(scanPreparation!=null)knowledgeBuilder.setScanPreparation(Path.of(modsFolder),scanPreparation.snapshot());
             if(modsFolder!=null) additionalSources.add(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,modsFolder));
             var request=new BuildRequest(additionalSources,appendBuild?BuildRequest.Mode.APPEND:BuildRequest.Mode.REBUILD);
             KnowledgeBuilder.BuildResult r = knowledgeBuilder.build(request,
@@ -575,7 +585,7 @@ public class HeadlessRunner {
               --bind-urls [folder]  Bind MC百科 candidate URLs after scan; save review drafts
               --build <mods-folder> Build knowledge base from saved bindings (implies --scan)
               --build-url <url>    Import a URL (repeatable)
-              --build-documents <path> Import a document directory (repeatable)
+              --build-documents <path> Import documents or the required full MKB-Export snapshot
               --append            Preserve existing knowledge; import new content only
               --clean               Delete generated/, logs/, sessions/
               --isolated           Do not read/write global settings or change GUI data directory
@@ -598,8 +608,8 @@ public class HeadlessRunner {
                                     falls back to the saved key when omitted)
 
             Examples:
-              # Full pipeline: clean -> build -> test
-              java ... HeadlessRunner --data-dir D:/data --clean --build D:/mods --test
+              # Full pipeline: snapshot + optional JAR identities -> build -> test
+              java ... HeadlessRunner --data-dir D:/data --build D:/mods --build-documents D:/MKB-Export --test
 
               # Just test with existing database
               java ... HeadlessRunner --data-dir D:/data --test my-questions.json

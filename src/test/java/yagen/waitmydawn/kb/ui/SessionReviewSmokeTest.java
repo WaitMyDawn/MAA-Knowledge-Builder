@@ -23,7 +23,7 @@ class SessionReviewSmokeTest {
         var db=new DatabaseBuilder(config);db.initDatabase();
         Path pack=Path.of("examples/MKB-Export").toAbsolutePath();
         try(var embedding=new EmbeddingService(null)) {
-            new KnowledgeBuilder(config,db,embedding).build(new BuildRequest(java.util.List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
+            new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedding).build(new BuildRequest(java.util.List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
         }
         var manager=new MultiDBManager(temp,db);var history=new ChatHistoryService(temp);
         var done=new CompletableFuture<Void>();

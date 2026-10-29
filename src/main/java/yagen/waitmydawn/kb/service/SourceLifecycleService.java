@@ -15,13 +15,13 @@ public final class SourceLifecycleService {
     public record Entry(BuildRequest.Source source,String name,int documents,int mods,int icons,String parserVersion,String currentVersion,String hash,String indexedAt,long revision){
         public boolean needsMigration(){return !Objects.equals(parserVersion,currentVersion);}
         public String description(){
-            String type=source.kind()==BuildRequest.Kind.DOCUMENT_DIRECTORY?(icons>0?"实机图标包目录":"资料目录"):kindLabel(source.kind());
+            String type=source.kind()==BuildRequest.Kind.DOCUMENT_DIRECTORY?(icons>0?"游戏快照目录":"资料目录"):kindLabel(source.kind());
             String title=Objects.toString(name,"").strip();
             return title.isBlank()||title.replace('\\','/').equalsIgnoreCase(source.location().replace('\\','/'))?type:title+" · "+type;
         }
         @Override public String toString(){return description()+"\n"+source.location();}
     }
-    public static String kindLabel(BuildRequest.Kind kind){return switch(kind){case JAR_DIRECTORY->"模组目录";case URL->"网址";case DOCUMENT_DIRECTORY->"资料或图标包目录";};}
+    public static String kindLabel(BuildRequest.Kind kind){return switch(kind){case JAR_DIRECTORY->"模组目录";case URL->"网址";case DOCUMENT_DIRECTORY->"资料或游戏快照目录";};}
     public record Item(String id,String label,String location){@Override public String toString(){return label+" · "+location;}}
     public record Plan(String databaseFingerprint,BuildRequest.Source source,String itemId,Operation operation,BuildRequest.Source replacement,int affectedDocuments,int sharedDocuments,int affectedMods,int affectedIcons,String summary) {}
     public record Result(int documents,int vectors,int parsedMods,String generation,String message) {}
@@ -50,6 +50,15 @@ public final class SourceLifecycleService {
         Objects.requireNonNull(operation);var source=find(sourceId);var store=new SourceLifecycleStore(db);
         if(itemId!=null&&items(sourceId).stream().noneMatch(i->i.id().equals(itemId)))throw new IllegalArgumentException("子项不属于所选来源");
         if(operation==Operation.REPLACE&&(itemId!=null||replacement==null||replacement.kind()!=source.kind()))throw new IllegalArgumentException("替换需选择整个来源，并提供同类型的新位置");
+        String snapshotProof="";
+        boolean snapshotSource=!store.strings("SELECT profile_id FROM rag_runtime_snapshot WHERE source_id=?",sourceId).isEmpty();
+        if(snapshotSource&&itemId!=null)throw new IllegalArgumentException("游戏快照只能整体刷新、重建、替换或删除，不能单独维护派生文档。");
+        if(operation!=Operation.DELETE) {
+            if(RuntimeBuildContract.migrationWarning(db)!=null)throw new IllegalStateException(RuntimeBuildContract.migrationWarning(db));
+            var selected=snapshotSource?(operation==Operation.REPLACE?replacement:source):RuntimeBuildContract.associated(db);
+            try{var prepared=RuntimeBuildContract.prepare(new BuildRequest(List.of(selected),BuildRequest.Mode.APPEND),db,Map.of());snapshotProof="\n关联快照："+selected.location()+"\n快照指纹："+prepared.pack().manifestHash();}
+            catch(java.io.IOException failure){throw new IllegalStateException("关联游戏快照校验失败，请重新导出或选择正确目录："+failure.getMessage(),failure);}
+        }
         if(operation==Operation.REPLACE&&!replacement.id().equals(sourceId)&&store.sources().stream().anyMatch(s->s.id().equals(replacement.id())))throw new IllegalArgumentException("新位置已是独立来源，请先处理该来源，避免覆盖");
         var docs=itemId==null?store.documents(sourceId):itemId.startsWith("mod:")?List.<String>of():List.of(itemId);int shared=0;
         for(String doc:docs)if(!store.strings("SELECT source_id FROM rag_document_source WHERE document_id=? AND source_id<>?",doc,sourceId).isEmpty())shared++;
@@ -60,7 +69,7 @@ public final class SourceLifecycleService {
         }
         int icons=itemId==null?store.strings("SELECT id FROM rag_item_icon_profile WHERE source_id=?",sourceId).size():0;
         String summary=operation+"\n来源："+source.location()+"\n范围："+(itemId==null?"整个来源（包含发现的新增内容）":itemId)+"\n现有文档："+docs.size()+"；共享文档："+shared+"；模组："+mods+"；图标包版本："+icons
-                +(replacement==null?"":"\n新位置："+replacement.location())+"\n刷新共享文档会更新所有引用方的当前证据；删除仅解除所选来源的引用。\n保留历史会话、图片及原始文件。失败或取消不发布。";
+                +(replacement==null?"":"\n新位置："+replacement.location())+snapshotProof+"\n刷新共享文档会更新所有引用方的当前证据；删除仅解除所选来源的引用。\n保留历史会话、图片及原始文件。失败或取消不发布。";
         if(source.kind()==BuildRequest.Kind.JAR_DIRECTORY&&operation!=Operation.DELETE) {
             var environment=new ScanEnvironmentStore(db).forFolder(Path.of(source.location()));
             if(environment!=null)summary+="\n已确认游戏环境："+environment.summary();
@@ -80,7 +89,7 @@ public final class SourceLifecycleService {
         // 重验来源归属，不能把外部构造的子项标识作为删除授权。
         var checked=preview(plan.source().id(),plan.itemId(),plan.operation(),plan.replacement());
         if(!checked.databaseFingerprint().equals(plan.databaseFingerprint()))throw new IllegalStateException("基础库已变化，请重新预览");
-        if(!checked.summary().equals(plan.summary()))throw new IllegalStateException("绑定草稿或游戏环境已变化，请重新预览");
+        if(!checked.summary().equals(plan.summary()))throw new IllegalStateException("绑定草稿、游戏环境或快照已变化，请重新预览");
         Path path=config.getDataDir().resolve("maintenance-"+UUID.randomUUID());var stage=DatabaseBuilder.atPath(path);
         scraper.setBuildRefresh(plan.operation()==Operation.REFRESH||plan.operation()==Operation.REPLACE);
         scraper.setBuildCacheOnly(plan.operation()==Operation.REPARSE&&plan.source().kind()==BuildRequest.Kind.URL);
@@ -98,7 +107,7 @@ public final class SourceLifecycleService {
             }
             if(plan.operation()==Operation.DELETE) {
                 if(plan.itemId()==null)store.deleteSource(source);
-                else if(plan.itemId().startsWith("mod:")){String mod=plan.itemId().substring(4);store.execute("DELETE FROM rag_jar_source WHERE source_id=? AND mod_id=?",source.id(),mod);if(store.strings("SELECT id FROM rag_jar_source WHERE mod_id=?",mod).isEmpty())store.clearMod(mod);else store.rehomeMod(mod);}
+                else if(plan.itemId().startsWith("mod:")){String mod=plan.itemId().substring(4);store.execute("DELETE FROM rag_jar_source WHERE source_id=? AND mod_id=?",source.id(),mod);store.releaseMod(mod);}
                 else {store.unlinkDocument(source.id(),plan.itemId());store.execute("DELETE FROM rag_document_import WHERE source_id=? AND document_id=?",source.id(),plan.itemId());}
             } else {
                 if(plan.operation()==Operation.REPLACE){store.deleteSource(source);source=plan.replacement();content.saveSource(source);}
@@ -108,11 +117,11 @@ public final class SourceLifecycleService {
                     boolean nativePack=source.kind()==BuildRequest.Kind.DOCUMENT_DIRECTORY&&NativeIconPack.detected(Path.of(source.location()));
                     if(!nativePack)VectorStore.verifyProfile(stage,embedding.profile(),false);
                     if(nativePack) {
-                        var pack=NativeIconPack.read(Path.of(source.location()));var icons=new ItemIconStore(stage);String active=icons.activeProfileId();
-                        var selectedEnvironment=active==null?List.<String>of():store.strings("SELECT environment_hash FROM rag_item_icon_profile WHERE id=? AND source_id=?",active,source.id());
-                        if(!selectedEnvironment.isEmpty()&&!selectedEnvironment.getFirst().equals(pack.environmentHash()))icons.selectProfile(null);
-                        icons.importPack(source,pack,context);
-                        if(plan.itemId()==null)for(String doc:oldDocs)store.unlinkDocument(source.id(),doc);
+                        if(plan.operation()==Operation.REPARSE)new RuntimeKnowledgeStore(stage).deleteSource(source.id());
+                        var builder=new KnowledgeBuilder(config,stage,embedding,processors,scraper);
+                        builder.setScannedMods(db.findAllModEntries());
+                        var result=builder.build(new BuildRequest(List.of(source),BuildRequest.Mode.APPEND),progress);
+                        stats.runtimeSnapshots=result.runtimeSnapshots;stats.nativeIcons=result.nativeIcons;stats.documents=result.documents;
                     }
                     else {
                         var documents=new DocumentDirectoryProcessor(config);var urls=new UrlBuildProcessor(scraper,documents);scraper.setResourceDatabase(db);
@@ -136,8 +145,9 @@ public final class SourceLifecycleService {
             store.event(logical,plan.operation().name(),plan.source().id(),plan.operation()==Operation.DELETE&&plan.itemId()==null?null:source.id(),plan.summary());
             images.validate(content,stage);stage.healthCheck();check();
             String generation=stage.buildGeneration();
-            if(plan.affectedDocuments()>0||plan.affectedMods()>0||stats.documents>0||stats.parsed>0){generation="maintenance-"+UUID.randomUUID();stage.setBuildGeneration(generation);}
+            if(plan.affectedDocuments()>0||plan.affectedMods()>0||stats.documents>0||stats.parsed>0||stats.runtimeSnapshots>0){generation="maintenance-"+UUID.randomUUID();stage.setBuildGeneration(generation);}
             if(!db.contentFingerprint().equals(plan.databaseFingerprint()))throw new IllegalStateException("维护期间基础库发生变化，请重新预览");
+            if(!preview(plan.source().id(),plan.itemId(),plan.operation(),plan.replacement()).summary().equals(plan.summary()))throw new IllegalStateException("维护期间绑定、环境或快照已变化，请重新预览");
             for(String doc:context.visitedDocuments())invalidatedUrls.addAll(store.strings("SELECT location FROM rag_document WHERE id=?",doc));
             db.replaceBuildDataFrom(stage,invalidatedUrls);
             return new Result(stats.documents,vectors.count(),stats.parsed,generation,"已发布："+plan.operation()+"；文档处理 "+stats.documents+"，复用 "+stats.reusedDocuments+"，当前向量 "+vectors.count()+"。历史资源已保留。");
@@ -148,33 +158,13 @@ public final class SourceLifecycleService {
         }
     }
     private void maintainJars(Plan plan,BuildRequest.Source source,DatabaseBuilder stage,SourceLifecycleStore store,KnowledgeBuilder.BuildResult stats,KnowledgeBuilder.ProgressCallback progress)throws Exception {
-        if(!Files.isDirectory(Path.of(source.location())))throw new IllegalArgumentException("模组目录不存在");
-        var before=store.mods(source);var current=new TreeMap<String,String>();var parser=new ModMetadataParser();
-        for(Path jar:new JarScannerService().scan(Path.of(source.location()))){check();var mod=parser.parse(jar,new ScanEnvironmentStore(db).forJar(jar));if(mod==null)continue;String hash=JarBuildIndex.hash(jar);if(current.putIfAbsent(mod.getModId(),hash)!=null&&!current.get(mod.getModId()).equals(hash))throw new IllegalStateException("目录内含同 modId 的不同版本："+mod.getModId());}
-        Set<String> selected=plan.itemId()==null?new TreeSet<>(before):Set.of(plan.itemId().substring(4));
-        for(String mod:selected) {
-            var published=db.findModEntry(mod);boolean bindingChanged=false;
-            if(published!=null){
-                var desired=new ModEntry();desired.setModId(published.getModId());desired.setLoader(published.getLoader());desired.setVersion(published.getVersion());
-                new ModBindingStore(db).apply(desired,published);
-                bindingChanged=!ModBindingStore.signature(desired.getMcmodBinding()).equals(ModBindingStore.signature(published.getMcmodBinding()));
-            }
-            var environment=new ScanEnvironmentStore(db).forFolder(Path.of(source.location()));
-            boolean environmentChanged=published!=null&&environment!=null&&!Objects.equals(published.getMcVersion(),environment.minecraftVersion());
-            var hashes=store.strings("SELECT content_hash FROM rag_jar_import WHERE id=?",mod);boolean changed=!current.containsKey(mod)||hashes.isEmpty()||!hashes.getFirst().equals(current.get(mod))||bindingChanged||environmentChanged;
-            if(changed||plan.operation()==Operation.REPARSE) {
-                var other=store.strings("SELECT source_id FROM rag_jar_source WHERE mod_id=? AND source_id<>?",mod,source.id());
-                if(changed&&!other.isEmpty())throw new IllegalStateException(mod+" 仍由其他目录提供；请先解除其他来源引用，避免覆盖共享版本");
-                store.clearMod(mod);
-                if(!current.containsKey(mod))store.execute("DELETE FROM rag_jar_source WHERE source_id=? AND mod_id=?",source.id(),mod);
-            }
-        }
-        if(plan.itemId()!=null&&!current.containsKey(plan.itemId().substring(4)))throw new IllegalStateException("目标模组已不在目录中，请用整个来源刷新或显式删除");
-        if(!current.isEmpty()) {
-            var builder=new KnowledgeBuilder(config,stage,embedding,processors,scraper);builder.requireBoundWiki();builder.setEnvironmentStore(new ScanEnvironmentStore(db));if(plan.itemId()!=null)builder.selectJarMods(selected);
-            var prepared=db.findAllModEntries();for(var entry:prepared)new ModBindingStore(db).apply(entry,entry);builder.setScannedMods(prepared);
-            var result=builder.build(new BuildRequest(List.of(source),BuildRequest.Mode.APPEND),progress);stats.parsed=result.parsed;stats.conflicts=result.conflicts;stats.documents=result.documents;
-        }
+        var snapshot=RuntimeBuildContract.associated(db);
+        var builder=new KnowledgeBuilder(config,stage,embedding,processors,scraper);
+        builder.requireBoundWiki();builder.setEnvironmentStore(new ScanEnvironmentStore(db));builder.setBindingStore(new ModBindingStore(db));
+        if(plan.itemId()!=null)builder.selectJarMods(Set.of(plan.itemId().substring(4)));
+        builder.setScannedMods(db.findAllModEntries());
+        var result=builder.build(new BuildRequest(List.of(source,snapshot),BuildRequest.Mode.APPEND),progress);
+        stats.parsed=result.parsed;stats.conflicts=result.conflicts;stats.documents=result.documents;stats.runtimeSnapshots=result.runtimeSnapshots;
         store.captureJarOwners(source);
     }
     private static void check(){if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("Source maintenance cancelled");}

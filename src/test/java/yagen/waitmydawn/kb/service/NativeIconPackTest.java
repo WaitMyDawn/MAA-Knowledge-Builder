@@ -36,7 +36,7 @@ class NativeIconPackTest {
         var row=(ObjectNode)doc.path("icons").get(0);row.put("status","TRANSPARENT");row.put("sha256",ArtifactFingerprint.sha256(png));write(pack,doc);
         var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));var db=new DatabaseBuilder(config);db.initDatabase();
         try(var embedder=new EmbeddingService(null)) {
-            var result=new KnowledgeBuilder(config,db,embedder).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
+            var result=new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedder).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString())),BuildRequest.Mode.APPEND),null);
             assertEquals(1,result.transparentNativeIcons);assertEquals(0,result.nativeIcons);assertEquals(1,result.failedNativeIcons);
             var store=new ItemIconStore(db);String profile=store.profiles().getFirst().id();store.selectProfile(profile);
             assertTrue(store.hasUsableIcons());assertEquals(1,store.profiles().getFirst().icons());assertTrue(store.findDefault(profile,"demo:widget").isPresent());
@@ -69,7 +69,7 @@ class NativeIconPackTest {
             float[] existing=new float[384];existing[0]=1;
             vectors.storeBatch(List.of(new TextChunker.TextChunk("existing","已有文本向量","demo","Demo","local_document","fixture")),List.of(existing),"existing-profile");
             var documents=new DocumentDirectoryProcessor(config,(bytes)->{fail("图标包不能 OCR");return null;},null);
-            var builder=new KnowledgeBuilder(config,db,embedder,List.of(documents));
+            var builder=new RuntimeBuildFixtures.IconArchiveImporter(config,db,embedder,List.of(documents));
             var source=BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString());
             var result=builder.build(new BuildRequest(List.of(source),BuildRequest.Mode.APPEND),null);
             assertEquals(1,result.nativeIcons);assertEquals(1,result.failedNativeIcons);assertEquals(0,result.addedEmbeddings);

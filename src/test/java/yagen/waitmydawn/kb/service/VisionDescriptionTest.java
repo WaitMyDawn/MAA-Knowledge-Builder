@@ -59,7 +59,7 @@ class VisionDescriptionTest {
         try (var embedder = new EmbeddingService(null)) {
             var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY, folder.toString())));
             var result = new KnowledgeBuilder(config, db, embedder,
-                    List.of(new DocumentDirectoryProcessor(config, engine, service))).build(request, null);
+                    List.of(new DocumentDirectoryProcessor(config, engine, service))).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(1, result.visionImages);
             try (var c = db.getConnection(); var s = c.createStatement(); var r = s.executeQuery("SELECT content,extraction_method FROM rag_content_chunk")) {
                 assertTrue(r.next()); assertTrue(r.getString(1).contains("模型图像描述（推断）"));

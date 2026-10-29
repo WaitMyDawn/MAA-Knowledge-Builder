@@ -48,6 +48,7 @@ public class QaPipeline {
     private final VectorStore baseVectorStore;
     private final EmbeddingService embedder;
     private final DatabaseBuilder baseDb;
+    private final RuntimeEntityMedia entityMedia;
     private final MultiDBManager dbManager;
     private final MetricsHistoryService metricsHistory;
 
@@ -65,6 +66,8 @@ public class QaPipeline {
     private int conversationTurn = 0;
     private String lastKnowledgeScope;
     private final KnowledgeRetrievalService knowledge;
+    private final Path mediaDirectory;
+    private Path assetDirectory(){return mediaDirectory;}
 
     public QaPipeline(ClassifyAgent classifyAgent, EntityAgent entityAgent,
                       UrlAgent urlAgent, AnswerAgent answerAgent,
@@ -89,6 +92,7 @@ public class QaPipeline {
         urlAgent.setActiveDatabases(dbManager::getActiveDatabases);
         this.metricsHistory = new MetricsHistoryService(dataDir);
         this.knowledge = new KnowledgeRetrievalService(baseDb, embedder, assetDir);
+        this.entityMedia=new RuntimeEntityMedia(baseDb,assetDir);this.mediaDirectory=assetDir;
     }
 
     // ==================== Main entry point ====================
@@ -393,6 +397,8 @@ public class QaPipeline {
                 || vectorResults.stream().anyMatch(v -> v.score() > 0.2);
 
         String premiseWarning = buildPremiseWarning(question, resolvedEntities);
+        String lootWarning=RuntimeLootSummary.capability(baseDb,question);
+        if(lootWarning!=null)premiseWarning=premiseWarning==null?lootWarning:premiseWarning+"；"+lootWarning;
         var relevantMods=new HashSet<String>();
         if(plan!=null && plan.modId()!=null) relevantMods.add(plan.modId());
         resolvedEntities.forEach(e->relevantMods.add(e.modId()));
@@ -400,6 +406,7 @@ public class QaPipeline {
         result.sourceScope=baseDb.findAllModEntries().stream().filter(mod->relevantMods.isEmpty() || relevantMods.contains(mod.getModId())).map(mod -> mod.getModId()+": modVersion="+mod.getVersion()
                 +", Minecraft="+mod.getMcVersion()+", loader="+mod.getLoader()+", "+KnowledgeSourcePolicy.describe(mod)).collect(java.util.stream.Collectors.joining("\n"))
                 +"\nnull 表示 JAR 元数据未提供版本。移植版本默认沿用原模组的百科机制知识；实际配方、注册名、纹理由安装 JAR 优先确定。仅证据指出具体差异时披露该差异，不把缺少移植版独立百科视为知识缺失。";
+        result.sourceScope=runtimeScope(result.sourceScope);
         var importedContext = imported;
         if (importedContext != null) {
             var ids = vectorResults.stream().map(VectorStore.SearchResult::chunkId).collect(java.util.stream.Collectors.toSet());
@@ -477,21 +484,23 @@ public class QaPipeline {
             m.llmCallCount = 0; m.tokenEstimateInput = 0; m.tokenEstimateOutput = 0; m.tokenTotalCount = 0;
         }
         // Accumulate session stats
-        m.accumulate();
+
         result.metrics = m;
 
-        log.info("QA {}", m.toLogString());
+
 
         if (Thread.currentThread().isInterrupted())
             throw new java.util.concurrent.CancellationException("Question processing cancelled");
 
         // Persist metrics
-        try { metricsHistory.save(m); } catch (Exception e) {
-            log.debug("Metrics save failed: {}", e.getMessage());
-        }
+        
 
         // Save to conversation history
         lastKnowledgeScope = null;
+        long mediaStarted=System.nanoTime();entityMedia.attach(result,question);
+        m.mediaAudit=MediaAudit.capture(question,result.answer,result.artifacts,assetDirectory(),result.entityImageAudit);m.answerLength=result.answer.length();
+        long mediaDuration=(System.nanoTime()-mediaStarted)/1_000_000;m.totalTimeMs+=mediaDuration;m.addTrace("MediaSelection",mediaDuration,"最终图片与资产审计");m.accumulate();log.info("QA {}",m.toLogString());
+        try{metricsHistory.save(m);}catch(Exception failure){log.warn("Media metrics save failed",failure);}
         conversationHistory.add(new QAPair(question, result.answer));
         while (conversationHistory.size() > MAX_CONTEXT_PAIRS) {
             conversationHistory.remove(0);
@@ -517,7 +526,11 @@ public class QaPipeline {
         m.knowledgeRetrieval=retrieval==null?null:retrieval.diagnostics();
         m.knowledgeContextChunkIds=KnowledgeRetrievalService.contextIds(retrieval,result.artifacts);
         String boundMod=knowledge.boundModId(scope.scope());
-        if(boundMod!=null && hasCraftingIntent(question)) {
+        if(scope.warning()==null && RuntimeKnowledgeStore.active(baseDb)!=null && hasCraftingIntent(question) && (scope.scope()==null || scope.scope().id().startsWith("runtime:"))) {
+            result.recipeResults=findRecipesByText(question);
+            var recipes=result.recipeResults.stream().map(recipe->new ScoredRecipe(recipe,100)).toList();
+            result.recipesToRender=selectRecipesToRender(recipes,true);m.recipeResultCount=result.recipeResults.size();
+        } else if(boundMod!=null && hasCraftingIntent(question)) {
             var entities=entityAgent.resolveEntities(question,"本轮仅查询已选资料对应模组："+boundMod);
             result.resolvedEntities=entities.inferredEntities().stream().filter(e -> boundMod.equals(e.modId())).toList();
             var recipes=findScoredRecipes(result.resolvedEntities).stream().filter(r -> boundMod.equals(r.match().sourceMod())).toList();
@@ -539,7 +552,7 @@ public class QaPipeline {
         else {
             var recipes=result.recipeResults.stream().map(r -> new AnswerAgent.RecipeMatch(r.recipeJson(),r.outputItem(),r.sourceMod(),r.sourceType())).toList();
             var ctx = new AnswerContext(question, QuestionType.GENERAL, result.resolvedEntities, recipes, result.vectorResults, null, List.of(),
-                    null, "本轮仅使用已导入资料及已绑定同模组的原始 JAR 配方：" + result.sourceScope + "；不代表整合包运行时生效规则。",
+                    RuntimeLootSummary.capability(baseDb,question), runtimeScope("本轮资料范围："+result.sourceScope),
                     filteredKnowledgeEvidence(result.artifacts,retrieval==null?null:retrieval.diagnostics()));
             result.answer = answerAgent.compose(ctx);
             m.answerGeneration=answerAgent.lastGenerationMode();m.fallbackUsed="MODEL_ERROR".equals(m.answerGeneration);
@@ -558,10 +571,14 @@ public class QaPipeline {
         m.httpRequestCount=io.httpRequests;m.httpErrorCount=io.httpErrors;m.httpResponseBytes=io.responseBytes;
         m.memoryPageCacheHits=io.memoryPageHits;m.persistentPageCacheHits=io.persistentPageHits;
         m.embeddingTimeMs=io.embeddingNanos/1_000_000; m.addTrace("KnowledgeRetrieval", m.totalTimeMs-m.answerGenTimeMs, result.sourceScope);
-        m.accumulate(); result.metrics=m;
+ result.metrics=m;
         if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Question cancelled");
-        try { metricsHistory.save(m); } catch (Exception e) { log.warn("Knowledge metrics save failed",e); }
+        
         lastKnowledgeScope=result.artifacts.scopeId();
+        long mediaStarted=System.nanoTime();entityMedia.attach(result,question);
+        m.mediaAudit=MediaAudit.capture(question,result.answer,result.artifacts,assetDirectory(),result.entityImageAudit);m.answerLength=result.answer.length();
+        long mediaDuration=(System.nanoTime()-mediaStarted)/1_000_000;m.totalTimeMs+=mediaDuration;m.addTrace("MediaSelection",mediaDuration,"最终图片与资产审计");m.accumulate();log.info("QA {}",m.toLogString());
+        try{metricsHistory.save(m);}catch(Exception failure){log.warn("Media metrics save failed",failure);}
         conversationHistory.add(new QAPair(question,result.answer));
         while(conversationHistory.size()>MAX_CONTEXT_PAIRS) conversationHistory.remove(0);
         return result;
@@ -756,7 +773,7 @@ public class QaPipeline {
 
     private void collectScoredRecipes(ResolvedEntity entity, String where, String[] params,
                                       int baseScore, Map<String, ScoredRecipe> best) {
-        String sql = "SELECT recipe_data, output_item, source_mod, source_type FROM rag_recipe WHERE " + where
+        String sql = "SELECT recipe_data, output_item, source_mod, source_type FROM "+RuntimeKnowledgeStore.recipeRelation(baseDb)+" WHERE " + where
                 + " AND COALESCE(source_type,'UNKNOWN')<>'SEED' ORDER BY CASE WHEN source_mod=? THEN 0 ELSE 1 END, id LIMIT 20";
         try (Connection c = baseDb.getConnection();
              PreparedStatement ps = c.prepareStatement(sql)) {
@@ -815,6 +832,11 @@ public class QaPipeline {
             if (q.contains(kw)) return true;
         }
         return false;
+    }
+
+    private String runtimeScope(String scope) {
+        if(RuntimeKnowledgeStore.active(baseDb)==null)return scope;
+        return scope.replace("实际配方、注册名、纹理由安装 JAR 优先确定。","实际配方、注册名与名称以所选游戏快照为准。")+"\n当前配方与标签以所选单人世界快照为准。未查到匹配配方时，不得用 JAR 或网页的默认配方补齐；这也不证明物品无法通过掉落等其他途径获得。快照不覆盖任意脚本事件与玩家阶段限制。";
     }
 
     private List<RecipeMatch> findRecipesByText(String question) {
@@ -897,7 +919,7 @@ public class QaPipeline {
     }
 
     private void searchRecipe(String where, String[] params, Set<String> found, List<RecipeMatch> matches) {
-        String sql = "SELECT recipe_data, output_item, source_mod,source_type FROM rag_recipe WHERE " + where + " AND COALESCE(source_type,'UNKNOWN')<>'SEED' LIMIT 20";
+        String sql = "SELECT recipe_data, output_item, source_mod,source_type FROM "+RuntimeKnowledgeStore.recipeRelation(baseDb)+" WHERE " + where + " AND COALESCE(source_type,'UNKNOWN')<>'SEED' LIMIT 20";
         try (Connection c = baseDb.getConnection();
              PreparedStatement ps = c.prepareStatement(sql)) {
             for (int i = 0; i < params.length; i++) ps.setString(i + 1, params[i]);
@@ -1093,6 +1115,7 @@ public class QaPipeline {
     private record ScoredRecipe(RecipeMatch match, int score) {}
 
     public static class QaResult {
+        public MediaAudit.EntityTrace entityImageAudit;
         public yagen.waitmydawn.kb.model.AnswerArtifacts artifacts = yagen.waitmydawn.kb.model.AnswerArtifacts.empty();
         public String sourceScope;
         public yagen.waitmydawn.kb.dto.RetrievalPlan retrievalPlan;

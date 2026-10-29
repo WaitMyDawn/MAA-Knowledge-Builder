@@ -42,7 +42,7 @@ class LocalOcrLiveTest {
         var db = DatabaseBuilder.atPath(temp.resolve("base")); db.initDatabase();
         try (var embedder = new EmbeddingService(null)) {
             var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY, folder.toString())));
-            var build = new KnowledgeBuilder(config, db, embedder).build(request, null);
+            var build = new KnowledgeBuilder(config, db, embedder).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(2, build.documents); assertEquals(2, build.ocrImages);
             int indexed;
             try (var c = db.getConnection(); var s = c.createStatement(); var rows = s.executeQuery("SELECT COUNT(*) FROM rag_content_chunk WHERE extraction_method='OCR' AND content LIKE '%GOLEM CORE 1234%'")) {

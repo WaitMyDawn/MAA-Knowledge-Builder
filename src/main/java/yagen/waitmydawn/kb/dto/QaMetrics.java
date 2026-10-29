@@ -15,6 +15,7 @@ import java.util.*;
 public class QaMetrics {
     public yagen.waitmydawn.kb.service.KnowledgeRetrievalService.Diagnostics knowledgeRetrieval;
     public String answerGeneration;
+    public yagen.waitmydawn.kb.service.MediaAudit.Report mediaAudit;
     /** 表示实际传入的证据块与引用身份，不表示模型正确使用了这些证据。 */
     public List<String> knowledgeContextChunkIds=List.of(), knowledgeCitedSourceIds=List.of();
     public int httpRequestCount, httpErrorCount, memoryPageCacheHits, persistentPageCacheHits;
@@ -218,6 +219,15 @@ public class QaMetrics {
             sb.append("│ 定向补检：").append(coverage.attempts().size()).append(" 次；结束原因：").append(stop).append('\n');
             for(var check:coverage.finalChecks()) sb.append("│ 要点 ").append(check.facet()).append("：")
                     .append(check.sourceIds().isEmpty()?"本轮未找到依据":"存在候选依据，仍需事实核对").append('\n');
+        }
+        if(mediaAudit!=null)sb.append("│ 最终配图：").append(mediaAudit.availability().valid()).append(" 张有效；候选审计 ").append(mediaAudit.entities()==null?0:mediaAudit.entities().candidates().size()).append(" 条\n");
+        if(mediaAudit!=null&&mediaAudit.entities()!=null){
+            var reasons=new TreeMap<String,Integer>();for(var candidate:mediaAudit.entities().candidates()){
+                if(candidate.decision().equals("SELECTED"))sb.append("│ 实体选图：").append(candidate.registry()).append(" · ").append(candidate.stateLabel()).append('\n');
+                else reasons.merge(candidate.reason(),1,Integer::sum);
+            }
+            if(!reasons.isEmpty())sb.append("│ 未选原因（诊断编码）：").append(reasons).append('\n');
+            if(mediaAudit.entities().truncated())sb.append("│ 候选记录已截断，最终选中状态保留\n");
         }
         if(knowledgeRetrieval!=null && knowledgeRetrieval.images()!=null) {
             var images=knowledgeRetrieval.images();

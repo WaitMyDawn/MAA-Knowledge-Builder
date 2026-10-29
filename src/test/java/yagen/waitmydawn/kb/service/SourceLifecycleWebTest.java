@@ -21,14 +21,14 @@ class SourceLifecycleWebTest {
         config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));db=new DatabaseBuilder(config);db.initDatabase();embedding=new EmbeddingService(null);
         pages.put(main,root("<a href='/post/101.html'>组装</a><a href='/post/102.html'>装备</a>"));pages.put(a,post("傀儡的旧攻略需要铜锭。"));pages.put(b,post("傀儡装备教程需要铁剑。"));
         scraper=new WikiScraperService(){@Override public Resource fetchResource(String url,String referer,boolean image,Map<String,String> headers){network++;if(cancelTutorial&&url.equals(a))throw new java.util.concurrent.CancellationException("cancelled tutorial");String html=pages.get(url);return new Resource(html==null?503:200,html==null?null:html.getBytes(StandardCharsets.UTF_8),"text/html",url,"version",null);}};
-        new KnowledgeBuilder(config,db,embedding,null,scraper).build(new BuildRequest(List.of(source(main))),null);
+        new KnowledgeBuilder(config,db,embedding,null,scraper).build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(source(main))),config.getDataDir()),null);
     }
     @AfterEach void close(){embedding.close();db.shutdown();LogSetup.shutdown();}
     SourceLifecycleService manager(){return new SourceLifecycleService(config,db,embedding,null,scraper);}
     @Test void refreshBypassesFreshCacheAndUpdatesTutorialMembershipWithoutRemovingOtherOwners()throws Exception {
         var cache=new PublicKnowledgeCache(db);cache.put(a,new WikiScraperService.FetchedPage(new WikiScraperService.WebPage("旧页面",a,"旧页面正文。","mcmod",Map.of()),List.of()));
         String unrelated="https://example.com/unrelated";cache.put(unrelated,new WikiScraperService.FetchedPage(new WikiScraperService.WebPage("其他页面",unrelated,"其他来源的缓存。","web",Map.of()),List.of()));
-        new KnowledgeBuilder(config,db,embedding,null,scraper).build(new BuildRequest(List.of(source(b)),BuildRequest.Mode.APPEND),null);
+        new KnowledgeBuilder(config,db,embedding,null,scraper).build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(source(b)),BuildRequest.Mode.APPEND),config.getDataDir()),null);
         pages.put(main,root("<a href='/post/101.html'>组装</a><a href='/post/103.html'>升级</a>"));pages.put(a,post("傀儡的新攻略需要金锭。"));pages.put(c,post("傀儡升级需要芯片。"));int before=network;
         var service=manager();assertEquals(1,service.preview(source(main).id(),null,SourceLifecycleService.Operation.REFRESH,null).sharedDocuments());
         service.apply(service.preview(source(main).id(),null,SourceLifecycleService.Operation.REFRESH,null),null);

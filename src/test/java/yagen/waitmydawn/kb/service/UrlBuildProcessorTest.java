@@ -88,13 +88,13 @@ class UrlBuildProcessorTest {
         var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL, main)));
         try (var embedder = new EmbeddingService(null)) {
             var builder = new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web)));
-            var result = builder.build(request, null);
+            var result = builder.build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(6, result.tutorials); assertEquals(7, result.documents);
             assertEquals(7, count(db, "SELECT COUNT(*) FROM rag_document"));
             assertEquals(6, count(db, "SELECT COUNT(*) FROM rag_content_chunk WHERE content LIKE '%末尾段落%'"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_knowledge_source WHERE scope_id='mcmod:modpack:737' AND display_name='龙之冒险：新征程' AND mod_id IS NULL"));
             assertEquals(7, web.requests.size());
-            builder.build(request, null); assertEquals(7, web.requests.size());
+            builder.build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null); assertEquals(7, web.requests.size());
             assertEquals(7, count(db, "SELECT COUNT(*) FROM rag_document"));
         } finally { db.shutdown(); }
     }
@@ -107,7 +107,7 @@ class UrlBuildProcessorTest {
         var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL, main)));
         String before = db.contentFingerprint();
         try (var embedder = new EmbeddingService(null)) {
-            assertThrows(IllegalStateException.class, () -> new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web))).build(request, null));
+            assertThrows(IllegalStateException.class, () -> new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web))).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null));
             assertEquals(before, db.contentFingerprint());
             assertEquals(0, count(db, "SELECT COUNT(*) FROM rag_document"));
         } finally { db.shutdown(); }
@@ -160,9 +160,9 @@ class UrlBuildProcessorTest {
         try (var embedder = new EmbeddingService(null)) {
             var source = BuildRequest.Source.of(BuildRequest.Kind.URL, url);
             var request = new BuildRequest(List.of(source));
-            var result = new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web))).build(request, null);
+            var result = new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web))).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(1, result.webImages); assertEquals(1, result.deferredWebImages);
-            assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_image_asset WHERE media_type='image/png' AND relative_path LIKE '%.png'"));
+            assertEquals(2, count(db, "SELECT COUNT(*) FROM rag_image_asset WHERE media_type='image/png' AND relative_path LIKE '%.png'"));
             assertTrue(count(db, "SELECT COUNT(*) FROM rag_chunk_image l JOIN rag_vectors v ON l.chunk_id=v.chunk_id") > 0);
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_web_image_reference WHERE status='DEFERRED'"));
             assertFalse(web.requests.contains("https://example.com/missing.png"));
@@ -193,7 +193,7 @@ class UrlBuildProcessorTest {
         web.page(tutorial, "<div class='post-content common-text'><p>完整教程正文。</p><a href='/post/8.html'>其他教程</a></div>");
         var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL, main), BuildRequest.Source.of(BuildRequest.Kind.URL, tutorial)));
         try (var embedder = new EmbeddingService(null)) {
-            new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web))).build(request, null);
+            new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web))).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(2, count(db, "SELECT COUNT(*) FROM rag_document"));
             assertEquals(3, count(db, "SELECT COUNT(*) FROM rag_document_source"));
             assertEquals(2, web.requests.size());
@@ -217,7 +217,7 @@ class UrlBuildProcessorTest {
         var request = new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY, temp.toString()),
                 BuildRequest.Source.of(BuildRequest.Kind.URL, url)));
         try (var embedder = new EmbeddingService(null)) {
-            new KnowledgeBuilder(config, db, embedder, List.of(legacy, new UrlBuildProcessor(web))).build(request, null);
+            new KnowledgeBuilder(config, db, embedder, List.of(legacy, new UrlBuildProcessor(web))).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
             assertEquals(0, count(db, "SELECT COUNT(*) FROM rag_vectors WHERE chunk_id='legacy'"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_knowledge_source WHERE scope_id='mcmod:class:3318' AND mod_id='alexsmobs'"));
             assertEquals(count(db, "SELECT COUNT(*) FROM rag_content_chunk"), count(db, "SELECT COUNT(*) FROM rag_vectors"));

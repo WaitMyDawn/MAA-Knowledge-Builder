@@ -554,6 +554,7 @@ public final class EvalRunner {
         map.put("contextChunksUsed", m.contextChunksUsed);
         map.put("contextUtilization", m.contextUtilization);
         map.put("knowledgeRetrieval",m.knowledgeRetrieval);
+        map.put("mediaAudit",m.mediaAudit);
         map.put("knowledgeContextChunkIds",m.knowledgeContextChunkIds);
         map.put("knowledgeCitedSourceIds",m.knowledgeCitedSourceIds);
         map.put("llmCallCount", m.llmCallCount);

@@ -79,7 +79,7 @@ public final class KnowledgeRetrievalService {
         var scopes = scopes();
         if (selectedScope != null && !selectedScope.isBlank()) {
             var scope = scopes.stream().filter(s -> s.id().equals(selectedScope)).findFirst();
-            return scope.map(s -> new Resolution(s, null, null, true)).orElseGet(() -> new Resolution(null, null, "所选资料来源已不在当前知识库中，请重新选择范围。", true));
+            return scope.map(this::selectedResolution).orElseGet(() -> new Resolution(null, null, "所选资料来源已不在当前知识库中，请重新选择范围。", true));
         }
         String normalized = KnowledgeSearchText.normalize(question);
         var matches = scopes.stream().filter(s -> {
@@ -90,7 +90,7 @@ public final class KnowledgeRetrievalService {
             int length = KnowledgeSearchText.normalize(matches.getFirst().label()).length();
             var best = matches.stream().filter(s -> KnowledgeSearchText.normalize(s.label()).length() == length).toList();
             if (best.size() > 1) return new Resolution(null, null, "存在多个同名资料来源，请在资料范围中选择。", true);
-            return new Resolution(best.getFirst(), null, null, true);
+            return selectedResolution(best.getFirst());
         }
         var documents = new LinkedHashSet<String>();
         try (var c = db.getConnection(); var s = c.createStatement(); var r = s.executeQuery("SELECT id,title FROM rag_document")) {
@@ -110,10 +110,18 @@ public final class KnowledgeRetrievalService {
                     }
                 } catch(SQLException e) { throw new IllegalStateException("会话资料范围读取失败",e); }
             }
-            for (var scope : scopes) if (scope.id().equals(previousScope)) return new Resolution(scope, null, null, true);
+            for (var scope : scopes) if (scope.id().equals(previousScope)) return selectedResolution(scope);
             return new Resolution(null,null,"上一轮资料来源已不在当前知识库中，请重新选择来源。",true);
         }
         return new Resolution(null, null, null, false);
+    }
+
+    private Resolution selectedResolution(Scope scope) {
+        if(scope.id().startsWith("runtime:")) {
+            try{String source=RuntimeKnowledgeStore.activeSource(db);if(source!=null&&!scope.sourceIds().contains(source))return new Resolution(scope,null,"所选资料与当前游戏快照不一致，请在“游戏快照 / 配方图标”中选择对应环境。",true);}
+            catch(IllegalStateException ambiguous){return new Resolution(scope,null,ambiguous.getMessage(),true);}
+        }
+        return new Resolution(scope,null,null,true);
     }
 
     public String boundModId(Scope scope) {
@@ -174,6 +182,7 @@ public final class KnowledgeRetrievalService {
                 FROM rag_content_chunk c JOIN rag_document d ON c.document_id=d.id LEFT JOIN rag_vectors v ON v.chunk_id=c.id
                 WHERE 1=1
                 """;
+        sql+=" AND (v.chunk_type IS NULL OR "+RuntimeKnowledgeStore.vectorPredicate(db)+")";
         var params = new ArrayList<String>();
         if (scope != null) {
             String marks = String.join(",", Collections.nCopies(scope.sourceIds().size(), "?"));

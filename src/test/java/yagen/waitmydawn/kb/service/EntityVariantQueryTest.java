@@ -1,0 +1,14 @@
+package yagen.waitmydawn.kb.service;
+import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.*;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+class EntityVariantQueryTest {
+ ObjectNode row(String axis,String selected){var r=new ObjectMapper().createObjectNode();r.putObject("state").putObject("traits").putObject("axes").put(axis,selected);r.putObject("variantCoverage").putObject("axes").putArray(axis).addObject().put("id",selected).put("label",selected);return r;}
+ @Test void chargedAndProfessionRequestsNeverUseAnotherState(){assertTrue(EntityVariantQuery.matches(row("charged","true"),"闪电苦力怕"));assertFalse(EntityVariantQuery.matches(row("charged","false"),"闪电苦力怕"));assertTrue(EntityVariantQuery.matches(row("profession","minecraft:cleric"),"牧师村民"));assertFalse(EntityVariantQuery.matches(row("profession","minecraft:farmer"),"牧师村民"));}
+ @Test void explicitAxesAndTamingAreSupported(){assertTrue(EntityVariantQuery.matches(row("variant","red_blue"),"variant=red_blue"));assertTrue(EntityVariantQuery.matches(row("tamed","false"),"未驯服鹦鹉"));assertFalse(EntityVariantQuery.matches(row("tamed","true"),"未驯服鹦鹉"));}
+ @Test void legacyPicturesCannotPretendToBeUnrecordedChargedOrProfessionalVariants()throws Exception{var row=new ObjectMapper().createObjectNode().put("stateKey","default");assertFalse(EntityAppearanceState.matches(row,"展示闪电苦力怕"));assertFalse(EntityAppearanceState.matches(row,"牧师村民"));}
+ @Test void ageMatchCannotHideAnUnknownChargedOrTamingRequirement()throws Exception{var row=new ObjectMapper().createObjectNode();row.putObject("state").putObject("traits").put("age","adult");assertFalse(EntityAppearanceState.matches(row,"成年闪电苦力怕"));assertFalse(EntityAppearanceState.matches(row,"成年驯服鹦鹉"));}
+ @Test void sexAndGrowthStageRequestsAreSpecific(){assertTrue(EntityVariantQuery.matches(row("sex","female"),"雌性火龙"));assertFalse(EntityVariantQuery.matches(row("sex","male"),"雌性火龙"));assertTrue(EntityVariantQuery.matches(row("growth_stage","5"),"五阶火龙"));assertFalse(EntityVariantQuery.matches(row("growth_stage","1"),"五阶火龙"));}
+ @Test void observedDragonUsesItsRecordedGrowthAndSex(){var sample=new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode();sample.putObject("state").putObject("traits").put("sex","male").put("growthStage",5);assertTrue(EntityVariantQuery.matches(sample,"五阶雄性火龙"));assertFalse(EntityVariantQuery.matches(sample,"一阶雄性火龙"));assertFalse(EntityVariantQuery.matches(sample,"五阶雌性火龙"));assertFalse(EntityVariantQuery.matches(new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode(),"五阶火龙"));}
+}

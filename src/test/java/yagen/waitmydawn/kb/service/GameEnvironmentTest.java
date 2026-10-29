@@ -37,12 +37,14 @@ class GameEnvironmentTest {
         var environment=new GameEnvironment(temp.resolve("client.jar").toString(),"fabric","1.20.1");new ScanEnvironmentStore(db).save(mods,environment);
         var scraper=new WikiScraperService(){@Override public WebPage fetchMcWiki(String page){return new WebPage(page,"https://example.com/wiki/"+page,"基础合成机制说明","mcwiki",Map.of());}};
         try(var embedding=new EmbeddingService(null)){
-            var steps=new ArrayList<String>();new KnowledgeBuilder(config,db,embedding,null,scraper).build(BuildRequest.jars(mods),(phase,done,total,text)->{if(phase.startsWith("progress:")){assertTrue(done>=0&&done<=total);steps.add(phase+":"+done+"/"+total);}});assertTrue(steps.contains("progress:JAR:1/1"));assertTrue(steps.contains("progress:来源:1/1"));assertEquals("1.20.1",db.findModEntry("sample").getMcVersion());assertEquals(environment,new ScanEnvironmentStore(db).forFolder(mods));
+            var entries=RuntimeBuildFixtures.prepareJars(mods,environment);Path snapshot=RuntimeBuildFixtures.create(config.getDataDir().resolve("MKB-Export"),entries,"fabric","1.20.1");
+            var request=new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,mods.toString()),BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,snapshot.toString())));
+            var steps=new ArrayList<String>();new KnowledgeBuilder(config,db,embedding,null,scraper).build(request,(phase,done,total,text)->{if(phase.startsWith("progress:")){assertTrue(done>=0&&done<=total);steps.add(phase+":"+done+"/"+total);}});assertTrue(steps.contains("progress:身份:2/2"));assertTrue(steps.contains("progress:来源:2/2"));assertEquals("1.20.1",db.findModEntry("sample").getMcVersion());assertEquals(environment,new ScanEnvironmentStore(db).forFolder(mods));
             var source=BuildRequest.Source.of(BuildRequest.Kind.JAR_DIRECTORY,mods.toString());var maintenance=new SourceLifecycleService(config,db,embedding,null,scraper);
             var oldPreview=maintenance.preview(source.id(),"mod:sample",SourceLifecycleService.Operation.REFRESH,null);
             new ScanEnvironmentStore(db).save(mods,new GameEnvironment(environment.jarPath(),"fabric","1.20.2"));
             assertThrows(IllegalStateException.class,()->maintenance.apply(oldPreview,null));
-            maintenance.apply(maintenance.preview(source.id(),"mod:sample",SourceLifecycleService.Operation.REFRESH,null),null);assertEquals("1.20.2",db.findModEntry("sample").getMcVersion());
+            assertThrows(IllegalStateException.class,()->maintenance.apply(maintenance.preview(source.id(),"mod:sample",SourceLifecycleService.Operation.REFRESH,null),null));assertEquals("1.20.1",db.findModEntry("sample").getMcVersion());
         }finally{db.shutdown();LogSetup.shutdown();}
     }
 }

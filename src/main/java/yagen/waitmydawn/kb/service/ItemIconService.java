@@ -29,11 +29,13 @@ public final class ItemIconService {
                     p.setString(1, active); try (var r = p.executeQuery()) { while (r.next()) nativeIcons.put(r.getString(1)+"|"+r.getString(5), new Asset(r.getString(2),r.getString(3),r.getString(4))); }
                 }
             }
-            try (var s = c.createStatement(); var r = s.executeQuery("SELECT i.id,i.image_id,a.relative_path,i.status FROM rag_item_static_icon i LEFT JOIN rag_image_asset a ON a.id=i.image_id ORDER BY i.id")) {
+            try (var s = c.createStatement(); var r = s.executeQuery("SELECT i.id,i.image_id,a.relative_path,i.status FROM rag_item_static_icon i LEFT JOIN rag_image_asset a ON a.id=i.image_id "+(RuntimeBuildContract.migrated(db)?"WHERE 1=0 ":"")+"ORDER BY i.id")) {
                 while (r.next()) flatIcons.put(r.getString(1), new Asset(r.getString(2),r.getString(3),r.getString(4)));
             }
             var names = new TreeMap<String, Map<String, Set<String>>>();
-            try (var s = c.createStatement(); var r = s.executeQuery("SELECT item_id,language,display_name FROM rag_item_name ORDER BY id")) {
+            String runtime=RuntimeKnowledgeStore.active(c);
+            String nameSql=runtime==null?"SELECT item_id,language,display_name FROM rag_item_name ORDER BY id":"SELECT item_id,language,display_name FROM rag_runtime_name WHERE profile_id='"+runtime+"' ORDER BY item_id,language";
+            try (var s = c.createStatement(); var r = s.executeQuery(nameSql)) {
                 while (r.next()) names.computeIfAbsent(r.getString(1), k -> new TreeMap<>()).computeIfAbsent(r.getString(2), k -> new TreeSet<>()).add(r.getString(3));
             }
             var tags = RecipeResourceStore.tags(c);
@@ -60,7 +62,7 @@ public final class ItemIconService {
         public String revision() { return revision; }
         public String name(String id) {
             var languages=names.get(id); if(languages==null) return id;
-            for(String language:List.of("zh_cn","en_us")) {
+            for(String language:List.of("current","zh_cn","en_us")) {
                 var values=languages.get(language); if(values!=null && values.size()==1) return values.iterator().next();
             }
             return id;
@@ -103,7 +105,7 @@ public final class ItemIconService {
             Icon selected=null;
             for(String id:candidates) { var icon=item(id,ingredient.stateful(),ingredient.state()); if(selected==null || rank(icon)<rank(selected))selected=icon; }
             if(selected==null)selected=missing(ingredient.alternatives().isEmpty()?null:ingredient.alternatives().getFirst().label(),"材料标签或候选未解析");
-            if(ingredient.alternatives().stream().anyMatch(RecipePlan.Alternative::tag))warnings.add("标签候选来自 JAR 声明，未确认整合包运行时覆盖。");
+            if(ingredient.alternatives().stream().anyMatch(RecipePlan.Alternative::tag)&&tags.values().stream().flatMap(List::stream).noneMatch(file->file.source().equals("RUNTIME_SNAPSHOT")))warnings.add("标签候选来自 JAR 声明，未确认整合包运行时覆盖。");
             return new IngredientIcon(ingredient,selected,List.copyOf(candidates),List.copyOf(warnings));
         }
         private static int rank(Icon icon) { return Set.of("NATIVE","NATIVE_TRANSPARENT").contains(icon.source())?0:icon.source().equals("JAR_FLAT")?1:2; }

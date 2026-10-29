@@ -7,52 +7,43 @@ import yagen.waitmydawn.kb.model.DatabaseBuilder;
 import yagen.waitmydawn.kb.model.ModEntry;
 import yagen.waitmydawn.kb.model.BuildRequest;
 
-import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.jar.JarEntry;
-import java.util.jar.JarFile;
 
-/**
- * 知识库构建编排器:
- *   Phase A-E: JAR 提取 (纹理/配方/文本 → 向量)
- *   Phase F:   基线 MC Wiki 抓取 (Crafting/Smelting/... 约20页)
- *   Phase G:   模组 MC百科 抓取（仅使用显式绑定的主页）
- */
+/** 游戏快照提供全部本地资源；JAR 输入只使用已校验的 Scan 身份，百科保持显式绑定。 */
 public class KnowledgeBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBuilder.class);
 
     private final AppConfig config;
     private final DatabaseBuilder db;
-    private final JarScannerService scanner;
-    private final ModMetadataParser parser;
-    private final TextureExtractor textureExtractor;
-    private final RecipeExtractor recipeExtractor;
     private final TextChunker chunker;
     private final EmbeddingService embedder;
     private final VectorStore vectorStore;
     private final WikiScraperService wikiScraper;
-    private final Map<String, String> allEntityMappings = new LinkedHashMap<>();
     private Map<String, ModEntry> previousMods = Map.of();
     private Map<String, ModEntry> scannedMods = Map.of();
-    private Path diagnosticDir;
     private PublicKnowledgeCache publicCache;
     private final List<BuildSourceProcessor> sourceProcessors;
     private Set<String> selectedJarMods=Set.of();
     private List<BuildRequest.Source> jarSources=List.of();
     private ModBindingStore bindingDrafts;
+    void setBindingStore(ModBindingStore store){bindingDrafts=store;}
     private ScanEnvironmentStore environments;
     void setEnvironmentStore(ScanEnvironmentStore store){environments=store;}
+    private RuntimeBuildContract.Prepared gameSnapshot;
+    private final Map<Path,JarScanCache.Snapshot> scanPreparations=new HashMap<>();
+    public void clearScanPreparations(){scanPreparations.clear();}
+    public void setScanPreparation(Path folder,JarScanCache.Snapshot snapshot){if(snapshot!=null)scanPreparations.put(folder.toAbsolutePath().normalize(),snapshot);}
     private boolean requireBoundWiki;
     void requireBoundWiki(){requireBoundWiki=true;}
     private Map<String,ModEntry> preparations=Map.of();
     private void prepareMod(ModEntry entry){
         var old=previousMods.get(entry.getModId());bindingDrafts.apply(entry,old);
         var selected=preparations.get(entry.getModId());
-        if(selected!=null&&Objects.equals(selected.getLoader(),entry.getLoader())) {
+        if(selected!=null&&Objects.equals(selected.getVersion(),entry.getVersion())) {
             if(selected.getSlug()!=null){entry.setSlug(selected.getSlug());entry.setModrinthUrl(selected.getModrinthUrl());entry.setSource(selected.getSource());}
-            if(selected.getMcmodBinding()!=null)entry.setMcmodBinding(selected.getMcmodBinding());
+            if(!requireBoundWiki&&selected.getMcmodBinding()!=null)entry.setMcmodBinding(selected.getMcmodBinding());
         }
     }
     private void recordJarOwners(Path jar,String mod,String hash){
@@ -82,10 +73,6 @@ public class KnowledgeBuilder {
         this.bindingDrafts=new ModBindingStore(db);this.environments=new ScanEnvironmentStore(db);
         this.wikiScraper=scraper;
 
-        this.scanner = new JarScannerService();
-        this.parser = new ModMetadataParser();
-        this.textureExtractor = new TextureExtractor(config);
-        this.recipeExtractor = new RecipeExtractor();
         this.chunker = new TextChunker();
         this.embedder = embedder;
         this.vectorStore = new VectorStore(db, embedder.getDimension());
@@ -124,23 +111,16 @@ public class KnowledgeBuilder {
     public BuildResult build(BuildRequest request, ProgressCallback progressCallback) {
         Objects.requireNonNull(request);
         checkCancelled();
-        var iconPacks=new LinkedHashMap<String,NativeIconPack.Pack>();
-        for(var source:request.sources()) if(source.kind()==BuildRequest.Kind.DOCUMENT_DIRECTORY && NativeIconPack.detected(Path.of(source.location()))) {
-            try {iconPacks.put(source.id(),NativeIconPack.read(Path.of(source.location())));}
-            catch(java.io.IOException e){throw new IllegalArgumentException("MKB-Export 预检查失败，原库保留："+e.getMessage(),e);}
-        }
+        final RuntimeBuildContract.Prepared prepared;
+        try{prepared=RuntimeBuildContract.prepare(request,db,scanPreparations,environments);}
+        catch(java.io.IOException failure){throw new IllegalArgumentException("MKB-Export 预检查失败，原库保留："+failure.getMessage(),failure);}
+        report(progressCallback,"preflight",1,1,"完整游戏快照校验通过；JAR 不参与资源解析。");
+        var iconPacks=Map.of(prepared.source().id(),prepared.pack());
         boolean append=request.mode()==BuildRequest.Mode.APPEND;
-        boolean iconsOnly=iconPacks.size()==request.sources().size();
-        if(append && !iconsOnly) VectorStore.verifyProfile(db,embedder.profile(),false);
+        if(append)VectorStore.verifyProfile(db,embedder.profile(),false);
         String targetFingerprint=append?db.contentFingerprint():null;
-        for (var source : request.sources()) {
-            if (source.kind() == BuildRequest.Kind.JAR_DIRECTORY) {
-                if (!java.nio.file.Files.isDirectory(Path.of(source.location())) || scanner.scan(Path.of(source.location())).isEmpty())
-                    throw new IllegalArgumentException("No JAR files found; previous knowledge base retained");
-            } else if (sourceProcessors.stream().noneMatch(p -> p.supports(source.kind()))) {
-                throw new IllegalArgumentException("尚未接通此来源的内容处理器：" + source.kind() + "；已保存来源，原库保留");
-            }
-        }
+        for(var source:request.sources())if(source.kind()!=BuildRequest.Kind.JAR_DIRECTORY&&!iconPacks.containsKey(source.id())
+                &&sourceProcessors.stream().noneMatch(processor->processor.supports(source.kind())))throw new IllegalArgumentException("来源类型未接通："+source.kind());
         long started = System.currentTimeMillis();
         String generation = "build-" + UUID.randomUUID();
         Path stagingPath = config.getDataDir().resolve("staging-" + UUID.randomUUID());
@@ -152,7 +132,7 @@ public class KnowledgeBuilder {
             String originalFingerprint=append?staging.contentFingerprint():null;
             int originalVectors=append?new VectorStore(staging,embedder.getDimension()).count():0;
             var candidate = new KnowledgeBuilder(config, staging, embedder, sourceProcessors,wikiScraper);
-            candidate.selectedJarMods=selectedJarMods;
+            candidate.selectedJarMods=selectedJarMods;candidate.gameSnapshot=prepared;
             candidate.environments=environments;candidate.bindingDrafts=bindingDrafts;candidate.preparations=scannedMods;candidate.requireBoundWiki=requireBoundWiki;
             candidate.jarSources=request.sources().stream().filter(s->s.kind()==BuildRequest.Kind.JAR_DIRECTORY).toList();
             candidate.publicCache=publicCache;
@@ -164,12 +144,12 @@ public class KnowledgeBuilder {
                 if(!append || !oldMods.containsKey(id)) oldMods.put(id,entry);
             });
             candidate.previousMods = oldMods;
-            candidate.textureExtractor.setGeneration(generation);
-            candidate.diagnosticDir = config.getTexturesDir().resolve(generation);
-            java.nio.file.Files.createDirectories(candidate.diagnosticDir);
-            var jars = request.sources().stream().filter(s -> s.kind() == BuildRequest.Kind.JAR_DIRECTORY)
-                    .map(s -> Path.of(s.location())).toList();
-            BuildResult result = candidate.buildInto(jars, append, (phase, cur, total, message) -> {
+            if(append)for(var old:new ArrayList<>(new SourceLifecycleStore(staging).sources())) {
+                if(old.id().equals(prepared.source().id()))continue;
+                if(!new SourceLifecycleStore(staging).strings("SELECT profile_id FROM rag_runtime_snapshot WHERE source_id=?",old.id()).isEmpty())new SourceLifecycleStore(staging).deleteSource(old);
+            }
+            RuntimeBuildContract.removeLegacyResources(staging);
+            BuildResult result = candidate.buildInto(append, (phase, cur, total, message) -> {
                 if (!"done".equals(phase)) report(progressCallback, phase, cur, total, message);
             });
             var content = new KnowledgeContentStore(staging);
@@ -201,6 +181,8 @@ public class KnowledgeBuilder {
             }
             if (candidate.vectorStore.count() == 0 && result.parsed == 0 && !new ItemIconStore(staging).hasUsableIcons())
                 throw new IllegalStateException("没有可发布的有效内容；原基础库保留");
+            RuntimeBuildContract.mark(staging,prepared.source().id());
+            if(result.runtimeSnapshots>0||!append)new ItemIconStore(staging).selectProfile(RuntimeKnowledgeStore.active(staging));
             var lifecycle=new SourceLifecycleStore(staging);
             for(var source:request.sources()){lifecycle.captureJarOwners(source);lifecycle.indexed(source,null,0);}
             try(var c=staging.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT COUNT(*) FROM rag_document d WHERE EXISTS(SELECT 1 FROM rag_content_chunk c WHERE c.document_id=d.id) AND NOT EXISTS(SELECT 1 FROM rag_content_block b WHERE b.document_id=d.id)")) {
@@ -214,12 +196,13 @@ public class KnowledgeBuilder {
             checkCancelled();
             result.embeddings = candidate.vectorStore.count();
             result.addedEmbeddings=result.embeddings-originalVectors;
+            RuntimeBuildContract.verifyUnchanged(prepared,request,db,scanPreparations,environments);
             if(append && originalFingerprint.equals(staging.contentFingerprint())) {
                 result.durationMs=System.currentTimeMillis()-started;
                 report(progressCallback,"done",1,1,"没有新增内容，基础库保持不变");
                 return result;
             }
-            if(!append || !iconsOnly && (result.parsed>0 || result.addedEmbeddings!=0 || result.documents>0 || result.tutorials>0))staging.setBuildGeneration(generation);
+            if(!append || result.runtimeSnapshots>0 || (result.parsed>0 || result.addedEmbeddings!=0 || result.documents>0 || result.tutorials>0))staging.setBuildGeneration(generation);
             if(append && !targetFingerprint.equals(db.contentFingerprint()))
                 throw new IllegalStateException("构建期间目标基础库发生变化，请重新执行补充构建");
             db.replaceBuildDataFrom(staging);
@@ -246,7 +229,7 @@ public class KnowledgeBuilder {
             throw new java.util.concurrent.CancellationException("Knowledge build cancelled");
     }
 
-    private BuildResult buildInto(List<Path> modFolders, boolean append, ProgressCallback progressCallback) {
+    private BuildResult buildInto(boolean append, ProgressCallback progressCallback)throws Exception {
         final int warmLimit=Math.max(0,Math.min(30,Integer.getInteger("maa.build.prewarmPages",config.getPrewarmPages())));
         BuildResult result = new BuildResult();
         long timeStamp0 = System.currentTimeMillis();
@@ -254,115 +237,32 @@ public class KnowledgeBuilder {
         // ===== Overwrite mode: clear previous build data =====
         if(!append) db.clearBuildData();
 
-        // ===== Phase A-E: JAR extraction =====
-        report(progressCallback, "scan", 0, 1, "Scanning JAR files...");
-        List<Path> jars = modFolders.stream().flatMap(folder -> scanner.scan(folder).stream()).distinct().toList();
-        result.totalJars = jars.size();
         var importedMods=new ArrayList<ModEntry>();
-        var jarIndex=new JarBuildIndex(db);
-
-        report(progressCallback,"progress:JAR",0,jars.size(),"开始解析 JAR");
-        for (int i = 0; i < jars.size(); i++) {
-            checkCancelled();
-            try{
-            Path jar = jars.get(i);
-            String jarHash;
-            try { jarHash=JarBuildIndex.hash(jar); }
-            catch(java.io.IOException e) {throw new IllegalStateException("JAR 内容读取失败："+jar,e);}
-            ModEntry entry = parser.parse(jar,environments.forJar(jar));
-            if (entry == null) { result.skipped++; continue; }
-            if(!selectedJarMods.isEmpty()&&!selectedJarMods.contains(entry.getModId()))continue;
-            prepareMod(entry);
-            var status=jarIndex.inspect(entry,jarHash);
-            if(status!=JarBuildIndex.Status.NEW) {
-                if(status==JarBuildIndex.Status.DUPLICATE) {
-                    var published=db.findModEntry(entry.getModId());
-                    boolean changed=!ModBindingStore.signature(entry.getMcmodBinding()).equals(ModBindingStore.signature(published.getMcmodBinding()));
-                    if(!Objects.equals(entry.getMcVersion(),published.getMcVersion()))result.warnings.add(entry.getModId()+"：确认的游戏版本与已发布知识不同，请在来源管理刷新该模组");
-                    if(changed)result.warnings.add(entry.getModId()+"：百科绑定已修改但未发布，请在来源管理刷新该模组");
-                    if(!Objects.equals(entry.getSlug(),published.getSlug())||!changed&&!Objects.equals(entry.getMcmodBinding(),published.getMcmodBinding())) {
-                        published.setSlug(entry.getSlug());published.setModrinthUrl(entry.getModrinthUrl());
-                        if(!changed)published.setMcmodBinding(entry.getMcmodBinding());db.saveModEntry(published);
-                    }
-                    recordJarOwners(jar,entry.getModId(),jarHash);
-                    try {
-                        var resources=new RecipeResourceStore(db).importJar(jar,entry.getModId(),config.getDataDir());
-                        result.itemTagFiles+=resources.tags();result.itemNames+=resources.names();result.staticItemIcons+=resources.flatIcons();result.warnings.addAll(resources.warnings());
-                    }catch(Exception failure){throw new IllegalStateException("已有 JAR 的配方资源补建失败："+entry.getModId()+"；"+failure.getMessage(),failure);}
-                }
-                if(!append && status==JarBuildIndex.Status.CONFLICT)
-                    throw new IllegalStateException("同一构建包含不同版本的模组："+entry.getModId());
-                result.skipped++;
-                if(status==JarBuildIndex.Status.CONFLICT) result.conflicts++;
-                String message=entry.getModId()+"："+status;
-                report(progressCallback,"reuse",i+1,jars.size(),message);
-                if(status!=JarBuildIndex.Status.DUPLICATE) result.warnings.add(message);
-                continue;
+        var incoming=RuntimeGameIdentity.entries(gameSnapshot);
+        var identities=new HashMap<String,RuntimeBuildContract.Identity>();gameSnapshot.identities().forEach(i->identities.put(i.mod().getModId(),i));
+        result.totalJars=gameSnapshot.identities().size();
+        var ids=incoming.stream().map(ModEntry::getModId).collect(java.util.stream.Collectors.toSet());
+        for(var old:db.findAllModEntries())if(!ids.contains(old.getModId()))new SourceLifecycleStore(db).execute("DELETE FROM rag_mod_info WHERE mod_id=?",old.getModId());
+        report(progressCallback,"progress:身份",0,incoming.size(),"导入快照模组身份");int done=0;
+        for(var entry:incoming) {
+            checkCancelled();prepareMod(entry);var previous=previousMods.get(entry.getModId());
+            if(append&&previous!=null&&!requireBoundWiki&&!ModBindingStore.signature(entry.getMcmodBinding()).equals(ModBindingStore.signature(previous.getMcmodBinding()))) {
+                entry.setMcmodBinding(previous.getMcmodBinding());result.warnings.add(entry.getModId()+"：百科绑定已修改，请通过来源管理刷新对应模组后发布。");
             }
-            result.parsed++;
-
-            String modId = entry.getModId();
-            String modName = entry.getDisplayName() != null ? entry.getDisplayName() : modId;
-            String slug = entry.getSlug() != null ? entry.getSlug() : modId;
-
-            report(progressCallback, "parse", i + 1, jars.size(), modId);
-
-            // Extract textures once, use for counting + saving
-            Map<String, Map<String, String>> allTex = textureExtractor.extract(jar, modId, slug);
-            result.textures += allTex.values().stream().mapToInt(Map::size).sum();
-            TextureExtractor.dumpMapping(allTex, diagnosticDir);
-
-            // Entity texture scanning — extract registry names from textures/entity/
-            report(progressCallback, "entity", i + 1, jars.size(), "Entities: " + modId);
-            Map<String, String> entityRegs = EntityTextureScanner.scan(jar, modId);
-            result.entities += entityRegs.size();
-            saveEntityRegistries(entityRegs, modId);
-            // Append to global entity map for export
-            allEntityMappings.putAll(entityRegs);
-
-            report(progressCallback, "recipe", i + 1, jars.size(), "Recipes: " + modId);
-            List<RecipeExtractor.ParsedRecipe> recipes = recipeExtractor.extract(jar, modId);
-            result.recipes += recipes.size();
-            try {
-                var resources = new RecipeResourceStore(db).importJar(jar, modId, config.getDataDir());
-                result.itemTagFiles += resources.tags(); result.itemNames += resources.names(); result.staticItemIcons += resources.flatIcons();result.warnings.addAll(resources.warnings());
-            } catch (Exception failure) { throw new IllegalStateException("配方标签与图标资源解析失败：" + modId+"；"+failure.getMessage(), failure); }
-
-            // Text chunks
-            List<TextChunker.TextChunk> chunks = new ArrayList<>();
-            report(progressCallback, "text", i + 1, jars.size(), "Lang: " + modId);
-            try{var language=new JarLanguageExtractor().extract(jar,modId,modName);chunks.addAll(language.chunks());result.warnings.addAll(language.warnings());}
-            catch(java.io.IOException failure){throw new IllegalStateException("JAR 语言资源读取失败："+jar.getFileName(),failure);}
-            if (entry.getDescription() != null && !entry.getDescription().isBlank())
-                chunks.addAll(chunker.fromDescription(entry.getDescription(), modId, modName));
-            for (var r : recipes) {
-                if (!"PARSED".equals(r.parseStatus())) continue;
-                var rc = chunker.fromRecipe(r.recipeJson(), modId, modName, r.outputItem());
-                if (rc != null) rc = new TextChunker.TextChunk(r.recipeId(), rc.text(), modId, modName, "recipe", r.recipeId());
-                if (rc != null) chunks.add(rc);
-            }
-            result.textChunks += chunks.size();
-
-            if (!chunks.isEmpty()) {
-                report(progressCallback, "embed", i + 1, jars.size(), "Embedding " + chunks.size() + " chunks: " + modId);
-                vectorStore.storeBatch(chunks, embedder);
-                result.embeddings += chunks.size();
-            }
-
-            try {
-                if(!jarHash.equals(JarBuildIndex.hash(jar))) throw new IllegalStateException("构建期间 JAR 内容发生变化："+jar);
-            } catch(java.io.IOException e) {throw new IllegalStateException("JAR 内容校验失败："+jar,e);}
-            db.saveModEntry(entry);
-            saveTextures(allTex, modId, slug);
-            saveRecipes(recipes, entry.getLoader(), entry.getVersion());
-            jarIndex.save(entry,jarHash);
-            recordJarOwners(jar,entry.getModId(),jarHash);
-            importedMods.add(entry);
-            }finally{report(progressCallback,"progress:JAR",i+1,jars.size(),"已处理 JAR");}
+            boolean changed=previous==null||!Objects.equals(entry.getVersion(),previous.getVersion())||!Objects.equals(entry.getMcVersion(),previous.getMcVersion())
+                    ||!ModBindingStore.signature(entry.getMcmodBinding()).equals(ModBindingStore.signature(previous.getMcmodBinding()));
+            if(previous!=null&&entry.getJarPath()==null&&!changed){entry.setJarPath(previous.getJarPath());entry.setJarFileName(previous.getJarFileName());}
+            var json=new com.fasterxml.jackson.databind.ObjectMapper();
+            if(previous==null||!json.valueToTree(entry).equals(json.valueToTree(previous)))db.saveModEntry(entry);
+            var identity=identities.get(entry.getModId());if(identity!=null){new JarBuildIndex(db).save(entry,identity.hash());recordJarOwners(Path.of(entry.getJarPath()),entry.getModId(),identity.hash());}
+            if((!append||changed||requireBoundWiki)&& (selectedJarMods.isEmpty()||selectedJarMods.contains(entry.getModId())))importedMods.add(entry);
+            if(requireBoundWiki&&(selectedJarMods.isEmpty()||selectedJarMods.contains(entry.getModId())))new SourceLifecycleStore(db).clearWiki(entry.getModId());
+            if(identity!=null){if(changed)result.parsed++;else result.skipped++;}
+            report(progressCallback,"progress:身份",++done,incoming.size(),entry.getModId());
         }
-
+        try{RuntimeGameIdentity.entities(db,gameSnapshot.pack());}catch(Exception failure){throw new IllegalStateException("快照实体注册表导入失败",failure);}
         // ===== Phase F: Baseline MC Wiki =====
-        if (!importedMods.isEmpty() && (!append || !hasBaselineWiki())) {
+        if (!jarSources.isEmpty() && !importedMods.isEmpty() && (!append || !hasBaselineWiki())) {
             int total = WikiScraperService.BASELINE_PAGES.length;
             List<TextChunker.TextChunk> wikiChunks = new ArrayList<>();
             int idx = 0;
@@ -505,22 +405,13 @@ public class KnowledgeBuilder {
                 result.embeddings+=chunks.size();
             }
             report(progressCallback,"prewarm",warmed.size(),warmed.size(),warmLimit==0?"已关闭常用详情预取":"详情预取完成：成功 "+prepared+" 页，跳过/失败 "+skipped+" 页（站点冷却期间不继续访问）");
-            try { Thread.sleep(500); } catch (Exception ignored) {}
+            try { Thread.sleep(500); } catch (InterruptedException cancelled) {Thread.currentThread().interrupt();throw new java.util.concurrent.CancellationException("Knowledge build cancelled");}
             }finally{report(progressCallback,"progress:百科",sIdx,deduped.size(),"已处理模组百科");}
         }
 
         result.durationMs = System.currentTimeMillis() - timeStamp0;
 
-        // Export entity_map.json for debugging
-        if (!allEntityMappings.isEmpty()) {
-            try {
-                var mapper = new com.fasterxml.jackson.databind.ObjectMapper()
-                        .enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
-                mapper.writeValue(diagnosticDir.resolve("entity_map.json").toFile(), allEntityMappings);
-            } catch (Exception ex) { log.warn("Entity map export failed", ex); }
-        }
-
-        report(progressCallback, "done", jars.size(), jars.size(),
+        report(progressCallback, "done", result.totalJars, result.totalJars,
                 String.format("Done! %d mods, %d textures, %d entities, %d recipes, %d chunks, %d vectors (%.1fs)",
                         result.parsed, result.textures, result.entities, result.recipes, result.textChunks,
                         result.embeddings, result.durationMs / 1000.0));
@@ -531,47 +422,6 @@ public class KnowledgeBuilder {
         try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT 1 FROM rag_vectors WHERE chunk_type='mcwiki' LIMIT 1")) {
             return r.next();
         } catch(java.sql.SQLException e) {throw new IllegalStateException("原版知识读取失败",e);}
-    }
-
-    private void saveTextures(Map<String, Map<String, String>> allTex, String modId, String slug) {
-        try (var c = db.getConnection(); var ps = c.prepareStatement(
-                "MERGE INTO rag_texture_cache (registry_name, local_path, mod_source) KEY (registry_name) VALUES (?, ?, ?)")) {
-            for (var catMap : allTex.values()) {
-                for (var e : catMap.entrySet()) {
-                    ps.setString(1, e.getKey());  // full registry name like "minecraft:acacia_door"
-                    ps.setString(2, e.getValue()); // absolute local file path
-                    ps.setString(3, slug);
-                    ps.addBatch();
-                }
-            }
-            ps.executeBatch();
-        } catch (Exception ex) { throw new IllegalStateException("Save textures failed", ex); }
-    }
-
-    private void saveEntityRegistries(Map<String, String> entities, String modId) {
-        if (entities.isEmpty()) return;
-        try (var c = db.getConnection(); var ps = c.prepareStatement(
-                "MERGE INTO rag_entity_registry (registry_name, mod_id, source_path) KEY (registry_name) VALUES (?, ?, ?)")) {
-            for (var e : entities.entrySet()) {
-                ps.setString(1, e.getKey());
-                ps.setString(2, modId);
-                ps.setString(3, e.getValue());
-                ps.addBatch();
-            }
-            ps.executeBatch();
-        } catch (Exception ex) { throw new IllegalStateException("Save entity registries failed", ex); }
-    }
-
-    private void saveRecipes(List<RecipeExtractor.ParsedRecipe> recipes, String loader, String v) {
-        try (var c = db.getConnection(); var ps = c.prepareStatement(
-                "MERGE INTO rag_recipe (recipe_type, output_item, output_count, recipe_data, source_mod, loader, mod_version, recipe_id, raw_type, parse_status, source_type) KEY (recipe_id, source_mod) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'JAR_PARSE')")) {
-            for (var r : recipes) {
-                ps.setString(1, r.recipeType()); ps.setString(2, r.outputItem()); ps.setInt(3, r.outputCount());
-                ps.setString(4, r.recipeJson()); ps.setString(5, r.sourceMod()); ps.setString(6, loader); ps.setString(7, v);
-                ps.setString(8, r.recipeId()); ps.setString(9, r.rawType()); ps.setString(10, r.parseStatus()); ps.addBatch();
-            }
-            ps.executeBatch();
-        } catch (Exception ex) { throw new IllegalStateException("Save recipes failed", ex); }
     }
 
     private void report(ProgressCallback cb, String phase, int cur, int total, String msg) {
@@ -585,9 +435,12 @@ public class KnowledgeBuilder {
         public int localImages, ocrAttempts, ocrImages, visionAttempts, visionImages;
         public int webOcrAttempts,webOcrImages,webOcrChunks,enrichedWebImages,reusedImageAnalyses,deferredImageAnalyses,imageStepBackfills;
         public int nativeIconPacks,nativeIcons,transparentNativeIcons,failedNativeIcons,reusedIconPacks;
+        public int entityVisible,entityTransparent,entityFailed,entityExcluded,entityUncertain;
+        public int entityUniqueImages,entityImageAliases;
+        public int entityCompositionComplete,entityCompositionPartial,entityCompositionUnverified,entityUnexpectedEmpty;
         public int itemTagFiles,itemNames,staticItemIcons;
         public final List<String> warnings = new ArrayList<>();
-        public int textures, entities, recipes, textChunks, embeddings;
+        public int textures, entities, recipes, textChunks, embeddings, runtimeSnapshots;
         public long durationMs;
     }
 }

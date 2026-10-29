@@ -45,7 +45,7 @@ public class RendererService {
                 var meta=metadata(match);var inputs=new ArrayList<RecipeCardRenderer.Input>();var evidence=new ArrayList<SlotEvidence>();
                 var notes=new LinkedHashSet<String>(plan.notes());var metadata=new ArrayList<String>();
                 String sourceType=Objects.toString(match.sourceType(),"UNKNOWN");
-                metadata.add("来源："+(sourceType.equals("JAR_PARSE")?"JAR 默认配方，未确认运行时修改":sourceType));
+                metadata.add("来源："+(sourceType.equals("JAR_PARSE")?"JAR 默认配方，未确认运行时修改":sourceType.equals("RUNTIME_SNAPSHOT")?"单人世界实际加载的配方快照":sourceType));
                 metadata.add("配方："+meta.id());
                 metadata.add("来源模组："+Objects.toString(match.sourceMod(),"未知")+" "+Objects.toString(meta.version(),""));
                 var profile=icons.profile();
@@ -97,6 +97,14 @@ public class RendererService {
         return new RenderBatch(images,cards,diagnostics);
     }
     private RecipeMeta metadata(QaPipeline.RecipeMatch match) {
+        if("RUNTIME_SNAPSHOT".equals(match.sourceType())) {
+            try(var c=db.getConnection();var p=c.prepareStatement("SELECT r.recipe_id,p.manifest_json FROM rag_runtime_recipe r JOIN rag_item_icon_profile p ON p.id=r.profile_id WHERE r.profile_id=? AND r.recipe_data=?")) {
+                p.setString(1,RuntimeKnowledgeStore.active(db));p.setString(2,match.recipeJson());try(var r=p.executeQuery()){if(r.next()) {
+                    var env=JSON.readTree(r.getString(2)).path("environment");String version=null;for(var mod:env.path("mods"))if(mod.path("id").asText().equals(match.sourceMod()))version=mod.path("version").asText();
+                    return new RecipeMeta(r.getString(1),env.path("loader").asText(),version,env.path("minecraftVersion").asText());
+                }}
+            }catch(Exception failure){throw new IllegalStateException("运行时配方来源读取失败",failure);}
+        }
         String id=Objects.toString(match.sourceMod(),"unknown")+":recipe/"+BuildRequest.fingerprint(match.recipeJson()).substring(0,12),loader=null,version=null,mc=null;
         var mod=match.sourceMod()==null?null:db.findModEntry(match.sourceMod());if(mod!=null){loader=mod.getLoader();version=mod.getVersion();mc=mod.getMcVersion();}
         try(var c=db.getConnection();var p=c.prepareStatement("SELECT recipe_id,recipe_data,loader,mod_version FROM rag_recipe WHERE source_mod=? AND "+(match.outputItem()==null?"output_item IS NULL":"output_item=?")+" ORDER BY id")) {

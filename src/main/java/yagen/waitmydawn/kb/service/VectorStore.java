@@ -143,8 +143,8 @@ public class VectorStore {
     public List<SearchResult> search(float[] queryVec, int topK, String modIdFilter) {
         if (topK <= 0) return List.of();
         var results = new java.util.PriorityQueue<SearchResult>(Comparator.comparingDouble(SearchResult::score));
-        String sql = "SELECT chunk_id, chunk_text, embedding, mod_id, mod_name, chunk_type, source_path FROM rag_vectors";
-        if (modIdFilter != null) sql += " WHERE mod_id = ?";
+        String sql = "SELECT chunk_id, chunk_text, embedding, mod_id, mod_name, chunk_type, source_path FROM rag_vectors WHERE "+RuntimeKnowledgeStore.vectorPredicate(db);
+        if (modIdFilter != null) sql += " AND mod_id = ?";
 
         try (Connection conn = db.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -374,7 +374,7 @@ public class VectorStore {
 
     private static List<SearchResult> searchInDb(DatabaseBuilder db,float[] queryVec,int topK,String modId,Set<String> urls) {
         var results = new java.util.PriorityQueue<SearchResult>(Comparator.comparingDouble(SearchResult::score));
-        String sql = "SELECT chunk_id, chunk_text, embedding, mod_id, mod_name, chunk_type, source_path FROM rag_vectors WHERE chunk_type <> 'entity_alias'";
+        String sql = "SELECT chunk_id, chunk_text, embedding, mod_id, mod_name, chunk_type, source_path FROM rag_vectors WHERE chunk_type <> 'entity_alias' AND "+RuntimeKnowledgeStore.vectorPredicate(db);
         if(modId!=null) sql+=" AND mod_id=?";
         if(!urls.isEmpty()) sql+=" AND source_path IN ("+String.join(",",Collections.nCopies(urls.size(),"?"))+")";
 

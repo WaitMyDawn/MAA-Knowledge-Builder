@@ -132,7 +132,7 @@ public final class RecipeResourceStore {
         var hits=new ArrayList<Hit>();
         var ids=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(question);
         while(ids.find())hits.add(new Hit(ids.group(),ids.start(),ids.end()));
-        try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT DISTINCT item_id,display_name FROM rag_item_name")) {
+        try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery("SELECT DISTINCT item_id,display_name FROM "+RuntimeKnowledgeStore.nameRelation(db))) {
             while(r.next()) {
                 String name=r.getString(2);boolean han=name.codePoints().anyMatch(cp->Character.UnicodeScript.of(cp)==Character.UnicodeScript.HAN);
                 if(name.length()<2&&(!han||!question.toLowerCase(Locale.ROOT).matches("(?s).*(合成|制作|配方|锻造|冶炼|加工|craft|recipe).*")))continue;
@@ -141,7 +141,7 @@ public final class RecipeResourceStore {
             }
         }catch(SQLException e){throw new IllegalStateException("配方名称索引读取失败",e);}
         hits.sort(Comparator.<Hit>comparingInt(h->h.end()-h.start()).reversed().thenComparing(Hit::id));
-        var chosen=new ArrayList<Hit>();for(var hit:hits)if(chosen.stream().noneMatch(old->hit.start()<old.end()&&hit.end()>old.start()))chosen.add(hit);
+        var chosen=new ArrayList<Hit>();for(var hit:hits)if(chosen.stream().noneMatch(old->hit.start()<old.end()&&hit.end()>old.start()&&(hit.start()!=old.start()||hit.end()!=old.end()||hit.id().equals(old.id()))))chosen.add(hit);
         return chosen.stream().map(Hit::id).distinct().limit(16).toList();
     }
     private static JsonNode flatModel(String id, Map<String, JsonNode> models, Set<String> seen) {
@@ -165,6 +165,7 @@ public final class RecipeResourceStore {
         return new String(bytes, StandardCharsets.UTF_8);
     }
     public static Map<String, List<TagFile>> tags(Connection c) throws Exception {
+        String runtime=RuntimeKnowledgeStore.active(c);if(runtime!=null)return RuntimeKnowledgeStore.tags(c,runtime);
         var result = new TreeMap<String, List<TagFile>>();
         try (var s = c.createStatement(); var r = s.executeQuery("SELECT tag_id,source_mod,tag_json FROM rag_item_tag_file ORDER BY id")) {
             while (r.next()) result.computeIfAbsent(r.getString(1), key -> new ArrayList<>()).add(new TagFile(r.getString(2), JSON.readTree(r.getString(3))));

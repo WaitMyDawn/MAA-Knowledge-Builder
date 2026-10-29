@@ -15,7 +15,7 @@ public final class ImageGroundingAssessment {
         var sourceIds=new HashSet<String>();artifacts.sources().forEach(s->sourceIds.add(s.id()));
         var checks=new ArrayList<Check>();int bound=0,mismatch=0,unbound=0,unknown=0;
         for(var picture:artifacts.pictures()) {
-            if(!used.contains(picture.id())||"RECIPE".equals(picture.role()))continue;
+            if(!used.contains(picture.id())||"RECIPE".equals(picture.role())||"ENTITY".equals(picture.role()))continue;
             var g=picture.grounding();if(g==null){unbound++;unknown++;checks.add(new Check(picture.id(),"UNKNOWN","UNBOUND","MISSING_GROUNDING"));continue;}
             if(g.purpose().equals("UNKNOWN"))unknown++;
             var evidence=new GuideImageSemantics.Grounding(g.purpose(),g.basis(),g.blockId(),null,g.stepText(),g.relation(),g.analysisStatus());

@@ -26,6 +26,7 @@ public final class ItemIconStore {
     public void importPack(BuildRequest.Source source,NativeIconPack.Pack prepared,BuildSourceProcessor.Context context)throws Exception {
         var pack=NativeIconPack.read(prepared.root());
         if(!pack.manifestHash().equals(prepared.manifestHash()))throw new IllegalStateException("预检查后导出包内容发生变化");
+        new RuntimeKnowledgeStore(db).importPack(source,pack,context);
         String previousSelected=activeProfileId();boolean updateSelection=false;
         try(var c=db.getConnection();var p=c.prepareStatement("SELECT id,manifest_hash,environment_hash FROM rag_item_icon_profile WHERE source_id=?")) {
             p.setString(1,source.id());try(var r=p.executeQuery()) {while(r.next()) {
@@ -55,7 +56,7 @@ public final class ItemIconStore {
         }
         context.result().nativeIconPacks++;
         if(updateSelection&&!compatibility.equals("CONFLICT")){selectProfile(profile);context.result().warnings.add("已更新当前来源的图标环境；旧会话图片快照保持不变。");}
-        context.result().warnings.add("图标包已独立存储（"+pack.origin()+"，"+compatibility+"）；请在问答页选择图标环境，本次保留 JAR 配方与回退资源。");
+        if(new SourceLifecycleStore(db).strings("SELECT profile_id FROM rag_runtime_snapshot WHERE source_id=?",source.id()).isEmpty())context.result().warnings.add("旧版仅图标包仅供历史回放，不满足完整快照构建要求。");
         if(context.progress()!=null)context.progress().onProgress("icons",context.result().nativeIcons,pack.icons().size(),"已导入图标包："+source.location());
     }
     static String compatibility(NativeIconPack.Pack pack,List<ModEntry> installed) {

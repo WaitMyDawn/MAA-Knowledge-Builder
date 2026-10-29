@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MKB knowledge snapshot v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["format", "schemaVersion", "captureMode", "coverage", "capturedAt", "clientFingerprint", "serverGeneration", "categories"],
+  "properties": {
+    "format": {"const": "mkb-snapshot"}, "schemaVersion": {"const": 1},
+    "captureMode": {"enum": ["SINGLEPLAYER", "CLIENT_ONLY"]}, "coverage": {"enum": ["ALL", "SELECTION"]},
+    "capturedAt": {"type": "string"},
+    "clientFingerprint": {"$ref": "#/$defs/hash"}, "serverFingerprint": {"$ref": "#/$defs/hash"},
+    "serverSession": {"type": "string", "format": "uuid"}, "serverGeneration": {"type": "integer", "minimum": 0},
+    "categories": {
+      "type": "object", "maxProperties": 64,
+      "required": ["mod_metadata", "registries", "language", "item_icons", "recipes", "tags", "loot_tables", "loot_modifiers"],
+      "propertyNames": {"pattern": "^[a-z_]{1,64}$"}, "additionalProperties": {"$ref": "#/$defs/category"}
+    }
+  },
+  "allOf": [{"if": {"properties": {"captureMode": {"const": "SINGLEPLAYER"}}}, "then": {"required": ["serverFingerprint", "serverSession"]}}],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "category": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "total", "succeeded", "transparent", "unsupported", "failed"],
+      "properties": {
+        "status": {"enum": ["COMPLETE", "COMPLETE_WITH_ERRORS", "NOT_IMPLEMENTED", "FAILED"]},
+        "total": {"type": "integer", "minimum": 0}, "succeeded": {"type": "integer", "minimum": 0},
+        "transparent": {"type": "integer", "minimum": 0}, "unsupported": {"type": "integer", "minimum": 0}, "failed": {"type": "integer", "minimum": 0},
+        "file": {"type": "string"}, "sha256": {"$ref": "#/$defs/hash"}, "reason": {"type": "string"}
+      },
+      "allOf": [{"if": {"properties": {"status": {"enum": ["COMPLETE", "COMPLETE_WITH_ERRORS"]}}}, "then": {"required": ["file", "sha256"]}}]
+    }
+  },
+  "$comment": "Counter balance, payload identity and strict build capabilities are enforced by ExportSnapshotPreflight."
+}

@@ -20,7 +20,7 @@ public final class NativeIconPack {
     private NativeIconPack() {}
 
     public static boolean detected(Path root) {
-        boolean namedPack=root.getFileName()!=null && root.getFileName().toString().equalsIgnoreCase("MKB-Export");
+        boolean namedPack=root.getFileName()!=null && root.getFileName().toString().toLowerCase(Locale.ROOT).startsWith("mkb-export");
         if(!Files.exists(root.resolve("manifest.json"),LinkOption.NOFOLLOW_LINKS)) {
             if(namedPack)throw new IllegalArgumentException("MKB-Export 目录缺少 manifest.json，不能作为普通资料导入");
             return false;
@@ -54,7 +54,8 @@ public final class NativeIconPack {
         var exporter=tree.path("exporter");fields(exporter,"id","version");
         if(!"mkb_export".equals(text(exporter,"id",40))) throw new IOException("导出器标识必须为 mkb_export");
         String exporterVersion=text(exporter,"version",128);
-        var env=tree.path("environment");fields(env,"minecraftVersion","loader","loaderVersion","mods","resourcePacks");
+        var env=tree.path("environment");fields(env,"minecraftVersion","loader","loaderVersion","mods","resourcePacks","language");
+        if(env.has("language")&&!text(env,"language",32).matches("[a-z0-9_]+"))throw new IOException("导出语言标识无效");
         String version=text(env,"minecraftVersion",64),loader=text(env,"loader",32);text(env,"loaderVersion",128);
         if(!Set.of("neoforge","forge","fabric","quilt","vanilla").contains(loader)) throw new IOException("未知加载器");
         var mods=array(env,"mods",4096);var ids=new HashSet<String>();
@@ -96,7 +97,15 @@ public final class NativeIconPack {
         var sortedIcons=new ArrayList<JsonNode>();rows.forEach(sortedIcons::add);sortedIcons.sort(Comparator.comparing((JsonNode m) -> m.path("itemId").asText()).thenComparing(m->m.path("variant").asText()));
         var iconArray=JSON.createArrayNode();sortedIcons.forEach(iconArray::add);normalized.set("icons",iconArray);
         String canonical=canonical(normalized).toString(),environment=canonical(normalized.path("environment")).toString();
-        return new Pack(root.toRealPath(),yagen.waitmydawn.kb.model.BuildRequest.fingerprint(canonical),yagen.waitmydawn.kb.model.BuildRequest.fingerprint(environment),origin,exporterVersion,version,loader,normalized.path("environment"),rendering,canonical,List.copyOf(icons));
+        Path real=root.toRealPath();String snapshotIdentity="";
+        Path snapshot=ArchivePaths.resolve(real,"snapshot.json");
+        if(Files.exists(snapshot,LinkOption.NOFOLLOW_LINKS)) {
+            if(!Files.isRegularFile(snapshot,LinkOption.NOFOLLOW_LINKS)||Files.size(snapshot)>1024*1024)throw new IOException("知识快照声明类型或大小无效");
+            snapshotIdentity="\n"+ArtifactFingerprint.sha256(snapshot);
+        }
+        var pack=new Pack(real,yagen.waitmydawn.kb.model.BuildRequest.fingerprint(canonical+snapshotIdentity),yagen.waitmydawn.kb.model.BuildRequest.fingerprint(environment),origin,exporterVersion,version,loader,normalized.path("environment"),rendering,canonical,List.copyOf(icons));
+        ExportSnapshotPreflight.inspect(pack,null);
+        return pack;
     }
 
     static long validate(Path root,Icon icon,int width) throws IOException {

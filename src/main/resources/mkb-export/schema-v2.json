@@ -59,6 +59,7 @@
         "resourcePacks"
       ],
       "properties": {
+        "language": {"type": "string", "pattern": "^[a-z0-9_]+$", "maxLength": 32},
         "minecraftVersion": {
           "type": "string",
           "minLength": 1,

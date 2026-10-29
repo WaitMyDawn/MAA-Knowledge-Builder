@@ -26,19 +26,4 @@ class JarLanguageExtractorTest {
         var path=jar("valid.jar","{\"item.demo.guide\":\"机械装配指南：记录组装机械与材料加工的完整使用说明\"}",english(),false);var language=new JarLanguageExtractor().extract(path,"demo","Demo");assertTrue(language.warnings().isEmpty());assertTrue(language.chunks().stream().allMatch(c->c.sourcePath().endsWith("zh_cn.json")));
         var db=DatabaseBuilder.atPath(temp.resolve("index"));db.initDatabase();try{assertEquals(2,new RecipeResourceStore(db).importJar(path,"demo",temp).names());assertTrue(new ItemIconService(db,temp).snapshot().name("demo:guide").startsWith("机械装配指南"));}finally{db.shutdown();}
     }
-    @Test void invalidChineseDoesNotPreventBuildPublicationAndEnglishVectorsAreStored()throws Exception{
-        var mods=Files.createDirectory(temp.resolve("mods"));var path=jar("source.jar","{invalid",english(),false);Files.move(path,mods.resolve("source.jar"));var cfg=AppConfig.forIsolatedRun(false);cfg.setDataDir(temp.resolve("base"));var db=new DatabaseBuilder(cfg);db.initDatabase();
-        var scraper=new WikiScraperService(){@Override public WebPage fetchMcWiki(String page){return null;}};
-        try(var embedding=new EmbeddingService(null)){
-            var result=new KnowledgeBuilder(cfg,db,embedding,null,scraper).build(BuildRequest.jars(mods),null);assertEquals(1,result.parsed);assertTrue(result.warnings.stream().anyMatch(w->w.contains("zh_cn.json")));assertNotNull(db.findModEntry("demo"));
-            assertFalse(new SourceLifecycleStore(db).strings("SELECT chunk_text FROM rag_vectors WHERE chunk_type='lang_items' AND source_path LIKE '%en_us.json'").isEmpty());
-        }finally{db.shutdown();LogSetup.shutdown();}
-    }
-    @Test void invalidTagRemainsFatalAndOriginalPublishedKnowledgeIsRetained()throws Exception{
-        var mods=Files.createDirectory(temp.resolve("mods"));Files.move(jar("source.jar",null,english(),true),mods.resolve("source.jar"));var cfg=AppConfig.forIsolatedRun(false);cfg.setDataDir(temp.resolve("base"));var db=new DatabaseBuilder(cfg);db.initDatabase();
-        try(var embedding=new EmbeddingService(null)){
-            new VectorStore(db,384).storeBatch(List.of(new TextChunker.TextChunk("old","已发布的历史知识数据","old","Old","description","test")),embedding);String before=db.contentFingerprint();
-            var scraper=new WikiScraperService(){@Override public WebPage fetchMcWiki(String p){return null;}};var error=assertThrows(IllegalStateException.class,()->new KnowledgeBuilder(cfg,db,embedding,null,scraper).build(BuildRequest.jars(mods),null));assertTrue(error.getMessage().contains("data/demo/tags/items/bad.json"));assertEquals(before,db.contentFingerprint());
-        }finally{db.shutdown();LogSetup.shutdown();}
-    }
 }
