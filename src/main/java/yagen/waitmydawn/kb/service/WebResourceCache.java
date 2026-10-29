@@ -60,7 +60,7 @@ final class WebResourceCache {
             p.setString(1,url);try(var r=p.executeQuery()){return r.next()?new WikiScraperService.Resource(200,r.getBytes(2),r.getString(3),r.getString(1),r.getString(4),r.getString(5)):new WikiScraperService.Resource(404,null,"",url,null,null);}
         }catch(java.sql.SQLException e){throw new IllegalStateException("原始网页缓存读取失败",e);}
     }
-    private void put(String url, WikiScraperService.Resource value) {
+    void put(String url, WikiScraperService.Resource value) {
         try (var c = db.getConnection()) {
             c.setAutoCommit(false);
             try {

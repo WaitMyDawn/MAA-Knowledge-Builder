@@ -106,7 +106,7 @@ public final class AnswerMedia {
         }
         matcher.appendTail(out); safe = out.toString();
         for (var image : artifacts.pictures()) {
-            if (usedImages.contains(image.id())) continue;
+            if (usedImages.contains(image.id()) || java.util.Set.of("ENTITY","ITEM","RECIPE").contains(image.role())) continue;
             var paragraphs = new ArrayList<>(List.of(safe.split("\\n\\s*\\n")));
             int best = -1; double score = 0;
             for (int i = 0; i < paragraphs.size(); i++) {

@@ -149,7 +149,7 @@ class UrlBuildProcessorTest {
         assertTrue(WebDocumentParser.parse(resource.document(), resource.url()).blocks().getFirst().text().contains("中文教程正文"));
     }
 
-    @Test void webpAssetsAndImageLinksSurvivePublicationAndBudgetedReferencesRemainVisible() throws Exception {
+    @Test void webpAssetsSurvivePublicationAndAllImagesAreAttempted() throws Exception {
         var config = AppConfig.forIsolatedRun(false); config.setDataDir(temp.resolve("data"));
         var db = db("base"); var web = new FakeWeb(); web.setResourceDatabase(db);
         String url = "https://example.com/guide";
@@ -164,8 +164,8 @@ class UrlBuildProcessorTest {
             assertEquals(1, result.webImages); assertEquals(1, result.deferredWebImages);
             assertEquals(2, count(db, "SELECT COUNT(*) FROM rag_image_asset WHERE media_type='image/png' AND relative_path LIKE '%.png'"));
             assertTrue(count(db, "SELECT COUNT(*) FROM rag_chunk_image l JOIN rag_vectors v ON l.chunk_id=v.chunk_id") > 0);
-            assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_web_image_reference WHERE status='DEFERRED'"));
-            assertFalse(web.requests.contains("https://example.com/missing.png"));
+            assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_web_image_reference WHERE status='FAILED'"));
+            assertTrue(web.requests.contains("https://example.com/missing.png"));
             new ImageAssetStore(config.getDataDir()).validate(new KnowledgeContentStore(db), db);
         } finally {
             if (budget == null) System.clearProperty("maa.build.maxWebImages"); else System.setProperty("maa.build.maxWebImages", budget);

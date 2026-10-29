@@ -11,12 +11,31 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
     private final WikiScraperService scraper;
     private final DocumentDirectoryProcessor documents;
     private final WebImageEnricher imageEnricher;
+    private int prewarmPages;
+    UrlBuildProcessor withPrewarmPages(int count){prewarmPages=Math.max(0,Math.min(30,count));return this;}
     public UrlBuildProcessor(WikiScraperService scraper) { this(scraper, null); }
     UrlBuildProcessor(WikiScraperService scraper, DocumentDirectoryProcessor documents) { this(scraper,documents,new WebImageEnricher()); }
     UrlBuildProcessor(WikiScraperService scraper,DocumentDirectoryProcessor documents,WebImageEnricher enricher){this.scraper=scraper;this.documents=documents;this.imageEnricher=enricher;}
     @Override public boolean supports(BuildRequest.Kind kind) { return kind == BuildRequest.Kind.URL; }
-    void enrichExisting(BuildRequest.Source source,Context context)throws Exception {imageEnricher.backfill(source,context,scraper.resourceDatabase());}
-    void processDocument(BuildRequest.Source source,String location,Context context)throws Exception {
+    void enrichExisting(BuildRequest.Source source,Context context)throws Exception {
+        new GuideImageStepBackfill(context.database(),scraper.resourceDatabase()).run(source,context);
+        new WebImageCompletion(scraper,imageEnricher).completeSource(source,context);
+        String path=URI.create(source.location()).getPath();
+        if(WebDocumentParser.isMcmod(source.location())&&path.matches("/class/[1-9][0-9]*\\.html")){
+            String mod=knownMod(context,source.location());prewarm(source,mod==null?"mcmod:class:"+path.replaceAll("[^0-9]",""):mod,context);
+        }
+    }
+    private void prewarm(BuildRequest.Source source,String catalogKey,Context context)throws Exception {
+        if(prewarmPages==0)return;
+        var details=new LinkedHashMap<String,WebCatalogStore.Entry>();
+        for(var entry:new WebCatalogStore(context.database()).entries(catalogKey,4))if(entry.role().equals("entry"))details.putIfAbsent(entry.url(),entry);
+        for(var category:WikiScraperService.McmodCategory.values())for(var entry:new WebCatalogStore(context.database()).entries(catalogKey,category.getId()))if(entry.role().equals("entry"))details.putIfAbsent(entry.url(),entry);
+        int warmed=0;for(var detail:details.values()){if(warmed>=prewarmPages)break;context.checkCancelled();processDocument(source,detail.url(),context);report(context,"prewarm",++warmed,Math.min(prewarmPages,details.size()),"预取详情及正文图片："+detail.label());}
+    }
+    public void processDocument(BuildRequest.Source source,String location,Context context)throws Exception {
+        processDocument(source,location,context,knownMod(context,source.location()),"网页资料");
+    }
+    void processDocument(BuildRequest.Source source,String location,Context context,String mod,String name)throws Exception {
         var page=scraper.fetchBuildResource(location,source.location(),false);
         if(page.status()!=200||page.bytes()==null)throw new IllegalStateException("网页文档获取失败 HTTP "+page.status());
         String type=Objects.toString(page.contentType(),"").toLowerCase(Locale.ROOT);
@@ -25,7 +44,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
             documents.importBytes(location,location,format,page.bytes(),source,context,new HashMap<>());return;
         }
         if(page.bytes().length>4*1024*1024)throw new IllegalArgumentException("HTML 页面超过 4 MiB");
-        ingest(source,location,WebDocumentParser.parse(page.document(),page.url()),"网页资料",knownMod(context,source.location()),context);
+        ingest(source,location,WebDocumentParser.parse(page.document(),page.url()),name,mod,context);
     }
 
     @Override public void process(BuildRequest.Source source, Context context) throws Exception {
@@ -99,6 +118,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
                         List.of(new WebDocumentParser.Block(page.content(), "分类目录", List.of())));
                 ingest(source, page.url(), summary, name, modId, context);
             }
+            prewarm(source,catalogKey,context);
         } else {
             context.content().setSourceScope(source.id(), resource.url(), "WEB", name, null);
             ingest(source, resource.url(), parsed, name, null, context);
@@ -115,7 +135,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
         return page;
     }
 
-    private void ingest(BuildRequest.Source source, String url, WebDocumentParser.Parsed parsed,
+    void ingest(BuildRequest.Source source, String url, WebDocumentParser.Parsed parsed,
                         String sourceName, String modId, Context context) throws Exception {
         context.checkCancelled();
         String documentId = BuildRequest.fingerprint(url);
@@ -124,12 +144,12 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
         String fullText = parsed.blocks().stream().map(b -> b.headingPath() + "\n" + b.text() + "\n" + b.images())
                 .collect(java.util.stream.Collectors.joining("\n"));
         if (context.content().hasDocument(documentId)) {
-            if(context.refresh()&&(context.reparse()||!BuildRequest.fingerprint(fullText).equals(context.content().documentHash(documentId)))) {
+            if(new SourceLifecycleStore(context.database()).strings("SELECT parser_version FROM rag_document_parser WHERE id=?",documentId).isEmpty() || context.refresh()&&(context.reparse()||!BuildRequest.fingerprint(fullText).equals(context.content().documentHash(documentId)))) {
                 new SourceLifecycleStore(context.database()).clearDocumentContent(documentId);
             } else {
             context.result().reusedDocuments++;
             context.content().linkDocumentSource(documentId, source.id());
-            if(!context.refresh())imageEnricher.backfill(source,context,scraper.resourceDatabase());
+            if(!context.refresh())new WebImageCompletion(scraper,imageEnricher).complete(List.of(documentId),context);
             return;
             }
         }
@@ -152,50 +172,23 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
                     block.kind(),block.tableId(),text,block.text().isBlank()?"ADJACENT":"NATIVE");
             rawBlocks.add(raw);context.content().saveBlock(raw);
         }
-        var blockChunks=new HashMap<String,List<String>>();int chunkOrdinal=0;
+        int chunkOrdinal=0;
         for(var indexed:StructuredChunker.split(rawBlocks,parsed.title(),modId,sourceName,"web",url,context.embedder())) {
             context.checkCancelled();var chunk=indexed.chunk();
             context.content().saveChunk(new KnowledgeContent.Chunk(chunk.id(),documentId,chunk.text(),indexed.heading(),indexed.page(),chunkOrdinal++));
             context.content().setChunkMethod(chunk.id(),indexed.method());vectors.add(chunk);
             for(String blockId:indexed.blockIds()) {
-                context.content().linkBlock(chunk.id(),blockId);blockChunks.computeIfAbsent(blockId,k -> new ArrayList<>()).add(chunk.id());
+                context.content().linkBlock(chunk.id(),blockId);
             }
         }
-        int imageOrdinal = 0;
-        int maxImages = Math.max(0, Integer.getInteger("maa.build.maxWebImages", 256));
-        int pageAttempts = 0;
-        int maxPageImages = Math.max(0, Integer.getInteger("maa.build.maxWebImagesPerPage", 64));
-        record PendingImage(int blockOrdinal,int imageOrdinal,WebDocumentParser.ImageRef image) {}
-        var pendingImages=new ArrayList<PendingImage>();
-        for(int ordinal=0;ordinal<parsed.blocks().size();ordinal++)for(var image:parsed.blocks().get(ordinal).images())pendingImages.add(new PendingImage(ordinal,imageOrdinal++,image));
-        // 截图与结构图先于大量物品小图，图片身份仍使用原 DOM 序号以保持历史关联。
-        pendingImages.sort(Comparator.<PendingImage>comparingInt(p->p.image().url().matches("(?is).*/(?:item/icon|icons?)/.*")?1:0).thenComparingInt(PendingImage::imageOrdinal));
-        for(var pending:pendingImages) {
-            int ordinal=pending.blockOrdinal();var image=pending.image();
-            context.checkCancelled();
-            var block = parsed.blocks().get(ordinal);
-            var chunkIds=blockChunks.getOrDefault(documentId+"/block/"+ordinal,List.of());
-                context.checkCancelled();
-                String occurrenceId = documentId + "/image/" + pending.imageOrdinal();
-                String status = "DEFERRED", error = "构建图片下载预算已用尽";
-                if (context.result().webImageAttempts < maxImages && pageAttempts < maxPageImages) {
-                    context.result().webImageAttempts++; pageAttempts++;
-                    try {
-                        var response = scraper.fetchBuildResource(image.url(), url, true);
-                        if (response.status() != 200 || response.bytes() == null) throw new java.io.IOException("HTTP " + response.status());
-                        var asset = context.images().put(response.bytes());
-                        context.content().saveImage(asset);
-                        context.content().saveOccurrence(new KnowledgeContent.ImageOccurrence(occurrenceId, documentId, asset.id(), image.caption(), image.url(), null, pending.imageOrdinal()));
-                        for (String chunkId : chunkIds) context.content().saveLink(new KnowledgeContent.ChunkImageLink(chunkId, occurrenceId, "same_block"));
-                        imageEnricher.enrich(context,documentId,occurrenceId,asset,image.caption(),ordinal,image.stepText());
-                        context.result().webImages++; status = "AVAILABLE"; error = null;
-                    } catch (java.util.concurrent.CancellationException e) { throw e; }
-                    catch (java.io.IOException | IllegalArgumentException e) { status = "FAILED"; error = e.getMessage(); }
-                }
-                context.content().saveImageReference(occurrenceId, documentId, image.url(), image.caption(), block.headingPath(), ordinal, status, error);
-                context.content().setImageStep(occurrenceId,image.stepText());
-                if (!status.equals("AVAILABLE")) context.result().deferredWebImages++;
+        int imageOrdinal=0;
+        // 先持久化完整引用清单，取消或失败后能够继续处理剩余图片。
+        for(int ordinal=0;ordinal<parsed.blocks().size();ordinal++)for(var image:parsed.blocks().get(ordinal).images()){
+            String occurrence=documentId+"/image/"+imageOrdinal++;
+            context.content().saveImageReference(occurrence,documentId,image.url(),image.caption(),parsed.blocks().get(ordinal).headingPath(),ordinal,"DEFERRED","等待缓存正文图片");
+            context.content().setImageStep(occurrence,image.stepText());
         }
+        new WebImageCompletion(scraper,imageEnricher).complete(List.of(documentId),context);
         // 同一网页从 JAR 和网址进入时，用带图文定位的新块替换暂存库中的旧文本块。
         // 保持向量 chunk_id 与图文内容块一致，后续才能从命中块追溯图片。
         context.vectors().storeBatch(vectors, context.embedder());

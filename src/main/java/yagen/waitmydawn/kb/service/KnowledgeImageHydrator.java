@@ -23,6 +23,8 @@ public final class KnowledgeImageHydrator {
         this.db=db;assets=new ImageAssetStore(dataDir);this.scraper=scraper;this.ocr=ocr;scraper.setResourceDatabase(db);
     }
 
+    /** 兼容局部修复调用；生产问答使用 WebPageMediaService 完成整页图片及索引。 */
+    @Deprecated
     List<AnswerArtifacts.Picture> hydrate(String question,List<VectorStore.SearchResult> hits,
                                           List<AnswerArtifacts.Picture> present,Map<String,String> sourceIds) {
         int budget=Math.max(0,Math.min(4,Integer.getInteger("maa.qa.imageDownloads",2)));

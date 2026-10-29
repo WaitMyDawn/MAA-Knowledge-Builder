@@ -149,6 +149,8 @@ public final class RuntimeKnowledgeStore {
         }
     }
     static String active(Connection c)throws SQLException {
+        // 对话增量库仅存向量，不拥有基础库的快照表和环境选择元数据。
+        try(var tables=c.getMetaData().getTables(null,null,"rag_runtime_snapshot",null)){if(!tables.next())return null;}
         String selected=null;try(var s=c.createStatement();var r=s.executeQuery("SELECT meta_value FROM rag_build_metadata WHERE name='icon_profile'")){if(r.next())selected=r.getString(1);}
         if(selected!=null)try(var p=c.prepareStatement("SELECT s.profile_id FROM rag_runtime_snapshot s JOIN rag_item_icon_profile i ON i.source_id=s.source_id WHERE i.id=?")){p.setString(1,selected);try(var r=p.executeQuery()){if(r.next())return r.getString(1);}}
         var profiles=new ArrayList<String>();try(var s=c.createStatement();var r=s.executeQuery("SELECT profile_id FROM rag_runtime_snapshot")){while(r.next())profiles.add(r.getString(1));}

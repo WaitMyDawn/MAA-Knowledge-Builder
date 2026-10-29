@@ -135,6 +135,12 @@ public class UrlAgent {
         this.matcher = m;
     }
 
+    public void setMediaDirectory(java.nio.file.Path directory){
+        scraper.setResourceDatabase(db);
+        var media=new yagen.waitmydawn.kb.service.WebPageMediaService(db,embedder,directory,scraper);
+        scraper.setPageMediaHandler(media::acquire);
+    }
+
     /**
      * 每个问题处理开始时重置累计用量；URL/主题去重仅在无会话增量库时逐问清空，
      * 有增量库时由 {@link #setIncrementalDB(IncrementalDB)} 按会话切换清空，

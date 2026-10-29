@@ -46,8 +46,9 @@ public final class KnowledgeRetrievalService {
     }
     private final DatabaseBuilder db;
     private final EmbeddingService embedder;
-    private final KnowledgeImageHydrator hydrator;
+    private final ImageAssetStore imageAssets;
     private final KnowledgeImageSearch imageSearch;
+    private final WebPageMediaService pageMedia;
     private boolean imageFetching=true;
     public KnowledgeRetrievalService(DatabaseBuilder db, EmbeddingService embedder) { this(db,embedder,null); }
     public KnowledgeRetrievalService(DatabaseBuilder db,EmbeddingService embedder,java.nio.file.Path dataDir) {
@@ -56,7 +57,9 @@ public final class KnowledgeRetrievalService {
     KnowledgeRetrievalService(DatabaseBuilder db,EmbeddingService embedder,java.nio.file.Path dataDir,boolean allowImageFetch) {
         this.db=db;this.embedder=embedder;
         imageSearch=new KnowledgeImageSearch(db,dataDir);
-        hydrator=dataDir==null || !allowImageFetch?null:new KnowledgeImageHydrator(db,dataDir,new WikiScraperService());
+        var scraper=new WikiScraperService();if(dataDir!=null&&allowImageFetch)scraper.setResourceDatabase(db);
+        pageMedia=dataDir==null||!allowImageFetch?null:new WebPageMediaService(db,embedder,dataDir,scraper);
+        imageAssets=dataDir==null?null:new ImageAssetStore(dataDir);
     }
     public void setImageFetching(boolean enabled) {imageFetching=enabled;}
 
@@ -282,18 +285,17 @@ public final class KnowledgeRetrievalService {
     }
 
     public Retrieval hydrate(Retrieval retrieval,String question) {
-        if(!imageFetching || hydrator==null || retrieval.hits().isEmpty()) return retrieval;
+        if(!imageFetching || pageMedia==null || retrieval.hits().isEmpty()) return retrieval;
+        if(pageMedia!=null)pageMedia.complete(retrieval.artifacts().sources().stream().map(AnswerArtifacts.Source::documentId).distinct().toList());
         String imageQuery=imageQuery(retrieval,question);
-        var sourceIds=new HashMap<String,String>();
-        for(var hit:retrieval.hits()) {
-            String id=sourceId(retrieval,hit.chunkId());
-            if(retrieval.artifacts().sources().stream().anyMatch(s -> s.id().equals(id))) sourceIds.put(hit.chunkId(),id);
-        }
         var present=new ArrayList<>(retrieval.artifacts().pictures());
-        imageSearch.search(imageQuery,retrieval.artifacts(),retrieval.diagnostics()).repairs().stream().filter(p -> present.stream().noneMatch(i -> i.id().equals(p.id()))).forEach(present::add);
-        var extra=hydrator.hydrate(imageQuery,retrieval.hits().stream().filter(h -> sourceIds.containsKey(h.chunkId())).toList(),present,sourceIds);
+        var completedImages=imageSearch.search(imageQuery,retrieval.artifacts(),retrieval.diagnostics());
+        completedImages.pictures().stream().filter(p -> present.stream().noneMatch(i -> i.id().equals(p.id()))).forEach(present::add);
+        completedImages.repairs().stream().filter(p -> present.stream().noneMatch(i -> i.id().equals(p.id()))).forEach(present::add);
+        var completion=pageMedia.lastResult();
+        var hydration=new KnowledgeImageHydrator.Audit(completion.webImageAttempts,completion.webImageAttempts,completion.webImages,completion.deferredWebImages,completion.deferredWebImages>0?"PAGE_CACHE_INCOMPLETE":"PAGE_CACHE_COMPLETE",completion.webOcrAttempts,0);
         var pictures=new ArrayList<AnswerArtifacts.Picture>();var seen=new HashSet<String>();var sourceCounts=new HashMap<String,Integer>();
-        java.util.stream.Stream.concat(present.stream().filter(hydrator::available),extra.stream()).forEach(p -> {
+        present.stream().filter(p -> imageAssets.available(p.assetId(),p.relativePath())).forEach(p -> {
             if(pictures.size()<4 && !seen.contains(p.assetId()) && sourceCounts.getOrDefault(p.sourceId(),0)<2) {
                 pictures.add(p);seen.add(p.assetId());sourceCounts.merge(p.sourceId(),1,Integer::sum);
             }
@@ -302,7 +304,7 @@ public final class KnowledgeRetrievalService {
         var expanded=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),pictures);
         var d=retrieval.diagnostics();
         var imageAudit=d==null?null:d.images();
-        if(imageAudit!=null) imageAudit=new KnowledgeImageSearch.Audit(imageAudit.inspected(),Math.max(0,imageAudit.pending()-hydrator.audit().resolved()),pictures.size(),pictures.isEmpty()?imageAudit.status():"SELECTED_AFTER_CACHE",imageAudit.truncated(),imageAudit.candidates(),hydrator.audit());
+        if(imageAudit!=null) imageAudit=new KnowledgeImageSearch.Audit(imageAudit.inspected(),Math.max(0,imageAudit.pending()-hydration.resolved()),pictures.size(),pictures.isEmpty()?imageAudit.status():"SELECTED_AFTER_CACHE",imageAudit.truncated(),imageAudit.candidates(),hydration);
         if(d!=null) d=new Diagnostics(d.query(),d.embeddingProfile(),d.scanned(),d.selected(),d.decisions(),d.candidates(),d.truncated(),d.strategy(),d.aliases(),d.queryTerms(),d.rankingTimeMs(),d.context(),KnowledgeCoverage.restrict(d.coverage(),expanded),imageAudit);
         return new Retrieval(retrieval.hits(),expanded,evidence(expanded,d),retrieval.bestLexical(),d);
     }

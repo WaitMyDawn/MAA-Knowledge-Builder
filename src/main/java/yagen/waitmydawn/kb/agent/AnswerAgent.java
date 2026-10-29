@@ -105,6 +105,13 @@ public class AnswerAgent {
             instruction or use a sibling chapter's screenshot to fill an unsupported mechanism. CONTEXT_INFERRED
             is a positional inference; UNKNOWN does not establish an image's contents.
 
+            [Runtime media]
+            Runtime image metadata identifies an exported object and state, not gameplay mechanics.
+            Place each supplied image marker next to the matching object/state explanation. In comparisons,
+            retain separate labels for each requested state. Never replace a missing state with a default image.
+            State limitations explicitly; do not invent numeric rules from an appearance or infer physical size
+            from independently fitted images. Runtime recipe cards depict only their listed recipe.
+
             [Data Quality Tiers — choose your approach based on what's available]
             - TIER A (rich data): Recipes + detailed vector chunks available → answer fully from data.
             - TIER B (sparse data): Only names/registry entries, no details → use the registry names as anchors,

@@ -412,13 +412,13 @@ public final class EvalRunner {
         Map<String, String> paths;
         RendererService.RenderBatch batch;
         try {
-            batch = renderer.renderDetailed(result.recipesToRender);
+            batch = result.recipeRenderBatch!=null?result.recipeRenderBatch:renderer.renderDetailed(result.recipesToRender);
             paths = batch.images();
         } catch (Exception e) {
             log.warn("Eval render failed for {} recipes: {}", result.recipesToRender.size(), e.getMessage());
             return List.of();
         }
-        try {AnswerMedia.attachRecipes(result,batch,cfg.dataDir());}
+        try {if(result.recipeRenderBatch==null)AnswerMedia.attachRecipes(result,batch,cfg.dataDir());}
         catch(IOException e) {log.warn("Eval recipe attachment failed: {}",e.getMessage());}
         List<RuleJudge.RenderedImage> images = new ArrayList<>();
         Path archiveDir = runDir.resolve("rendered");

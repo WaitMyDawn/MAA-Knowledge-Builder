@@ -81,7 +81,7 @@ public class KnowledgeBuilder {
         wikiScraper.setResourceDatabase(db);
         var documents = new DocumentDirectoryProcessor(config);
         this.sourceProcessors = sourceProcessors == null
-                ? List.of(documents, new UrlBuildProcessor(wikiScraper, documents))
+                ? List.of(documents, new UrlBuildProcessor(wikiScraper, documents).withPrewarmPages(config.getPrewarmPages()))
                 : List.copyOf(sourceProcessors);
     }
 
@@ -403,6 +403,8 @@ public class KnowledgeBuilder {
                 var chunks=chunker.fromWebPage(fetched.page().content(),modEntry.getModId(),modEntry.getDisplayName(),"mcmod",entry.url());
                 vectorStore.storeBatch(chunks,publicCache.embeddings(chunks,embedder),embedder.profile());
                 result.embeddings+=chunks.size();
+                var owner=jarSources.stream().filter(source->java.nio.file.Path.of(modEntry.getJarPath()).toAbsolutePath().normalize().startsWith(java.nio.file.Path.of(source.location()).toAbsolutePath().normalize())).findFirst().orElse(null);
+                if(owner!=null){var context=new BuildSourceProcessor.Context(db,new KnowledgeContentStore(db),new ImageAssetStore(config.getDataDir()),vectorStore,embedder,progressCallback,result);new UrlBuildProcessor(wikiScraper).processDocument(owner,entry.url(),context,modEntry.getModId(),modEntry.getDisplayName());}
             }
             report(progressCallback,"prewarm",warmed.size(),warmed.size(),warmLimit==0?"已关闭常用详情预取":"详情预取完成：成功 "+prepared+" 页，跳过/失败 "+skipped+" 页（站点冷却期间不继续访问）");
             try { Thread.sleep(500); } catch (InterruptedException cancelled) {Thread.currentThread().interrupt();throw new java.util.concurrent.CancellationException("Knowledge build cancelled");}

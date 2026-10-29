@@ -65,7 +65,7 @@ public class DatabaseBuilder {
             target.setAutoCommit(false);
             try {
                 for (String table : BUILD_TABLES) {
-                    try (var delete = target.createStatement()) { delete.executeUpdate("DELETE FROM " + table); }
+                    var additions = BuildTableDelta.removeChangedRows(target, source, table);
                     try (var query = source.createStatement(); var rows = query.executeQuery("SELECT * FROM " + table)) {
                         var meta = rows.getMetaData();
                         var columns = new ArrayList<Integer>();
@@ -79,6 +79,7 @@ public class DatabaseBuilder {
                         try (var insert = target.prepareStatement(sql)) {
                             int batch = 0;
                             while (rows.next()) {
+                                if (!BuildTableDelta.take(additions, rows)) continue;
                                 for (int j = 0; j < columns.size(); j++) {
                                     int column = columns.get(j);
                                     if (meta.getColumnType(column) == Types.BLOB) insert.setBytes(j + 1, rows.getBytes(column));

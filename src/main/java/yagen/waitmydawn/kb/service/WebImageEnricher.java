@@ -21,7 +21,7 @@ public final class WebImageEnricher {
         if(complete)context.result().reusedImageAnalyses++;
         else if(!text.isBlank()){status="LEGACY_TEXT_REUSED";index.analysis(image.id(),status,"");context.result().reusedImageAnalyses++;}
         else if(image.width()<32||image.height()<16||(long)image.width()*image.height()<2048){status="OCR_SKIPPED_SMALL";index.analysis(image.id(),status,"");}
-        else if(context.result().webOcrAttempts>=Math.max(0,Integer.getInteger("maa.web.maxOcrImages",64))){status="OCR_DEFERRED";context.result().deferredImageAnalyses++;index.analysis(image.id(),status,"");}
+        else if(context.result().webOcrAttempts>=Math.max(0,Integer.getInteger("maa.web.maxOcrImages",Integer.MAX_VALUE))){status="OCR_DEFERRED";context.result().deferredImageAnalyses++;index.analysis(image.id(),status,"");}
         else {
             context.result().webOcrAttempts++;context.result().ocrAttempts++;
             try {
@@ -75,12 +75,7 @@ public final class WebImageEnricher {
     }
     void backfill(BuildRequest.Source source,BuildSourceProcessor.Context context,DatabaseBuilder cache)throws Exception {
         new GuideImageStepBackfill(context.database(),cache).run(source,context);
-        record Row(String occurrence,String document,String image,String caption,int ordinal,String path,String type,int width,int height) {}
-        var rows=new ArrayList<Row>();
-        try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT o.id,o.document_id,o.image_id,o.caption,r.block_ordinal,a.relative_path,a.media_type,a.width,a.height FROM rag_image_occurrence o JOIN rag_image_asset a ON a.id=o.image_id JOIN rag_web_image_reference r ON r.id=o.id JOIN rag_document d ON d.id=o.document_id WHERE d.source_id=? OR EXISTS(SELECT 1 FROM rag_document_source ds WHERE ds.document_id=d.id AND ds.source_id=?) ORDER BY o.id LIMIT 2001")) {
-            p.setString(1,source.id());p.setString(2,source.id());try(var r=p.executeQuery()){while(r.next())rows.add(new Row(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getInt(5),r.getString(6),r.getString(7),r.getInt(8),r.getInt(9)));}
-        }
-        if(rows.size()>2000)throw new IllegalStateException("网页图片补建超过 2000 项，请拆分来源构建");
-        for(var row:rows){context.checkCancelled();if(!context.images().available(row.image(),row.path()))continue;enrich(context,row.document(),row.occurrence(),new KnowledgeContent.ImageAsset(row.image(),row.path(),row.type(),row.width(),row.height(),null,null),row.caption(),row.ordinal());}
+        var scraper=new WikiScraperService();scraper.setResourceDatabase(cache);
+        new WebImageCompletion(scraper,this).completeSource(source,context);
     }
 }

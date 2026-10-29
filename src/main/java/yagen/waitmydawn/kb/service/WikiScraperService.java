@@ -473,8 +473,12 @@ public class WikiScraperService {
      * MC百科从 data-command="/summon xxx:xxx ..." 中提取，
      * MC Wiki 从 <code>...minecraft.xxx...</code> 中提取。
      */
+    private java.util.function.Consumer<String> pageMediaHandler;
+    public void setPageMediaHandler(java.util.function.Consumer<String> handler){pageMediaHandler=handler;}
     public FetchedPage fetchPageWithRegistries(String url, String source) {
-        return fetchCached(url, source, true, null, MAX_RETRIES_DEFAULT);
+        var page=fetchCached(url,source,true,null,MAX_RETRIES_DEFAULT);
+        if(page!=null&&pageMediaHandler!=null)pageMediaHandler.accept(page.page().url());
+        return page;
     }
 
     /** 带缓存与限流的统一抓取入口。 */
@@ -517,6 +521,7 @@ public class WikiScraperService {
             return null;
         }
 
+        if(resourceCache!=null)resourceCache.put(url,new Resource(200,out.body().getBytes(java.nio.charset.StandardCharsets.UTF_8),"text/html; charset=UTF-8",url,out.etag(),out.lastModified()));
         Document doc = Jsoup.parse(out.body());
         List<String> registries = "mcmod".equals(source) ? extractMcmodRegistries(out.body())
                                           : extractMcWikiRegistries(out.body());

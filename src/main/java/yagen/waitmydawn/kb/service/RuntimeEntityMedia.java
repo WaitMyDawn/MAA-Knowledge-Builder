@@ -55,52 +55,119 @@ final class RuntimeEntityMedia {
         if(!java.nio.file.Files.isRegularFile(file,java.nio.file.LinkOption.NOFOLLOW_LINKS)||java.nio.file.Files.size(file)>2*1024*1024)throw new IOException("独立实体 PNG 缺失或超过预算");
         if(!Arrays.equals(java.nio.file.Files.readAllBytes(file),bytes(row)))throw new IOException("独立实体 PNG 与快照图像不一致");
     }
-    void attach(QaPipeline.QaResult result,String question) {
+    private String catalogProfile;
+    private List<MediaRequestPlanner.Subject> catalog=List.of();
+    void prepare(QaPipeline.QaResult result,String question){
+        if(result.runtimeMediaPrepared)return;result.runtimeMediaPrepared=true;
         String profile=RuntimeKnowledgeStore.active(db);var trail=new MediaAudit.Trail(profile,question);result.entityImageAudit=trail.snapshot();if(profile==null)return;
-        var ids=new LinkedHashSet<String>();result.resolvedEntities.stream().filter(e->e.confidence()>=0.8f).forEach(e->ids.add(e.registry()));
-        var imageRows=new HashMap<String,JsonNode>();
-        try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_id,record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_icons'")){p.setString(1,profile);try(var r=p.executeQuery()){while(r.next())imageRows.put(r.getString(1),new ObjectMapper().readTree(r.getString(2)));}}catch(Exception failure){throw new IllegalStateException("实体图片引用读取失败",failure);}
-        var candidates=new TreeMap<String,List<JsonNode>>();var requested=new HashSet<String>();
-        try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_id,record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_icons' ORDER BY record_id")) {
-            var equipment=new HashSet<String>();
-            if(question.matches("(?s).*(装备|穿戴|穿着|戴着|持有|手持|头盔|护甲).*")) {
-                var idsInQuestion=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(question);while(idsInQuestion.find())equipment.add(idsInQuestion.group());
-                String text=question.replaceAll("[a-z0-9_.-]+:[a-z0-9_./-]+"," ").toLowerCase(Locale.ROOT);
-                record NameHit(int start,int end,String id) {}var hits=new ArrayList<NameHit>();
-                try(var names=c.prepareStatement("SELECT item_id,display_name FROM rag_runtime_name WHERE profile_id=?")){names.setString(1,profile);try(var rows=names.executeQuery()){while(rows.next()){String name=rows.getString(2).toLowerCase(Locale.ROOT);if(name.length()<2)continue;for(int start=text.indexOf(name);start>=0;start=text.indexOf(name,start+1))hits.add(new NameHit(start,start+name.length(),rows.getString(1)));}}}
-                hits.sort(Comparator.comparingInt((NameHit hit)->hit.end()-hit.start()).reversed());var occupied=new BitSet(text.length());
-                for(var hit:hits){int overlap=occupied.nextSetBit(hit.start());if(overlap>=0&&overlap<hit.end())continue;occupied.set(hit.start(),hit.end());equipment.add(hit.id());}
-            }
-            p.setString(1,profile);try(var r=p.executeQuery()){while(r.next()) {
-                trail.scanned++;String id=r.getString(1).split("\\|",2)[0];
-                boolean explicit=java.util.regex.Pattern.compile("(?<![a-z0-9_./:-])"+java.util.regex.Pattern.quote(id)+"(?![a-z0-9_./:-])").matcher(question).find();
-                if(!ids.contains(id)&&!explicit)continue;requested.add(id);
-                var row=new ObjectMapper().readTree(r.getString(2));String exclusion=row.has("error")?"EXPORT_ERROR":!row.path("status").asText().equals("OK")?"NOT_VISIBLE":!EntityAppearanceState.matches(row,question)?"STATE_MISMATCH":!EntityAppearanceState.equipmentMatches(row,equipment)?"EQUIPMENT_MISMATCH":null;
-                if(exclusion!=null){trail.record(row,"EXCLUDED",exclusion);continue;}
-                boolean explicitEntity=java.util.regex.Pattern.compile("实体|\\bentity\\b",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(question).find();
-                if(!explicitEntity) {
-                    if(row.path("classification").asText().equals("NON_LIVING")){trail.record(row,"EXCLUDED","NON_LIVING_REQUIRES_ENTITY_REQUEST");continue;}
-                    try(var item=c.prepareStatement("SELECT 1 FROM rag_runtime_name WHERE profile_id=? AND item_id=? LIMIT 1")){item.setString(1,profile);item.setString(2,id);try(var names=item.executeQuery()){if(names.next()){trail.record(row,"EXCLUDED","ITEM_ID_COLLISION_REQUIRES_ENTITY_REQUEST");continue;}}}
+        if(!profile.equals(catalogProfile)){catalog=MediaCatalog.load(db,profile);catalogProfile=profile;}
+        var resolved=new LinkedHashSet<String>();result.resolvedEntities.stream().filter(e->e.confidence()>=.8f).forEach(e->resolved.add(e.registry()));
+        var imageRows=new LinkedHashMap<String,JsonNode>();var byId=new HashMap<String,List<JsonNode>>();
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_id,record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_icons' ORDER BY record_id")){
+            p.setString(1,profile);try(var rows=p.executeQuery()){while(rows.next()){var row=new ObjectMapper().readTree(rows.getString(2));imageRows.put(rows.getString(1),row);byId.computeIfAbsent(row.path("id").asText(),k->new ArrayList<>()).add(row);}}
+        }catch(Exception failure){throw new IllegalStateException("实体图片引用读取失败",failure);}
+        var subjects=new ArrayList<>(catalog);var known=subjects.stream().map(MediaRequestPlanner.Subject::registry).collect(java.util.stream.Collectors.toSet());for(String id:byId.keySet())if(!known.contains(id))subjects.add(new MediaRequestPlanner.Subject(id,"ENTITY",List.of(id)));
+        var plan=MediaRequestPlanner.plan(question,subjects,resolved);result.mediaPlan=plan;result.mediaWarnings.addAll(plan.warnings());
+        var pictures=new ArrayList<>(result.artifacts.pictures());var sources=new ArrayList<>(result.artifacts.sources());ItemIconService.Snapshot icons=null;
+        for(var request:plan.requests()){
+            String id=request.subject().registry();trail.request=request.query();trail.requested++;
+            if(pictures.size()>=8){missing(result,request,"已达到本轮8张配图上限");continue;}
+            try{
+                if(request.kind().equals("ITEM")){
+                    if(pictures.stream().anyMatch(p->p.role().equals("RECIPE")&&p.context().contains(id)))continue;
+                    if(EntityAppearanceState.specific(request.query())||request.query().matches("(?s).*[a-z_]+=[^ ]+.*")){missing(result,request,"未提供该物品状态的精确图标，未用默认图代替");continue;}
+                    if(icons==null)icons=new ItemIconService(db,directory).snapshot();var icon=icons.item(id,false);
+                    if(icon.source().equals("NATIVE_TRANSPARENT")){missing(result,request,"默认物品图为全透明");continue;}
+                    if(!icon.source().equals("NATIVE")||icon.assetId()==null){missing(result,request,"当前快照没有可用的实机物品图");continue;}
+                    String relative;try(var c=db.getConnection();var p=c.prepareStatement("SELECT relative_path FROM rag_image_asset WHERE id=?")){p.setString(1,icon.assetId());try(var rows=p.executeQuery()){if(!rows.next()){missing(result,request,"物品图片资产未归档");continue;}relative=rows.getString(1);}}
+                    if(!new ImageAssetStore(directory).available(icon.assetId(),relative)){missing(result,request,"物品图片缓存缺失或校验失败");continue;}
+                    String key="i"+BuildRequest.fingerprint("item:"+profile+id).substring(0,20),sourceId="s"+BuildRequest.fingerprint("item:"+profile+id).substring(0,20);
+                    if(pictures.stream().anyMatch(p->p.id().equals(key)))continue;
+                    String proof="注册名："+id+"；实机默认物品图；不代表指定组件/NBT状态；环境："+profile;
+                    addSource(sources,new AnswerArtifacts.Source(sourceId,"runtime-item:"+profile+":"+id,icon.name(),"mkb-runtime:"+profile+"/item_icons/"+id,"物品默认外观",null,"GAME_GUI",proof));
+                    pictures.add(new AnswerArtifacts.Picture(key,icon.assetId(),relative,icon.name()+"（"+id+"；实机默认物品外观）",sourceId,"ITEM",List.of(),proof));continue;
                 }
-                trail.record(row,"ELIGIBLE","REGISTRY_AND_STATE_MATCH");candidates.computeIfAbsent(id,ignored->new ArrayList<>()).add(row);
-            }}
-            var explicitIds=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(question);var missing=new LinkedHashSet<>(ids);while(explicitIds.find())missing.add(explicitIds.group());missing.removeAll(requested);
-            for(String id:missing){String reason="NO_EXPORTED_ENTITY_RECORD";try(var lookup=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_exclusions' AND record_id=?")){lookup.setString(1,profile);lookup.setString(2,id);try(var rows=lookup.executeQuery()){if(rows.next())reason="EXPORT_EXCLUDED_"+new ObjectMapper().readTree(rows.getString(1)).path("reason").asText();}}
-                var absent=new ObjectMapper().createObjectNode().put("id",id).put("stateKey","default");trail.record(absent,"EXCLUDED",reason);
-            }
-            var pictures=new ArrayList<>(result.artifacts.pictures());int added=0;
-            for(var entry:candidates.entrySet()) {
-                if(added>=2){entry.getValue().forEach(row->trail.record(row,"EXCLUDED","GLOBAL_IMAGE_LIMIT"));continue;}
-                var rows=entry.getValue();rows.sort(Comparator.comparingInt(EntityAppearanceState::preference).thenComparing(row->row.path("stateKey").asText("default")));
-                var row=rows.getFirst();for(int index=1;index<rows.size();index++)trail.record(rows.get(index),"EXCLUDED","LOWER_STATE_PREFERENCE");
-                String id=entry.getKey(),state=EntityAppearanceState.key(row),key="e"+BuildRequest.fingerprint(profile+id+state).substring(0,20);
-                if(pictures.stream().anyMatch(picture->picture.id().equals(key))){trail.record(row,"EXCLUDED","ALREADY_ATTACHED");continue;}
-                var asset=new ImageAssetStore(directory).put(storedBytes(EntityImageReferences.resolve(row,imageRows)));String label=EntityAppearanceState.label(row)+EntityCompositionInfo.caption(row);if(row.path("framing").asText().equals("POSSIBLY_CLIPPED"))label+="；取景可能不完整";else if(row.path("framing").asText().equals("UNSTABLE_FRAMING"))label+="；取景未收敛，待复核";
-                pictures.add(new AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),id+"（"+label+"）",null,"ENTITY",List.of(),"状态键："+state+"；"+label));
-                result.answer+="\n\n![实体外观](kb-image:"+key+")";added++;trail.selected++;trail.record(row,"SELECTED","REGISTRY_AND_STATE_MATCH");
-            }
-            if(added==0&&EntityAppearanceState.specific(question)&&!requested.isEmpty())result.answer+="\n\n当前快照未提供与所问状态匹配的实体插图，未用默认外观代替。";
-            result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),result.artifacts.sources(),pictures,result.artifacts.citedSourceIds());trail.requested=requested.size();result.entityImageAudit=trail.snapshot();
-        }catch(Exception failure){throw new IllegalStateException("实体插图读取失败",failure);}
+                var candidates=new ArrayList<JsonNode>();var equipment=equipment(request.query());
+                for(var row:byId.getOrDefault(id,List.of())){
+                    trail.scanned++;String reason=row.has("error")?"EXPORT_ERROR":!row.path("status").asText().equals("OK")?"NOT_VISIBLE":!EntityAppearanceState.matches(row,request.query())?"STATE_MISMATCH":!EntityAppearanceState.equipmentMatches(row,equipment)?"EQUIPMENT_MISMATCH":null;
+                    trail.record(row,reason==null?"ELIGIBLE":"EXCLUDED",reason==null?"REGISTRY_AND_STATE_MATCH":reason);if(reason==null)candidates.add(row);
+                }
+                if(candidates.isEmpty()){
+                    String reason="没有与请求状态匹配的实体图";if(!byId.containsKey(id))try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_exclusions' AND record_id=?")){p.setString(1,profile);p.setString(2,id);try(var rows=p.executeQuery()){if(rows.next())reason="导出时已排除："+new ObjectMapper().readTree(rows.getString(1)).path("reason").asText();}}
+                    missing(result,request,reason);var absent=new ObjectMapper().createObjectNode().put("id",id);trail.record(absent,"EXCLUDED",byId.containsKey(id)?"NO_MATCHING_STATE":"NO_EXPORTED_ENTITY_RECORD");continue;
+                }
+                candidates.sort(Comparator.comparingInt((JsonNode candidate)->preference(candidate,request.query())).thenComparing(row->row.path("stateKey").asText("default")));var row=candidates.getFirst();
+                for(int i=1;i<candidates.size();i++)trail.record(candidates.get(i),"EXCLUDED","LOWER_STATE_PREFERENCE");
+                String state=EntityAppearanceState.key(row),key="e"+BuildRequest.fingerprint(profile+id+state+request.query()).substring(0,20),sourceId="s"+BuildRequest.fingerprint("entity:"+profile+id+state).substring(0,20);
+                if(pictures.stream().anyMatch(p->p.id().equals(key)))continue;
+                var asset=new ImageAssetStore(directory).put(storedBytes(EntityImageReferences.resolve(row,imageRows)));String label=EntityAppearanceState.label(row)+EntityCompositionInfo.caption(row);
+                if(row.path("framing").asText().equals("POSSIBLY_CLIPPED"))label+="；取景可能不完整";else if(row.path("framing").asText().equals("UNSTABLE_FRAMING"))label+="；取景未收敛，待复核";
+                String proof="注册名："+id+"；请求："+request.label()+"；状态键："+state+"；"+label;
+                addSource(sources,new AnswerArtifacts.Source(sourceId,"runtime-entity:"+profile+":"+id+":"+state,request.label(),"mkb-runtime:"+profile+"/entity_icons/"+id+"/"+state,"导出实体状态",null,"GAME_GUI",proof));
+                result.runtimeMediaStates.put(key,row);
+                pictures.add(new AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),request.label()+"（"+id+"；"+label+"）",sourceId,"ENTITY",List.of(),proof));trail.selected++;trail.record(row,"SELECTED","REGISTRY_AND_STATE_MATCH");
+            }catch(Exception failure){missing(result,request,"图片不可用："+failure.getClass().getSimpleName());}
+        }
+        result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());result.entityImageAudit=trail.snapshot();
     }
+    private static int preference(JsonNode row,String query){
+        int original=EntityAppearanceState.preference(row);if(original<0||query.matches("(?is).*(age=|growth_stage=|幼年|成年|baby|adult|[一二三四五0-9]+阶).*"))return original;
+        String age=row.path("state").path("traits").path("age").asText();int penalty=age.equals("baby")?2000:age.equals("juvenile")?1000:0;
+        return penalty+original*10-row.path("state").path("traits").path("growthStage").asInt();
+    }
+    private static void addSource(List<AnswerArtifacts.Source> sources,AnswerArtifacts.Source source){if(sources.stream().noneMatch(s->s.id().equals(source.id())))sources.add(source);}
+    private static void missing(QaPipeline.QaResult result,MediaRequestPlanner.Request request,String reason){result.mediaWarnings.add(request.label()+"："+reason+"，未用默认外观代替，也未使用其他对象。");}
+    private Set<String> equipment(String question)throws Exception {
+        var ids=new HashSet<String>();if(!question.matches("(?s).*(穿戴|穿着|戴着|手持|装备|持有).*"))return ids;
+        var matcher=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(question);while(matcher.find())ids.add(matcher.group());
+        String text=question.replaceAll("[a-z0-9_.-]+:[a-z0-9_./-]+"," ").toLowerCase(Locale.ROOT);
+        record Hit(int start,int end,String id){}var hits=new ArrayList<Hit>();
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT item_id,display_name FROM rag_runtime_name WHERE profile_id=?")){p.setString(1,RuntimeKnowledgeStore.active(db));try(var rows=p.executeQuery()){while(rows.next()){String name=rows.getString(2).toLowerCase(Locale.ROOT);if(name.length()<2)continue;for(int start=text.indexOf(name);start>=0;start=text.indexOf(name,start+1))hits.add(new Hit(start,start+name.length(),rows.getString(1)));}}}
+        hits.sort(Comparator.comparingInt((Hit hit)->hit.end()-hit.start()).reversed());var occupied=new BitSet(text.length());for(var hit:hits){int overlap=occupied.nextSetBit(hit.start());if(overlap>=0&&overlap<hit.end())continue;occupied.set(hit.start(),hit.end());ids.add(hit.id());}return ids;
+    }
+    String evidence(QaPipeline.QaResult result,String previous){
+        var text=new StringBuilder(Objects.toString(previous,""));text.append("\n[Allowed runtime media: metadata only, not visual inspection or gameplay evidence]\n");
+        for(var p:result.artifacts.pictures())if(Set.of("ENTITY","ITEM","RECIPE").contains(p.role()))text.append("[[image:").append(p.id()).append("]] ").append(p.caption()).append("；").append(p.context(),0,Math.min(1800,p.context().length())).append('\n');
+        for(String warning:result.mediaWarnings)text.append("Media limitation: ").append(warning).append('\n');
+        text.append("Insert each image only next to its matching object/state/recipe. For comparisons keep every state distinct, even when images share pixels. Never claim an unavailable state exists. Images are independently scaled; do not infer actual size, stats, recipes or drops from appearance.\n");return text.toString();
+    }
+    void finish(QaPipeline.QaResult result,String question){
+        String answer=Objects.toString(result.answer,"");var used=new HashSet<String>();var matcher=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(AnswerMedia.referenceText(answer));while(matcher.find())used.add(matcher.group(1));
+        var kept=new ArrayList<AnswerArtifacts.Picture>();var additions=new ArrayList<String>();boolean visual=question.matches("(?is).*(展示|外观|图片|配图|长什么样|比较|对比|区别|分别|show|look).*" );
+        for(var picture:result.artifacts.pictures()){
+            if(!Set.of("ENTITY","ITEM","RECIPE").contains(picture.role())){kept.add(picture);continue;}
+            var request=result.mediaPlan==null?null:result.mediaPlan.requests().stream().filter(r->picture.context().contains(r.subject().registry())).findFirst().orElse(null);
+            boolean discussed=request!=null&&(answer.contains(request.subject().registry())||request.subject().names().stream().filter(n->n.length()>1||question.contains(n)).anyMatch(answer::contains));
+            boolean show=visual||discussed||picture.role().equals("RECIPE");String marker="!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")";
+            if(used.contains(picture.id())&&request!=null&&!associated(answer,picture,request,result.runtimeMediaStates.get(picture.id()))){
+                answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");used.remove(picture.id());
+            }
+            if(!show){answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");continue;}kept.add(picture);
+            if(!used.contains(picture.id()))additions.add(marker);
+        }
+        if(!additions.isEmpty())answer+="\n\n"+(result.mediaPlan!=null&&result.mediaPlan.comparison()?"外观对照：":"参考配图：")+"\n\n"+String.join("\n\n",additions);
+        if(result.mediaPlan!=null&&result.mediaPlan.comparison()&&kept.stream().filter(p->p.role().equals("ENTITY")).count()>1)answer+="\n\n各图独立缩放，画面占比不代表实际体型比例；外观相同的状态可能共用图像。";
+        if(!result.mediaWarnings.isEmpty())answer+="\n\n配图说明：\n"+result.mediaWarnings.stream().distinct().map(w->"- "+w).collect(java.util.stream.Collectors.joining("\n"));
+        result.answer=answer;result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),result.artifacts.sources(),kept,result.artifacts.citedSourceIds());
+    }
+    private static boolean associated(String answer,AnswerArtifacts.Picture picture,MediaRequestPlanner.Request request,JsonNode state){
+        var paragraphs=answer.split("\\n\\s*\\n");String text="";
+        for(int i=0;i<paragraphs.length;i++)if(paragraphs[i].contains("kb-image:"+picture.id()+")")){
+            text=paragraphs[i].replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:[^)]+\\)","");
+            if(text.isBlank())for(int j=i-1;j>=Math.max(0,i-3);j--)if(!paragraphs[j].contains("kb-image:")&&!paragraphs[j].isBlank()){text=paragraphs[j];break;}break;
+        }
+        boolean object=text.contains(request.subject().registry());for(String name:request.subject().names())if(!name.isBlank()&&text.contains(name))object=true;if(!object)return false;
+        if(picture.role().equals("ITEM")&&text.contains("实体")&&!text.contains("物品"))return false;
+        if(state!=null){
+            try{Boolean axes=EntityVariantQuery.matches(state,text);if(Boolean.FALSE.equals(axes))return false;if((axes!=null||EntityAppearanceState.specific(text))&&!EntityAppearanceState.matches(state,text))return false;}
+            catch(IOException invalid){return false;}
+        }
+        var actual=java.util.regex.Pattern.compile("成长阶段：([0-9]+)").matcher(picture.context());if(actual.find()){
+            String stage=actual.group(1);var wanted=java.util.regex.Pattern.compile("([一二三四五0-9]+)阶").matcher(text);boolean any=false,match=false;while(wanted.find()){any=true;String value=wanted.group(1);String[] words={"一","二","三","四","五"};for(int n=0;n<5;n++)if(value.equals(words[n]))value=Integer.toString(n+1);if(value.equals(stage))match=true;}if(any&&!match)return false;
+        }
+        if(picture.caption().contains("幼年")&&text.contains("成年")&&!text.contains("幼年"))return false;
+        if(picture.caption().contains("成年")&&text.contains("幼年")&&!text.contains("成年"))return false;
+        return true;
+    }
+    void attach(QaPipeline.QaResult result,String question){prepare(result,question);finish(result,question);}
 }

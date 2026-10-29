@@ -112,9 +112,7 @@ public class AppConfig {
         this.initialized = true;
         try {
             Files.createDirectories(dataDir);
-            Files.createDirectories(getTexturesDir());
             Files.createDirectories(getGeneratedDir());
-            Files.createDirectories(getTemplatesDir());
             // Initialize file logging (creates logs/ dir under dataDir)
             LogSetup.init(dataDir);
         } catch (IOException e) {
@@ -168,7 +166,6 @@ public class AppConfig {
 
     // --- derived paths ---
 
-    public Path getTemplatesDir() { return resolve("templates"); }
     public Path getTexturesDir() { return resolve("textures"); }
     /**
      * 历史遗留目录：2026-09-07 起 setDataDir 不再自动创建（全项目无消费者）。

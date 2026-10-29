@@ -90,6 +90,7 @@ public class QaPipeline {
         this.baseDb = baseDb;
         this.dbManager = dbManager;
         urlAgent.setActiveDatabases(dbManager::getActiveDatabases);
+        urlAgent.setMediaDirectory(assetDir);
         this.metricsHistory = new MetricsHistoryService(dataDir);
         this.knowledge = new KnowledgeRetrievalService(baseDb, embedder, assetDir);
         this.entityMedia=new RuntimeEntityMedia(baseDb,assetDir);this.mediaDirectory=assetDir;
@@ -240,6 +241,7 @@ public class QaPipeline {
         }
         m.incrementalFetchTimeMs = Math.max(0, m.urlMatchTimeMs - urlAgent.lastSearchTimeMs());
 
+        if(!knowledge.scopes().isEmpty())imported=knowledge.retrieve(retrievalQuestion,resolution,false);
         // === Vector semantic search（合并 UrlAgent 按子问题检索的结果）===
         long t4 = System.nanoTime();
         List<VectorStore.SearchResult> vectorResults = fetchResult.subQueryResults().stream()
@@ -419,10 +421,11 @@ public class QaPipeline {
             importedContext=knowledge.hydrate(new KnowledgeRetrievalService.Retrieval(kept,result.artifacts,"",contextSnapshot.bestLexical(),contextSnapshot.diagnostics()),question);
             result.artifacts=importedContext.artifacts();m.knowledgeRetrieval=importedContext.diagnostics();
         }
+        prepareMedia(result,question);
         AnswerContext ctx = new AnswerContext(
                 question, intent, resolvedEntities, answerRecipeMatches,
                 vectorResults, incInfo, finalSubQueries,
-                premiseWarning,result.sourceScope, importedContext == null ? null : filteredKnowledgeEvidence(result.artifacts,importedContext.diagnostics()));
+                premiseWarning,result.sourceScope, entityMedia.evidence(result,importedContext == null ? null : filteredKnowledgeEvidence(result.artifacts,importedContext.diagnostics())));
 
         long answerLlmStart = llm != null ? llm.usageTrace().latencyMs : 0;
         result.answer = answerAgent.compose(ctx);
@@ -497,9 +500,9 @@ public class QaPipeline {
 
         // Save to conversation history
         lastKnowledgeScope = null;
-        long mediaStarted=System.nanoTime();entityMedia.attach(result,question);
+        long mediaStarted=System.nanoTime();entityMedia.finish(result,question);
         m.mediaAudit=MediaAudit.capture(question,result.answer,result.artifacts,assetDirectory(),result.entityImageAudit);m.answerLength=result.answer.length();
-        long mediaDuration=(System.nanoTime()-mediaStarted)/1_000_000;m.totalTimeMs+=mediaDuration;m.addTrace("MediaSelection",mediaDuration,"最终图片与资产审计");m.accumulate();log.info("QA {}",m.toLogString());
+        long mediaDuration=(System.nanoTime()-mediaStarted)/1_000_000; m.addTrace("MediaPreparation",result.mediaPreparationMs,"已提供给回答模型的配图证据");m.totalTimeMs+=mediaDuration;m.addTrace("MediaSelection",mediaDuration,"最终图片与资产审计");m.accumulate();log.info("QA {}",m.toLogString());
         try{metricsHistory.save(m);}catch(Exception failure){log.warn("Media metrics save failed",failure);}
         conversationHistory.add(new QAPair(question, result.answer));
         while (conversationHistory.size() > MAX_CONTEXT_PAIRS) {
@@ -510,6 +513,21 @@ public class QaPipeline {
     }
 
     public List<KnowledgeRetrievalService.Scope> knowledgeScopes() { return knowledge.scopes(); }
+    private void prepareMedia(QaResult result,String question){
+        long started=System.nanoTime();String saved=result.answer;result.answer="";
+        try{
+            boolean crafting=question.matches("(?is).*(合成|配方|制作|烧炼|锻造|加工|怎么做|如何做|如何获得|怎么获得|craft|recipe).*" );
+            if(crafting&&!result.recipesToRender.isEmpty()){
+                var config=yagen.waitmydawn.kb.config.AppConfig.forIsolatedRun(false).forBuildTarget(mediaDirectory);
+                result.recipeRenderBatch=new RendererService(config,baseDb).renderDetailed(result.recipesToRender);
+                AnswerMedia.attachRecipes(result,result.recipeRenderBatch,mediaDirectory);
+            }else result.recipeRenderBatch=new RendererService.RenderBatch(Map.of(),List.of(),List.of());
+            entityMedia.prepare(result,question);
+        }catch(java.io.IOException failure){result.mediaWarnings.add("配方图片归档失败："+failure.getClass().getSimpleName());}
+        finally{result.answer=saved;}
+        result.mediaPreparationMs=(System.nanoTime()-started)/1_000_000;
+    }
+
     public synchronized void setKnowledgeImageFetching(boolean enabled) {knowledge.setImageFetching(enabled);}
 
     private static String filteredKnowledgeEvidence(yagen.waitmydawn.kb.model.AnswerArtifacts artifacts,KnowledgeRetrievalService.Diagnostics diagnostics) {
@@ -545,15 +563,16 @@ public class QaPipeline {
         m.computeVectorRelevance(result.vectorResults, 0.2);
         m.dataTier = !result.recipeResults.isEmpty() ? result.vectorResults.isEmpty()?"TIER B":"TIER A"
                 : result.vectorResults.isEmpty() ? "TIER D" : "TIER C";
+        prepareMedia(result,question);
         long answerStart = System.nanoTime();
         m.answerGeneration="NO_EVIDENCE";
         if (scope.warning() != null) result.answer = scope.warning();
-        else if (result.vectorResults.isEmpty() && result.recipeResults.isEmpty()) result.answer = "在当前资料范围内没有找到足够证据，无法确认这个问题。可更换资料范围或补充相关文档。";
+        else if (result.vectorResults.isEmpty() && result.recipeResults.isEmpty() && result.artifacts.pictures().isEmpty()) result.answer = "在当前资料范围内没有找到足够证据，无法确认这个问题。可更换资料范围或补充相关文档。";
         else {
             var recipes=result.recipeResults.stream().map(r -> new AnswerAgent.RecipeMatch(r.recipeJson(),r.outputItem(),r.sourceMod(),r.sourceType())).toList();
             var ctx = new AnswerContext(question, QuestionType.GENERAL, result.resolvedEntities, recipes, result.vectorResults, null, List.of(),
                     RuntimeLootSummary.capability(baseDb,question), runtimeScope("本轮资料范围："+result.sourceScope),
-                    filteredKnowledgeEvidence(result.artifacts,retrieval==null?null:retrieval.diagnostics()));
+                    entityMedia.evidence(result,filteredKnowledgeEvidence(result.artifacts,retrieval==null?null:retrieval.diagnostics())));
             result.answer = answerAgent.compose(ctx);
             m.answerGeneration=answerAgent.lastGenerationMode();m.fallbackUsed="MODEL_ERROR".equals(m.answerGeneration);
             recordUsage(m, answerAgent.lastUsage());
@@ -575,9 +594,9 @@ public class QaPipeline {
         if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Question cancelled");
         
         lastKnowledgeScope=result.artifacts.scopeId();
-        long mediaStarted=System.nanoTime();entityMedia.attach(result,question);
+        long mediaStarted=System.nanoTime();entityMedia.finish(result,question);
         m.mediaAudit=MediaAudit.capture(question,result.answer,result.artifacts,assetDirectory(),result.entityImageAudit);m.answerLength=result.answer.length();
-        long mediaDuration=(System.nanoTime()-mediaStarted)/1_000_000;m.totalTimeMs+=mediaDuration;m.addTrace("MediaSelection",mediaDuration,"最终图片与资产审计");m.accumulate();log.info("QA {}",m.toLogString());
+        long mediaDuration=(System.nanoTime()-mediaStarted)/1_000_000; m.addTrace("MediaPreparation",result.mediaPreparationMs,"已提供给回答模型的配图证据");m.totalTimeMs+=mediaDuration;m.addTrace("MediaSelection",mediaDuration,"最终图片与资产审计");m.accumulate();log.info("QA {}",m.toLogString());
         try{metricsHistory.save(m);}catch(Exception failure){log.warn("Media metrics save failed",failure);}
         conversationHistory.add(new QAPair(question,result.answer));
         while(conversationHistory.size()>MAX_CONTEXT_PAIRS) conversationHistory.remove(0);
@@ -1116,6 +1135,12 @@ public class QaPipeline {
 
     public static class QaResult {
         public MediaAudit.EntityTrace entityImageAudit;
+        public boolean runtimeMediaPrepared;
+        final Map<String,com.fasterxml.jackson.databind.JsonNode> runtimeMediaStates=new HashMap<>();
+        public final List<String> mediaWarnings=new ArrayList<>();
+        public MediaRequestPlanner.Plan mediaPlan;
+        public RendererService.RenderBatch recipeRenderBatch;
+        public long mediaPreparationMs;
         public yagen.waitmydawn.kb.model.AnswerArtifacts artifacts = yagen.waitmydawn.kb.model.AnswerArtifacts.empty();
         public String sourceScope;
         public yagen.waitmydawn.kb.dto.RetrievalPlan retrievalPlan;

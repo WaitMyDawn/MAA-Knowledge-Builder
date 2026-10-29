@@ -24,7 +24,6 @@ import yagen.waitmydawn.kb.dto.ClassificationResult;
 import yagen.waitmydawn.kb.dto.QaMetrics;
 import yagen.waitmydawn.kb.dto.RetrievalResult;
 import yagen.waitmydawn.kb.model.*;
-import yagen.waitmydawn.kb.renderer.TemplateManager;
 import yagen.waitmydawn.kb.service.*;
 
 import javax.imageio.ImageIO;
@@ -115,7 +114,6 @@ public class MaaKnowledgeBuilderApp extends Application {
         try {
             config.getDataDir(); // force NPE check
             dataDirLock = DataDirLock.acquire(config.getDataDir());
-            Files.createDirectories(config.getTexturesDir());
             Files.createDirectories(config.getGeneratedDir());
             db = new DatabaseBuilder(config);
             db.initDatabase();
@@ -829,8 +827,9 @@ public class MaaKnowledgeBuilderApp extends Application {
         knowledgeScopeChoice.setMaxWidth(Double.MAX_VALUE);
         knowledgeScopeChoice.setMinWidth(120);
         refreshKnowledgeScopes();
-        fetchKnowledgeImages = new CheckBox("按需缓存来源插图");
+        fetchKnowledgeImages = new CheckBox("补全历史网页图片");
         fetchKnowledgeImages.setSelected(true);
+        fetchKnowledgeImages.setTooltip(new Tooltip("新获取的网页自动完整缓存正文图片；此开关控制补全以前未完成的网页图片。"));
         HBox scopeRow = new HBox(8, new Label("资料范围："), knowledgeScopeChoice, fetchKnowledgeImages);
         HBox.setHgrow(knowledgeScopeChoice, Priority.ALWAYS);
         iconProfileChoice=new ComboBox<>();iconProfileChoice.setMaxWidth(Double.MAX_VALUE);
@@ -989,8 +988,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         submitOperation(() -> {
             try {
                 QaPipeline.QaResult result = submittedPipeline.process(q, submittedScope);
-                var recipeImages = rendererService.renderDetailed(result.recipesToRender);
-                AnswerMedia.attachRecipes(result, recipeImages, config.getDataDir());
+                var recipeImages = result.recipeRenderBatch!=null?result.recipeRenderBatch:rendererService.renderDetailed(result.recipesToRender);
+                if(result.recipeRenderBatch==null)AnswerMedia.attachRecipes(result, recipeImages, config.getDataDir());
                 final var media=AnswerMedia.assess(result.answer,result.artifacts,config.getDataDir());
                 final String answerWithImages = result.answer;
 
