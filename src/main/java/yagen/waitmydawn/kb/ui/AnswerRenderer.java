@@ -27,13 +27,37 @@ public final class AnswerRenderer {
         if (artifacts.scopeLabel()!=null) container.getChildren().add(new Label("资料范围："+artifacts.scopeLabel()));
         var sources = new HashMap<String, AnswerArtifacts.Source>(); artifacts.sources().forEach(s -> sources.put(s.id(), s));
         var pictures = new HashMap<String, AnswerArtifacts.Picture>(); artifacts.pictures().forEach(p -> pictures.put(p.id(), p));
-        var matcher = IMAGE.matcher(AnswerMedia.referenceText(markdown)); int end = 0;
-        while (matcher.find()) {
-            appendText(container, markdown.substring(end, matcher.start()), sources, dataDir,modpack);
-            var picture = pictures.get(matcher.group(1));
-            if (picture != null) container.getChildren().add(picture(picture, modpack?null:sources.get(picture.sourceId()), dataDir));
-            else container.getChildren().add(new Label("图片引用不可用，正文仍可阅读。"));
-            end = matcher.end();
+        var matches = IMAGE.matcher(AnswerMedia.referenceText(markdown)).results().toList();
+        var gallery = new LinkedHashMap<String,AnswerArtifacts.Picture>();
+        for (var match : matches) if (pictures.containsKey(match.group(1))) gallery.putIfAbsent(match.group(1),pictures.get(match.group(1)));
+        var shown = new HashSet<String>(); int end = 0;
+        for (int i=0;i<matches.size();i++) {
+            var match=matches.get(i);
+            appendText(container, markdown.substring(end, match.start()), sources, dataDir,modpack);
+            var picture=pictures.get(match.group(1)); end=match.end();
+            if (picture==null) {container.getChildren().add(new Label("图片引用不可用，正文仍可阅读。"));continue;}
+            if (!shown.add(picture.id())) continue;
+            var group=new ArrayList<AnswerArtifacts.Picture>();group.add(picture);
+            while (compact(picture) && i+1<matches.size()) {
+                var next=matches.get(i+1);var candidate=pictures.get(next.group(1));
+                if (!markdown.substring(end,next.start()).isBlank() || candidate==null || !compact(candidate)) break;
+                i++;end=next.end();if(shown.add(candidate.id()))group.add(candidate);
+            }
+            if(group.size()>1) {
+                var row=new FlowPane(12,12);row.getStyleClass().add("answer-picture-grid");
+                row.prefWrapLengthProperty().bind(container.widthProperty());
+                for(var entry:group) {
+                    var card=picture(entry,sources.get(entry.sourceId()),dataDir,modpack,List.copyOf(gallery.values()),sources);
+                    card.prefWidthProperty().bind(javafx.beans.binding.Bindings.createDoubleBinding(
+                            () -> {double width=Math.max(120,container.getWidth());int columns=width>=980?3:width>=580?2:1;return Math.max(120,(width-12*(columns-1))/columns);},container.widthProperty()));
+                    card.setMinWidth(0);card.setMaxWidth(Region.USE_PREF_SIZE);row.getChildren().add(card);
+                }
+                container.getChildren().add(row);
+                if(group.stream().anyMatch(p->"ENTITY".equals(p.role()))) {
+                    var note=new Label("各图独立缩放，画面占比不代表实际体型比例；相同外观可能对应不同状态。");
+                    note.setWrapText(true);note.getStyleClass().add("markdown-muted");container.getChildren().add(note);
+                }
+            } else container.getChildren().add(picture(picture,sources.get(picture.sourceId()),dataDir,modpack,List.copyOf(gallery.values()),sources));
         }
         appendText(container, markdown == null ? "" : markdown.substring(end), sources, dataDir,modpack);
         if(modpack && !sources.isEmpty()) {
@@ -81,21 +105,30 @@ public final class AnswerRenderer {
         }
     }
 
-    private static Node picture(AnswerArtifacts.Picture picture, AnswerArtifacts.Source source, Path dataDir) {
+    private static boolean compact(AnswerArtifacts.Picture picture) {return Set.of("ENTITY","ITEM").contains(Objects.toString(picture.role(),""));}
+
+    private static VBox picture(AnswerArtifacts.Picture picture, AnswerArtifacts.Source source, Path dataDir, boolean modpack,
+                                List<AnswerArtifacts.Picture> gallery, Map<String,AnswerArtifacts.Source> sources) {
         var box = new VBox(5);
+        box.setMinWidth(0);
         box.getStyleClass().add("answer-picture");
         String caption = picture.caption() == null || picture.caption().isBlank() ? "参考插图" : picture.caption();
         try {
             Path file = AnswerMedia.resolveImage(dataDir, picture);
             var image = new Image(file.toUri().toString());
             if (image.isError() || image.getWidth() <= 0) throw new IllegalArgumentException("图片无法解码");
-            var view = new ImageView(image); view.setPreserveRatio(true); view.setSmooth(!"RECIPE".equals(picture.role()));
+            var view = new ImageView(image); view.setPreserveRatio(true); view.setSmooth(!Set.of("RECIPE","ENTITY","ITEM").contains(Objects.toString(picture.role(),"")));
             double preferred = "RECIPE".equals(picture.role()) ? Math.max(260, image.getWidth()) : Math.max(96, image.getWidth());
             double widthLimit = "RECIPE".equals(picture.role()) ? 1040 : 640;
             view.fitWidthProperty().bind(javafx.beans.binding.Bindings.createDoubleBinding(
                     () -> Math.min(preferred, Math.min(widthLimit, Math.max(120, box.getWidth() - 12))), box.widthProperty()));
-            view.setStyle("-fx-cursor: hand;"); view.setOnMouseClicked(event -> preview(image, caption));
+            view.setFitHeight(compact(picture)?300:"RECIPE".equals(picture.role())?900:440);
+            Runnable open=()->AnswerImageViewer.show(box,gallery,picture.id(),sources,dataDir);
+            view.setStyle("-fx-cursor: hand;"); view.setOnMouseClicked(event -> open.run());
+            view.setAccessibleText(caption+"，点击放大");
             box.getChildren().add(view);
+            var expand=new Button("放大查看");expand.getStyleClass().add("answer-picture-expand");expand.setOnAction(event->open.run());
+            box.getChildren().add(expand);
         } catch (Exception missing) { box.getChildren().add(new Label("图片缓存不可用：" + caption + "。可继续阅读说明和来源。")); }
         String role = switch (Objects.toString(picture.role(), "")) { case "SCAN_PAGE" -> "扫描页 · "; case "PAGE_PREVIEW" -> "整页预览 · "; default -> ""; };
         var label = new Label(role + caption); label.setWrapText(true); label.getStyleClass().add("markdown-muted");
@@ -107,11 +140,12 @@ public final class AnswerRenderer {
             var step=new Label(yagen.waitmydawn.kb.service.GuideImageSemantics.label(grounding.purpose())+inference+" · "+(anchor.length()>180?anchor.substring(0,180)+"…":anchor));
             step.setWrapText(true);step.getStyleClass().add("markdown-muted");step.setTooltip(new Tooltip("用途依据："+grounding.basis()+"\n图片文字识别："+grounding.analysisStatus()+"\n"+anchor));box.getChildren().add(step);
         }
-        if (source != null) box.getChildren().add(sourceLink(source));
+        if (source != null && !modpack) box.getChildren().add(sourceLink(source));
+        else if(source==null && AnswerSourceLinks.safeUrl(picture.originalUrl())) box.getChildren().add(SourceLinks.create("打开图片来源",picture.originalUrl()));
         return box;
     }
 
-    private static Hyperlink sourceLink(AnswerArtifacts.Source source) {
+    static Hyperlink sourceLink(AnswerArtifacts.Source source) {
         String method = source.method() == null ? "" : source.method();
         String suffix = method.contains("VISION") ? " · 含模型推断" : method.contains("OCR") ? " · 含OCR识别" : method.equals("METADATA_ONLY") ? " · 仅文件信息" : "";
         var link = new Hyperlink(source.title() + (source.pageNumber() == null ? "" : " · 第 " + source.pageNumber() + " 页") + suffix);
@@ -125,19 +159,11 @@ public final class AnswerRenderer {
             copy.setOnAction(copyEvent -> javafx.scene.input.Clipboard.getSystemClipboard().setContent(Map.of(javafx.scene.input.DataFormat.PLAIN_TEXT,source.location())));
             contents.getChildren().add(copy);
             if (AnswerSourceLinks.safeUrl(source.location())) contents.getChildren().add(SourceLinks.create("打开原网页", source.location()));
+            else if(AnswerImageViewer.isLocalLocation(source.location()))contents.getChildren().add(AnswerImageViewer.localSource(source));
+            AnswerImageViewer.configureDialog(dialog,link);
             dialog.getDialogPane().setContent(contents); dialog.setResizable(true); dialog.show();
         });
         return link;
     }
 
-    private static void preview(Image image, String caption) {
-        var dialog = new Dialog<Void>(); dialog.setTitle(caption); dialog.setResizable(true);
-        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-        var view = new ImageView(image); view.setPreserveRatio(true);
-        var zoom = new Slider(0.1, 4, Math.min(1, 850 / image.getWidth()));
-        view.fitWidthProperty().bind(zoom.valueProperty().multiply(image.getWidth()));
-        var scroll = new ScrollPane(new StackPane(view)); scroll.setPannable(true); scroll.setPrefViewportWidth(850); scroll.setPrefViewportHeight(560);
-        dialog.getDialogPane().setContent(new VBox(8, new Label(caption), scroll, new HBox(8, new Label("缩放"), zoom)));
-        dialog.show();
-    }
 }

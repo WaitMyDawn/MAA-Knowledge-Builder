@@ -14,6 +14,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
     private int prewarmPages;
     UrlBuildProcessor withPrewarmPages(int count){prewarmPages=Math.max(0,Math.min(30,count));return this;}
     public UrlBuildProcessor(WikiScraperService scraper) { this(scraper, null); }
+    void useResourceDatabase(yagen.waitmydawn.kb.model.DatabaseBuilder database){scraper.setResourceDatabase(database);}
     UrlBuildProcessor(WikiScraperService scraper, DocumentDirectoryProcessor documents) { this(scraper,documents,new WebImageEnricher()); }
     UrlBuildProcessor(WikiScraperService scraper,DocumentDirectoryProcessor documents,WebImageEnricher enricher){this.scraper=scraper;this.documents=documents;this.imageEnricher=enricher;}
     @Override public boolean supports(BuildRequest.Kind kind) { return kind == BuildRequest.Kind.URL; }
@@ -49,7 +50,8 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
 
     @Override public void process(BuildRequest.Source source, Context context) throws Exception {
         String url = WebUrlPolicy.normalize(source.location());
-        var resource = scraper.fetchBuildResource(url, null, true);
+        WikiScraperService.Resource resource;
+        try(var scope=RetrievalTelemetry.resourceCause("BUILD_SOURCE_DOCUMENT")){resource=scraper.fetchBuildResource(url,null,true);}
         if (resource.status() != 200 || resource.bytes() == null) throw new IllegalStateException("网址资源获取失败 HTTP " + resource.status());
         String contentType = resource.contentType() == null ? "" : resource.contentType().toLowerCase(Locale.ROOT);
         if (!(contentType.contains("text/html") || contentType.contains("application/xhtml+xml"))) {

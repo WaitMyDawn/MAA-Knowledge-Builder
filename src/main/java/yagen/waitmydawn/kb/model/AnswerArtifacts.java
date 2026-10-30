@@ -15,11 +15,19 @@ public record AnswerArtifacts(String scopeId, String scopeLabel, List<Source> so
     }
     public static AnswerArtifacts empty() { return new AnswerArtifacts(null, null, List.of(), List.of()); }
     public record ImageGrounding(String purpose,String basis,String blockId,String stepText,String relation,String analysisStatus) {}
+    /** 外观身份独立于 PNG 身份；同一像素资产可以对应多个状态。 */
+    public record RuntimeIdentity(String registry,String stateKey,java.util.Map<String,String> attributes) {
+        public RuntimeIdentity {attributes=attributes==null?java.util.Map.of():java.util.Map.copyOf(attributes);}
+    }
     public record Source(String id, String documentId, String title, String location, String heading,
                          Integer pageNumber, String method, String evidence) {}
     public record Picture(String id, String assetId, String relativePath, String caption, String sourceId,
                           String role, List<String> chunkIds, String context, String originalUrl, String referer,
-                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) ImageGrounding grounding) {
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) ImageGrounding grounding,
+                          @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) RuntimeIdentity runtimeIdentity) {
+        public Picture(String id,String assetId,String relativePath,String caption,String sourceId,String role,List<String> chunkIds,String context,String originalUrl,String referer,ImageGrounding grounding) {
+            this(id,assetId,relativePath,caption,sourceId,role,chunkIds,context,originalUrl,referer,grounding,null);
+        }
         public Picture(String id,String assetId,String relativePath,String caption,String sourceId,String role,List<String> chunkIds,String context,String originalUrl,String referer) {
             this(id,assetId,relativePath,caption,sourceId,role,chunkIds,context,originalUrl,referer,null);
         }

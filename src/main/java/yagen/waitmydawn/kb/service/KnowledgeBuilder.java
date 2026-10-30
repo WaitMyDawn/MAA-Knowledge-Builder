@@ -111,6 +111,11 @@ public class KnowledgeBuilder {
     public BuildResult build(BuildRequest request, ProgressCallback progressCallback) {
         Objects.requireNonNull(request);
         checkCancelled();
+        final BuildTaskJournal task;
+        try{task=BuildTaskJournal.begin(config.getDataDir());}catch(java.io.IOException failure){throw new IllegalStateException("无法创建构建任务记录",failure);}
+        Path stagingPath=task.staging();DatabaseBuilder staging=DatabaseBuilder.atPath(stagingPath);
+        String outcome="FAILED";boolean validated=false;
+        try {
         final RuntimeBuildContract.Prepared prepared;
         try{prepared=RuntimeBuildContract.prepare(request,db,scanPreparations,environments);}
         catch(java.io.IOException failure){throw new IllegalArgumentException("MKB-Export 预检查失败，原库保留："+failure.getMessage(),failure);}
@@ -123,9 +128,7 @@ public class KnowledgeBuilder {
                 &&sourceProcessors.stream().noneMatch(processor->processor.supports(source.kind())))throw new IllegalArgumentException("来源类型未接通："+source.kind());
         long started = System.currentTimeMillis();
         String generation = "build-" + UUID.randomUUID();
-        Path stagingPath = config.getDataDir().resolve("staging-" + UUID.randomUUID());
-        DatabaseBuilder staging = DatabaseBuilder.atPath(stagingPath);
-        try {
+            checkCancelled();validated=true;
             staging.initDatabase();
             new VectorStore(staging,embedder.getDimension());
             if(append) staging.replaceBuildDataFrom(db);
@@ -138,6 +141,7 @@ public class KnowledgeBuilder {
             candidate.publicCache=publicCache;
             candidate.wikiScraper.setPublicCache(publicCache);
             candidate.wikiScraper.setResourceDatabase(db);
+            sourceProcessors.stream().filter(UrlBuildProcessor.class::isInstance).map(UrlBuildProcessor.class::cast).forEach(processor->processor.useResourceDatabase(db));
             var oldMods = new LinkedHashMap<String, ModEntry>();
             for (var mod : db.findAllModEntries()) oldMods.put(mod.getModId(), mod);
             scannedMods.forEach((id,entry) -> {
@@ -198,6 +202,7 @@ public class KnowledgeBuilder {
             result.addedEmbeddings=result.embeddings-originalVectors;
             RuntimeBuildContract.verifyUnchanged(prepared,request,db,scanPreparations,environments);
             if(append && originalFingerprint.equals(staging.contentFingerprint())) {
+                outcome="UNCHANGED";
                 result.durationMs=System.currentTimeMillis()-started;
                 report(progressCallback,"done",1,1,"没有新增内容，基础库保持不变");
                 return result;
@@ -205,28 +210,46 @@ public class KnowledgeBuilder {
             if(!append || result.runtimeSnapshots>0 || (result.parsed>0 || result.addedEmbeddings!=0 || result.documents>0 || result.tutorials>0))staging.setBuildGeneration(generation);
             if(append && !targetFingerprint.equals(db.contentFingerprint()))
                 throw new IllegalStateException("构建期间目标基础库发生变化，请重新执行补充构建");
-            db.replaceBuildDataFrom(staging);
+            checkCancelled();task.state("PUBLISHING");
+            report(progressCallback,"publish",0,1,"正在原子发布构建结果，完成前不再取消。");checkCancelled();
+            db.replaceBuildDataFrom(staging);outcome="PUBLISHED";
             result.durationMs = System.currentTimeMillis() - started;
             try {
                 report(progressCallback, "done", request.sources().size(), request.sources().size(), "Build published: " + result.embeddings + " vectors, "+result.nativeIcons+" imported icons");
             } catch (RuntimeException e) { log.warn("Build published, but progress listener failed", e); }
             return result;
         } catch (java.util.concurrent.CancellationException e) {
+            outcome="CANCELLED";
             throw e;
         } catch (Exception e) {
+            if(task.cancelRequested()){outcome="CANCELLED";var cancelled=new java.util.concurrent.CancellationException("Knowledge build cancelled");cancelled.initCause(e);throw cancelled;}
+            if(!validated&&e instanceof IllegalArgumentException invalid)throw invalid;
             throw new IllegalStateException("构建失败，原基础库保留：" + e.getMessage(), e);
         } finally {
-            try { staging.shutdown(); } catch (Exception e) { log.warn("Staging shutdown failed", e); }
+            boolean interrupted=Thread.interrupted();
             try {
-                java.nio.file.Files.deleteIfExists(Path.of(stagingPath + ".mv.db"));
-                java.nio.file.Files.deleteIfExists(Path.of(stagingPath + ".trace.db"));
-            } catch (Exception e) { log.warn("Staging cleanup failed", e); }
+                try{if(java.nio.file.Files.exists(Path.of(stagingPath+".mv.db")))staging.shutdown();}catch(Exception failure){log.warn("Staging shutdown failed",failure);}
+                try{report(progressCallback,"cleanup",1,1,task.finish(outcome)+retainedCacheSummary());}
+                catch(Exception failure){log.warn("Build cleanup incomplete",failure);try{report(progressCallback,"cleanup",0,1,"暂存清理未完成，下次打开数据目录时重试；图片缓存保留。");}catch(RuntimeException ignored){}}
+            }finally{try{task.close();}catch(java.io.IOException failure){log.warn("Task lock release failed",failure);}if(interrupted)Thread.currentThread().interrupt();}
         }
     }
 
     private static void checkCancelled() {
-        if (Thread.currentThread().isInterrupted())
-            throw new java.util.concurrent.CancellationException("Knowledge build cancelled");
+        BuildCancellation.check();
+    }
+
+    private String retainedCacheSummary() {
+        try(var c=db.getConnection();var s=c.createStatement()) {
+            long resources=0,bytes=0,urls=0;
+            try(var tables=c.getMetaData().getTables(null,null,"rag_public_resource",null)) {
+                if(tables.next())try(var rows=s.executeQuery("SELECT COUNT(*),COALESCE(SUM(OCTET_LENGTH(body)),0) FROM rag_public_resource")){rows.next();resources=rows.getLong(1);bytes=rows.getLong(2);}
+            }
+            try(var tables=c.getMetaData().getTables(null,null,"rag_web_image_download",null)) {
+                if(tables.next())try(var p=c.prepareStatement("SELECT COUNT(*) FROM rag_web_image_download WHERE asset_root=? AND fetched_at>=?")){p.setString(1,config.getDataDir().toAbsolutePath().normalize().toString());p.setLong(2,System.currentTimeMillis()-WebImageDownloadCache.TTL);try(var rows=p.executeQuery()){rows.next();urls=rows.getLong(1);}}
+            }
+            return " 当前原始资源缓存 "+resources+" 项（"+String.format(Locale.ROOT,"%.2f",bytes/1048576.0)+" MiB），近期图片下载地址索引 "+urls+" 条。";
+        }catch(java.sql.SQLException failure){log.warn("Cache retention statistics unavailable",failure);return " 资源缓存统计暂不可用。";}
     }
 
     private BuildResult buildInto(boolean append, ProgressCallback progressCallback)throws Exception {
@@ -434,6 +457,8 @@ public class KnowledgeBuilder {
         public int totalJars, parsed, skipped;
         public int reusedSources, reusedDocuments, conflicts, addedEmbeddings;
         public int documents, tutorials, webImages, webImageAttempts, deferredWebImages;
+        public int reusedWebImages,webImageBindings,webImageQueuePeak,webImageDecodes,permanentImageFailures,temporaryImageFailures,cooldownImageFailures;
+        public long webImageFetchMs,webImageProcessMs,webImageStoreMs;
         public int localImages, ocrAttempts, ocrImages, visionAttempts, visionImages;
         public int webOcrAttempts,webOcrImages,webOcrChunks,enrichedWebImages,reusedImageAnalyses,deferredImageAnalyses,imageStepBackfills;
         public int nativeIconPacks,nativeIcons,transparentNativeIcons,failedNativeIcons,reusedIconPacks;

@@ -44,6 +44,9 @@
 .document-preview { -fx-font-family: "Microsoft YaHei", "Consolas"; -fx-font-size: 13px; }
 .split-pane { -fx-background-color: transparent; -fx-padding: 0; }
 .split-pane-divider { -fx-background-color: -app-background; -fx-padding: 0 4 0 4; }
+.workspace-split-horizontal > .split-pane-divider { -fx-background-color: -app-border; -fx-padding: 0 3; -fx-cursor: h-resize; }
+.workspace-split-vertical > .split-pane-divider { -fx-background-color: -app-border; -fx-padding: 3; -fx-cursor: v-resize; }
+.workspace-split > .split-pane-divider:hover { -fx-background-color: -app-link; }
 .scroll-pane, .scroll-pane > .viewport { -fx-background-color: transparent; }
 .titled-pane > .title { -fx-background-color: -app-selection; -fx-background-radius: 8; -fx-padding: 10; }
 .progress-bar > .bar { -fx-background-color: #4f46e5; -fx-background-radius: 6; }
@@ -82,3 +85,10 @@
 .scan-progress-label { -fx-text-fill: -progress-scan-color; -fx-font-weight: bold; }
 .bind-progress-label { -fx-text-fill: -progress-bind-color; -fx-font-weight: bold; }
 .build-progress-label { -fx-text-fill: -progress-build-color; -fx-font-weight: bold; }
+
+.answer-picture { -fx-padding: 12; -fx-spacing: 7; -fx-background-color: -app-surface; -fx-border-color: -app-border; -fx-border-radius: 8; -fx-background-radius: 8; }
+.answer-picture .label { -fx-font-size: 13px; }
+.answer-picture .markdown-muted { -fx-text-fill: -app-muted; }
+.answer-picture-expand { -fx-padding: 4 9; -fx-text-fill: -app-link; }
+.answer-preview-caption { -fx-font-size: 15px; -fx-font-weight: bold; }
+.answer-preview-detail { -fx-text-fill: -app-muted; }

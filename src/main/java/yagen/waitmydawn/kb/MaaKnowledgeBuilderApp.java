@@ -41,6 +41,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     private AppConfig config;
     private yagen.waitmydawn.kb.ui.ThemeService themes;
+    private final yagen.waitmydawn.kb.ui.WorkspaceLayout workspaceLayout=new yagen.waitmydawn.kb.ui.WorkspaceLayout();
     private final java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "knowledge-worker");
         thread.setDaemon(true);
@@ -241,6 +242,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
         // Content pages
         builderPage = buildBuilderPage(stage);
+        if(dataDirLock!=null&&!dataDirLock.recoverySummary().isBlank())logText(dataDirLock.recoverySummary());
         qaPage = buildQAPage();
         seedPage = buildSeedPage(stage);
         metricsPage = buildMetricsPage();
@@ -260,7 +262,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         progressBar.setVisible(false);
         progressBar.setManaged(false);
         cancelButton=new Button("取消当前任务"); cancelButton.setDisable(true); cancelButton.getStyleClass().add("danger-button");
-        cancelButton.setOnAction(e->{ var running=activeWorker; if(running!=null) { cancelButton.setDisable(true); running.interrupt(); setStatus("正在取消，等待当前请求退出…",true); } });
+        cancelButton.setOnAction(e->{ var running=activeWorker; if(running!=null) { cancelButton.setDisable(true);boolean requested=BuildTaskJournal.requestCancellation(running);setStatus(requested?"正在取消，等待当前请求退出…":"正在发布构建结果，请等待完成。",true); } });
         var statusSpacer=new Region(); HBox.setHgrow(statusSpacer,Priority.ALWAYS);
         HBox statusBar = new HBox(12, statusText, progressBar,statusSpacer,cancelButton);
         statusBar.setPadding(new Insets(4, 12, 4, 12));
@@ -268,8 +270,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         statusBar.getStyleClass().add("status-bar");
 
         BorderPane root = new BorderPane();
-        root.setLeft(sidebar);
-        root.setCenter(contentArea);
+        root.setCenter(workspaceLayout.horizontal("navigation",sidebar,contentArea,.17,160,640));
         root.setBottom(statusBar);
 
         Scene scene = new Scene(root, 1280, 800);
@@ -477,7 +478,6 @@ public class MaaKnowledgeBuilderApp extends Application {
         builderLog.setPrefRowCount(6);
         builderLog.setStyle("-fx-font-family: 'Consolas'; -fx-font-size: 11px;");
 
-        SplitPane splitPane = new SplitPane();
         scanCount=new Label("Scan 0/0");scanCount.setId("scan-count");scanCount.getStyleClass().add("scan-progress-label");
         bindCount=new Label("Bind Url 0/0");bindCount.setId("bind-count");bindCount.getStyleClass().add("bind-progress-label");
         buildCount=new Label("Build 0/0");buildCount.setId("build-count");buildCount.getStyleClass().add("build-progress-label");
@@ -493,11 +493,9 @@ public class MaaKnowledgeBuilderApp extends Application {
                 card("开始构建", new VBox(6, new Label("补充保留网址与资料；游戏快照整体更新，已有模组移除或内容变化须重建。旧库迁移须完整重建，历史会话和图片保留。"), buildRow)),
                 card("构建日志", builderLog));
         VBox.setVgrow(builderLog, Priority.ALWAYS);
-        splitPane.setOrientation(javafx.geometry.Orientation.VERTICAL);
         ScrollPane sourcesScroll = new ScrollPane(topSection);
         sourcesScroll.setFitToWidth(true);
-        splitPane.getItems().addAll(sourcesScroll, bottomSection);
-        splitPane.setDividerPositions(0.6);
+        var splitPane=workspaceLayout.vertical("builder",sourcesScroll,bottomSection,.6,160,145);
         try{if(!folderField.getText().isBlank()&&JarScanCache.exists(Path.of(folderField.getText())))Platform.runLater(this::onRestoreScan);}catch(Exception ignored){}
         VBox.setVgrow(splitPane, Priority.ALWAYS);
 
@@ -654,6 +652,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             if(preparedScan!=null)builder.setScanPreparation(Path.of(preparedFolder),preparedScan);
             KnowledgeBuilder.BuildResult r = builder.build(request,
                     (phase, cur, total, msg) -> Platform.runLater(() -> {
+                        if(phase.equals("publish"))cancelButton.setDisable(true);
                         if (total > 0) progressBar.setProgress((double) cur / total);
                         if(phase.startsWith("progress:")){String step=phase.substring(9);buildCount.setText("Build "+cur+"/"+total+" · "+step);buildCount.setTooltip(new Tooltip("Build 按当前阶段统计已完成/总计："+step));return;}
                         if(phase.equals("done"))buildCount.setText("Build "+cur+"/"+total+(msg.contains("没有新增内容")?" · 无变化":" · 已发布"));
@@ -707,7 +706,9 @@ public class MaaKnowledgeBuilderApp extends Application {
         logText("新增向量："+result.addedEmbeddings+"，总向量："+result.embeddings+"，本次导入配方："+result.recipes);
         logText("教程："+result.tutorials+"，网页图片："+result.webImages+"，未缓存图片："+result.deferredWebImages);
         logText("本地图片："+result.localImages+"，OCR："+result.ocrImages+"，视觉描述："+result.visionImages);
-        logText("网页图片分析："+result.enrichedWebImages+"，网页OCR："+result.webOcrImages+"，OCR文本块："+result.webOcrChunks+"，复用分析："+result.reusedImageAnalyses+"，待分析："+result.deferredImageAnalyses);
+        logText("网页图片正文关联："+result.enrichedWebImages+"；网页自动 OCR 已关闭，按标题、图注、相邻段落和步骤检索配图。");
+        logText("图片流水线：获取尝试 "+result.webImageAttempts+"，复用 "+result.reusedWebImages+"，批量关联 "+result.webImageBindings+"；永久失败 "+result.permanentImageFailures+"，临时失败 "+result.temporaryImageFailures+"，站点冷却 "+result.cooldownImageFailures);
+        logText("图片耗时：获取／限流 "+result.webImageFetchMs+"ms，本地处理 "+result.webImageProcessMs+"ms，关联入库 "+result.webImageStoreMs+"ms（获取与本地处理交错执行，耗时不可相加）；待处理响应队列峰值 "+result.webImageQueuePeak+"。");
         logText("实机图标："+result.nativeIcons+"，完全透明："+result.transparentNativeIcons+"，失败或不支持："+result.failedNativeIcons);
         logText("实体图片：可见 "+result.entityVisible+"，透明 "+result.entityTransparent+"，失败 "+result.entityFailed+"，跳过 "+result.entityExcluded+"，取景待复核 "+result.entityUncertain);
         logText("实体图片资产："+result.entityUniqueImages+" 张；复用状态："+result.entityImageAliases);
@@ -723,8 +724,6 @@ public class MaaKnowledgeBuilderApp extends Application {
     private boolean refreshingIconProfiles;
 
     private VBox buildQAPage() {
-        HBox page = new HBox(0);
-        page.getStyleClass().add("workspace-page");
 
         // --- Left: History sidebar ---
         VBox historySidebar = new VBox(8);
@@ -778,6 +777,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         sessionListView = new VBox(4);
         ScrollPane sessionScroll = new ScrollPane(sessionListView);
         sessionScroll.setFitToWidth(true);
+        sessionScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         sessionScroll.setPrefHeight(400);
         VBox.setVgrow(sessionScroll, Priority.ALWAYS);
 
@@ -787,6 +787,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         ScrollPane dbScroll = new ScrollPane(dbCheckboxList);
         dbScroll.setFitToWidth(true);
         dbScroll.setPrefHeight(100);
+        VBox.setVgrow(dbScroll,Priority.ALWAYS);
         Button refreshDbBtn = new Button("刷新知识库");
         refreshDbBtn.setFont(Font.font(10));
         refreshDbBtn.getStyleClass().add("link-button");
@@ -808,9 +809,11 @@ public class MaaKnowledgeBuilderApp extends Application {
                 finally {Platform.runLater(()->{operationInFlight=false;setStatus("就绪",false);});}
             });
         });
-        historySidebar.getChildren().addAll(qaDataDirLabel, newChatBtn, importHistory,refreshHistory,clearBtn,
-                new Separator(), new Label("检索数据库："), dbScroll, refreshDbBtn,
-                new Separator(), new Label("最近对话："), sessionScroll);
+        var databases=new VBox(6,new Label("检索数据库："),dbScroll,refreshDbBtn);
+        var recent=new VBox(6,new Label("最近对话："),sessionScroll);
+        var historySections=workspaceLayout.vertical("qa-lists",databases,recent,.25,100,140);
+        VBox.setVgrow(historySections,Priority.ALWAYS);
+        historySidebar.getChildren().addAll(qaDataDirLabel,newChatBtn,importHistory,refreshHistory,clearBtn,new Separator(),historySections);
 
         // --- Right: Chat area ---
         VBox chatArea = new VBox(12);
@@ -819,20 +822,21 @@ public class MaaKnowledgeBuilderApp extends Application {
         chatHistory = new VBox(8);
         chatHistory.setPadding(new Insets(8));
         ScrollPane chatScroll = new ScrollPane(chatHistory);
+        chatHistory.setMinWidth(0);chatScroll.setMinWidth(0);
         chatScroll.setFitToWidth(true);
         chatScroll.setPrefHeight(440);
         chatScroll.getStyleClass().add("chat-scroll");
 
         knowledgeScopeChoice = new ComboBox<>();
         knowledgeScopeChoice.setMaxWidth(Double.MAX_VALUE);
-        knowledgeScopeChoice.setMinWidth(120);
+        knowledgeScopeChoice.setMinWidth(0);
         refreshKnowledgeScopes();
         fetchKnowledgeImages = new CheckBox("补全历史网页图片");
         fetchKnowledgeImages.setSelected(true);
         fetchKnowledgeImages.setTooltip(new Tooltip("新获取的网页自动完整缓存正文图片；此开关控制补全以前未完成的网页图片。"));
         HBox scopeRow = new HBox(8, new Label("资料范围："), knowledgeScopeChoice, fetchKnowledgeImages);
         HBox.setHgrow(knowledgeScopeChoice, Priority.ALWAYS);
-        iconProfileChoice=new ComboBox<>();iconProfileChoice.setMaxWidth(Double.MAX_VALUE);
+        iconProfileChoice=new ComboBox<>();iconProfileChoice.setMaxWidth(Double.MAX_VALUE);iconProfileChoice.setMinWidth(0);
         iconProfileChoice.setOnAction(event -> {
             if(refreshingIconProfiles)return;
             if(busy()){refreshIconProfiles();return;}
@@ -849,11 +853,16 @@ public class MaaKnowledgeBuilderApp extends Application {
         refreshIconProfiles();
 
         questionField = new TextArea();
-        questionField.setWrapText(true); questionField.setPrefRowCount(2); questionField.setMaxHeight(100);
+        questionField.setWrapText(true); questionField.setPrefRowCount(2); questionField.setMaxHeight(Double.MAX_VALUE);questionField.setMinWidth(0);
         questionField.setPromptText("询问模组、生物、配方或机制 · Ctrl + Enter 发送");
         questionField.setPrefWidth(500);
         questionField.setOnKeyPressed(e -> { if(e.isControlDown() && e.getCode()==javafx.scene.input.KeyCode.ENTER) { onAsk(); e.consume(); } });
         askBtn = styledButton("发送", "#6C63FF");
+        askBtn.setMinWidth(Region.USE_PREF_SIZE);
+        refreshIcons.setMinWidth(Region.USE_PREF_SIZE);
+        fetchKnowledgeImages.setMinWidth(Region.USE_PREF_SIZE);
+        scopeRow.getChildren().stream().filter(Label.class::isInstance).map(Label.class::cast).forEach(label->label.setMinWidth(Region.USE_PREF_SIZE));
+        iconRow.getChildren().stream().filter(Label.class::isInstance).map(Label.class::cast).forEach(label->label.setMinWidth(Region.USE_PREF_SIZE));
         askBtn.setOnAction(e -> onAsk());
         HBox inputRow = new HBox(8, questionField, askBtn);
         HBox.setHgrow(questionField,Priority.ALWAYS); inputRow.setAlignment(Pos.BOTTOM_CENTER);
@@ -863,8 +872,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         qaLog.setPrefRowCount(3);
         qaLog.setStyle("-fx-font-family: 'Consolas'; -fx-font-size: 11px;");
 
-        VBox chatSection = new VBox(4, chatScroll, scopeRow,iconRow, inputRow);
-        VBox.setVgrow(chatScroll, Priority.ALWAYS);
+        VBox composer=new VBox(8,scopeRow,iconRow,inputRow);VBox.setVgrow(inputRow,Priority.ALWAYS);inputRow.setMinHeight(64);
+        var chatSection=workspaceLayout.vertical("qa-composer",chatScroll,composer,.76,180,170);
         var detailSection = new TitledPane("检索与性能详情",qaLog); detailSection.setExpanded(false);
         VBox qaLayout = new VBox(12,chatSection,detailSection); VBox.setVgrow(chatSection,Priority.ALWAYS);
 
@@ -873,9 +882,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         if(migration!=null){var warning=new Label(migration);warning.setWrapText(true);chatArea.getChildren().add(warning);}
         chatArea.getChildren().add(qaLayout);
         VBox.setVgrow(qaLayout, Priority.ALWAYS);
-        HBox.setHgrow(chatArea, Priority.ALWAYS);
-
-        page.getChildren().addAll(historySidebar, chatArea);
+        var page=workspaceLayout.horizontal("qa-history",historySidebar,chatArea,.25,220,360);
+        page.getStyleClass().add("workspace-page");
         refreshSessionList(historySidebar);
         refreshDBCheckboxes(dbCheckboxList);
 
@@ -893,14 +901,14 @@ public class MaaKnowledgeBuilderApp extends Application {
                 row.setPadding(new Insets(4));
                 row.getStyleClass().add("history-row");
 
-                String labelText = sess.title + " (" + sess.messages.size() + " msgs)";
-                if (labelText.length() > 28) labelText = labelText.substring(0, 28) + "...";
-                Label lbl = new Label(labelText);
+                Label lbl = new Label(sess.title + " (" + sess.messages.size() + " msgs)");
+                lbl.setMinWidth(0);lbl.setMaxWidth(Double.MAX_VALUE);HBox.setHgrow(lbl,Priority.ALWAYS);
                 lbl.setTooltip(new Tooltip(sess.title+"\n"+sess.dataDir));
                 lbl.setFont(Font.font(11));
 
                 Button delBtn = new Button("X");
                 delBtn.setFont(Font.font(9));
+                delBtn.setMinWidth(Region.USE_PREF_SIZE);
                 delBtn.getStyleClass().addAll("link-button", "danger-text");
                 delBtn.setOnAction(ev -> {
                     if (busy()) return;

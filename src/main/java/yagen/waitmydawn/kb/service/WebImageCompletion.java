@@ -1,10 +1,17 @@
 package yagen.waitmydawn.kb.service;
 
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import yagen.waitmydawn.kb.model.*;
+import yagen.waitmydawn.kb.model.KnowledgeContent.ImageAsset;
 
-/** 完成已声明网页的全部正文图片；失败保留可重试状态，不按图片数量截断。 */
+/** 单下载线程与本地处理交错执行；队列限制在一份待处理响应，不截断正文图片清单。 */
 public final class WebImageCompletion {
+    record Image(String id,String document,String url,String caption,int block,String location,String asset,String path,String type,int width,int height,String status,String step,String boundStep) {
+        int ordinal(){try{return Integer.parseInt(id.substring(id.lastIndexOf("/image/")+7));}catch(NumberFormatException failure){return block;}}
+    }
+    private record Download(List<Image> references,ImageAsset asset,byte[] bytes,String failure,boolean reused){}
     private final WikiScraperService scraper;
     private final WebImageEnricher enricher;
     public WebImageCompletion(WikiScraperService scraper,WebImageEnricher enricher){this.scraper=scraper;this.enricher=enricher;}
@@ -16,40 +23,112 @@ public final class WebImageCompletion {
         complete(documents,context);
     }
     public void complete(Collection<String> documents,BuildSourceProcessor.Context context)throws Exception {
-        record Image(String id,String document,String url,String caption,int block,String location,String asset,String path,String type,int width,int height,String status,String step){}
-        var images=new ArrayList<Image>();
-        try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT r.*,d.location,o.image_id,a.relative_path,a.media_type,a.width,a.height FROM rag_web_image_reference r JOIN rag_document d ON d.id=r.document_id LEFT JOIN rag_image_occurrence o ON o.id=r.id LEFT JOIN rag_image_asset a ON a.id=o.image_id WHERE r.document_id=? ORDER BY r.block_ordinal,r.id")) {
-            for(String document:new LinkedHashSet<>(documents)){p.setString(1,document);try(var rows=p.executeQuery()){while(rows.next())images.add(new Image(rows.getString("id"),document,rows.getString("url"),rows.getString("caption"),rows.getInt("block_ordinal"),rows.getString("location"),rows.getString("image_id"),rows.getString("relative_path"),rows.getString("media_type"),rows.getInt("width"),rows.getInt("height"),rows.getString("status"),rows.getString("step_text")));}}
+        var groups=new LinkedHashMap<String,List<Image>>();int total=0;
+        try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT r.*,d.location,o.image_id,a.relative_path,a.media_type,a.width,a.height,g.step_text AS bound_step FROM rag_web_image_reference r JOIN rag_document d ON d.id=r.document_id LEFT JOIN rag_image_occurrence o ON o.id=r.id LEFT JOIN rag_image_asset a ON a.id=o.image_id LEFT JOIN rag_image_grounding g ON g.id=r.id AND g.analysis_version=? WHERE r.document_id=? ORDER BY r.block_ordinal,r.id")) {
+            for(String document:new LinkedHashSet<>(documents)){p.setString(1,GuideImageSemantics.VERSION);p.setString(2,document);try(var rows=p.executeQuery()){while(rows.next()) {
+                String url=rows.getString("url"),key;try{key=WebUrlPolicy.normalize(url);}catch(IllegalArgumentException invalid){key=url;}
+                groups.computeIfAbsent(key,ignored->new ArrayList<>()).add(new Image(rows.getString("id"),document,url,rows.getString("caption"),rows.getInt("block_ordinal"),rows.getString("location"),rows.getString("image_id"),rows.getString("relative_path"),rows.getString("media_type"),rows.getInt("width"),rows.getInt("height"),rows.getString("status"),rows.getString("step_text"),rows.getString("bound_step")));total++;
+            }}}
         }
-        int completed=0;var failedUrls=new HashMap<String,String>();
-        for(var image:images){context.checkCancelled();if(context.progress()!=null)context.progress().onProgress("web-images",completed,images.size(),"缓存正文图片："+image.location());
-            try{
-                KnowledgeContent.ImageAsset asset;
-                if(image.asset()!=null&&context.images().available(image.asset(),image.path()))asset=new KnowledgeContent.ImageAsset(image.asset(),image.path(),image.type(),image.width(),image.height(),null,null);
-                else{
-                    if(failedUrls.containsKey(image.url()))throw new java.io.IOException(failedUrls.get(image.url()));
-                    context.result().webImageAttempts++;
-                    var resource=scraper.fetchBuildResource(image.url(),image.location(),true);
-                    if(resource.status()!=200||resource.bytes()==null)throw new java.io.IOException("HTTP "+resource.status());
-                    asset=context.images().put(resource.bytes());context.content().saveImage(asset);
-                    int ordinal=image.block();int split=image.id().lastIndexOf("/image/");if(split>=0)try{ordinal=Integer.parseInt(image.id().substring(split+7));}catch(NumberFormatException ignored){}
-                    context.content().saveOccurrence(new KnowledgeContent.ImageOccurrence(image.id(),image.document(),asset.id(),image.caption(),image.url(),null,ordinal));
-                    context.result().webImages++;
+        if(groups.isEmpty())return;
+        var cache=new WebImageDownloadCache(scraper.resourceDatabase()==null?context.database():scraper.resourceDatabase(),context.images());
+        var queue=new ArrayBlockingQueue<Download>(1);var attempts=new AtomicInteger();var peak=new AtomicInteger();var stop=new java.util.concurrent.atomic.AtomicBoolean();long[] fetchNanos={0};
+        var executor=Executors.newSingleThreadExecutor(r->{var thread=new Thread(r,"mkb-web-image-download-"+UUID.randomUUID());thread.setDaemon(true);return thread;});
+        var producer=executor.submit(BuildTaskJournal.carry(RetrievalTelemetry.carry(BuildCancellation.carry(stop::get,()-> {
+            var checked=new HashMap<String,Boolean>();var blockedSites=new HashMap<String,String>();
+            var task=BuildTaskJournal.current();
+            for(var entry:groups.entrySet()) {
+                context.checkCancelled();var references=entry.getValue();var first=references.getFirst();ImageAsset asset=null;byte[] bytes=null;String failure=null;boolean reused=false;
+                long started=System.nanoTime();
+                try {
+                    WebUrlPolicy.normalize(entry.getKey());
+                    if(!scraper.buildRefreshing())for(var image:references)if(image.asset()!=null&&checked.computeIfAbsent(image.asset()+"/"+image.path(),key->context.images().available(image.asset(),image.path()))) {
+                        asset=new ImageAsset(image.asset(),image.path(),image.type(),image.width(),image.height(),null,null);break;
+                    }
+                    if(asset==null&&!scraper.buildRefreshing())asset=cache.find(entry.getKey(),scraper.buildCacheOnly());
+                    if(asset!=null)reused=true;
+                    else {
+                        String site=HostRequestGate.site(entry.getKey());failure=blockedSites.get(site);
+                        if(failure==null&&task!=null)failure=task.imageFailure(context.images().directory()+"\n"+entry.getKey());
+                        if(failure==null) {
+                            attempts.incrementAndGet();var response=scraper.fetchBuildResource(entry.getKey(),first.location(),true);
+                            if(response.status()==200&&response.bytes()!=null)bytes=response.bytes();
+                            else {
+                                int status=response.status();failure=(status==403||status==429?"SITE_COOLDOWN":status==404||status==410?"PERMANENT":"TEMPORARY")+": HTTP "+status;
+                                if(status==403||status==429)blockedSites.put(site,failure);
+                                if(task!=null)task.imageFailure(context.images().directory()+"\n"+entry.getKey(),failure);
+                            }
+                        }
+                    }
+                }catch(IllegalArgumentException invalid){failure="PERMANENT: 无效图片地址";}
+                fetchNanos[0]+=System.nanoTime()-started;
+                try{var value=new Download(references,asset,bytes,failure,reused);while(!queue.offer(value,200,TimeUnit.MILLISECONDS))context.checkCancelled();peak.accumulateAndGet(queue.size(),Math::max);}
+                catch(InterruptedException cancelled){Thread.currentThread().interrupt();throw new CancellationException("Image download cancelled");}
+            }
+        }))));
+        var bindings=new WebImageBindings(context);var batch=new ArrayList<WebImageBindings.Ready>();var decoded=new HashMap<String,ImageAsset>();
+        int completed=0;long lastProgress=0;long processNanos=0,storeNanos=0;
+        try {
+            progress(context,0,total,attempts.get(),"开始正文图片流水线");
+            for(int received=0;received<groups.size();) {
+                context.checkCancelled();Download download;
+                try{download=queue.poll(200,TimeUnit.MILLISECONDS);}catch(InterruptedException cancelled){Thread.currentThread().interrupt();throw new CancellationException("Image processing cancelled");}
+                if(download==null) {
+                    if(producer.isDone())producer.get();
+                    if(System.nanoTime()-lastProgress>2_000_000_000L){progress(context,completed,total,attempts.get(),"等待图片获取／站点限流");lastProgress=System.nanoTime();}continue;
                 }
-                try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT DISTINCT l.chunk_id FROM rag_chunk_block l JOIN rag_content_block b ON b.id=l.block_id WHERE b.document_id=? AND b.ordinal=? AND NOT EXISTS(SELECT 1 FROM rag_chunk_image existing WHERE existing.chunk_id=l.chunk_id AND existing.occurrence_id=?)")){
-                    p.setString(1,image.document());p.setInt(2,image.block());p.setString(3,image.id());try(var rows=p.executeQuery()){while(rows.next())context.content().saveLink(new KnowledgeContent.ChunkImageLink(rows.getString(1),image.id(),"same_block"));}
+                received++;long started=System.nanoTime();ImageAsset asset=download.asset();String failure=download.failure();
+                if(failure==null&&asset==null)try {
+                    String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(download.bytes()));
+                    asset=decoded.get(hash);if(asset==null){asset=context.images().put(download.bytes());decoded.put(hash,asset);context.result().webImageDecodes++;}
+                    cache.save(download.references().getFirst().url(),asset);
+                }catch(java.io.IOException|IllegalArgumentException invalid){failure="PERMANENT: "+Objects.toString(invalid.getMessage(),"图片格式无效");}
+                if(failure!=null&&BuildTaskJournal.current()!=null)BuildTaskJournal.current().imageFailure(context.images().directory()+"\n"+download.references().getFirst().url(),failure);
+                processNanos+=System.nanoTime()-started;
+                for(var image:download.references()) {
+                    context.checkCancelled();
+                    if(failure!=null) {
+                        context.result().deferredWebImages++;
+                        if(failure.startsWith("PERMANENT"))context.result().permanentImageFailures++;else if(failure.startsWith("SITE_COOLDOWN"))context.result().cooldownImageFailures++;else context.result().temporaryImageFailures++;
+                    }else {
+                        if(download.reused())context.result().reusedWebImages++;
+                        if(image.asset()==null)context.result().webImages++;
+                    }
+                    if(!enricher.requiresOcr()&&failure==null&&download.reused()&&asset.id().equals(image.asset())&&image.status().equals("AVAILABLE")&&image.boundStep()!=null
+                            &&(image.step()==null||image.step().isBlank()||image.boundStep().endsWith(image.step()))) {completed++;continue;}
+                    if(enricher.requiresOcr()&&failure==null) {
+                        var index=new GuideImageIndex(context.database());var analysis=index.cached(asset.id());var grounding=index.find(image.id());
+                        if(image.status().equals("AVAILABLE")&&analysis!=null&&Set.of("OCR_OK","OCR_NO_TEXT","OCR_LOW_SIGNAL","OCR_SKIPPED_SMALL","LEGACY_TEXT_REUSED").contains(Objects.toString(analysis.status(),""))&&grounding!=null
+                                &&(image.step()==null||image.step().isBlank()||Objects.toString(grounding.stepText(),"").endsWith(image.step()))) {context.result().reusedImageAnalyses++;completed++;continue;}
+                        context.content().saveImage(asset);context.content().saveOccurrence(new KnowledgeContent.ImageOccurrence(image.id(),image.document(),asset.id(),image.caption(),image.url(),null,image.ordinal()));
+                        try(var c=context.database().getConnection();var p=c.prepareStatement("MERGE INTO rag_chunk_image(chunk_id,occurrence_id,relation) KEY(chunk_id,occurrence_id) SELECT DISTINCT l.chunk_id,?,'same_block' FROM rag_chunk_block l JOIN rag_content_block b ON b.id=l.block_id WHERE b.document_id=? AND b.ordinal=? AND NOT EXISTS(SELECT 1 FROM rag_chunk_image previous WHERE previous.chunk_id=l.chunk_id AND previous.occurrence_id=?)")){p.setString(1,image.id());p.setString(2,image.document());p.setInt(3,image.block());p.setString(4,image.id());p.executeUpdate();}
+                        enricher.enrich(context,image.document(),image.id(),asset,image.caption(),image.block(),image.step());
+                    }else batch.add(new WebImageBindings.Ready(image,asset,failure));
+                    if(batch.size()>=16){long storing=System.nanoTime();bindings.store(batch);batch.clear();storeNanos+=System.nanoTime()-storing;}
+                    if(enricher.requiresOcr()&&failure==null)try(var c=context.database().getConnection();var p=c.prepareStatement("UPDATE rag_web_image_reference SET status='AVAILABLE',error_text=NULL WHERE id=?")){p.setString(1,image.id());p.executeUpdate();}
+                    completed++;
                 }
-                var index=new GuideImageIndex(context.database());var cached=index.cached(asset.id());var grounding=index.find(image.id());
-                String analysisStatus=cached==null?"":Objects.toString(cached.status(),"");
-                boolean complete=cached!=null&&Set.of("OCR_OK","OCR_NO_TEXT","OCR_LOW_SIGNAL","OCR_SKIPPED_SMALL","LEGACY_TEXT_REUSED").contains(analysisStatus)&&(!analysisStatus.equals("OCR_OK")||GuideImageSemantics.usableOcr(cached.text()));
-                boolean sameStep=grounding!=null&&(image.step()==null||image.step().isBlank()||Objects.toString(grounding.stepText(),"").endsWith(image.step()));
-                if(image.status().equals("AVAILABLE")&&complete&&sameStep){context.result().reusedImageAnalyses++;completed++;continue;}
-                enricher.enrich(context,image.document(),image.id(),asset,image.caption(),image.block());
-                try(var c=context.database().getConnection();var p=c.prepareStatement("UPDATE rag_web_image_reference SET status='AVAILABLE',error_text=NULL WHERE id=?")){p.setString(1,image.id());p.executeUpdate();}
-            }catch(java.util.concurrent.CancellationException cancelled){throw cancelled;}
-            catch(java.io.IOException|IllegalArgumentException failed){failedUrls.put(image.url(),Objects.toString(failed.getMessage(),"图片获取失败"));try(var c=context.database().getConnection();var p=c.prepareStatement("UPDATE rag_web_image_reference SET status='FAILED',error_text=? WHERE id=?")){p.setString(1,failed.getMessage());p.setString(2,image.id());p.executeUpdate();}context.result().deferredWebImages++;}
-            completed++;
+                if(received==1||completed==total||completed%16==0||System.nanoTime()-lastProgress>=200_000_000L){progress(context,completed,total,attempts.get(),"图片下载／复用与正文关联");lastProgress=System.nanoTime();}
+            }
+            producer.get();context.checkCancelled();long storing=System.nanoTime();bindings.store(batch);context.checkCancelled();storeNanos+=System.nanoTime()-storing;
+        }catch(ExecutionException failure) {
+            if(failure.getCause() instanceof RuntimeException runtime)throw runtime;
+            if(failure.getCause() instanceof Error error)throw error;
+            throw new IllegalStateException("图片下载任务失败",failure.getCause());
+        }catch(InterruptedException cancelled){Thread.currentThread().interrupt();throw new CancellationException("Image processing cancelled");}
+        finally {
+            boolean interrupted=Thread.interrupted();stop.set(true);producer.cancel(false);executor.shutdown();
+            try{while(!executor.awaitTermination(1,TimeUnit.SECONDS)){}}
+            catch(InterruptedException cancelled){interrupted=true;while(!executor.isTerminated())try{executor.awaitTermination(1,TimeUnit.SECONDS);}catch(InterruptedException again){interrupted=true;}}
+            finally {
+                context.result().webImageAttempts+=attempts.get();context.result().webImageQueuePeak=Math.max(context.result().webImageQueuePeak,peak.get());
+                context.result().webImageFetchMs+=fetchNanos[0]/1_000_000;context.result().webImageProcessMs+=processNanos/1_000_000;context.result().webImageStoreMs+=storeNanos/1_000_000;
+                if(interrupted)Thread.currentThread().interrupt();
+            }
         }
-        if(context.progress()!=null)context.progress().onProgress("web-images",completed,images.size(),"正文图片缓存处理完成");
+        progress(context,completed,total,attempts.get(),"正文图片处理完成");
+    }
+    private static void progress(BuildSourceProcessor.Context context,int completed,int total,int attempts,String message) {
+        if(context.progress()!=null)context.progress().onProgress("web-images",completed,total,message+"；获取尝试 "+attempts+"，复用 "+context.result().reusedWebImages+"，已关联 "+context.result().webImageBindings+"，失败 "+context.result().deferredWebImages);
     }
 }

@@ -62,11 +62,13 @@ public class AnswerAgent {
                 A [相近名称候选，对应关系未确认] page is not a confirmed synonym. State the naming gap,
                 and use conditional wording (若你指的是...) before describing the candidate; do not assert
                 that it must be the requested entity. A [机制支撑页] only supplies related mechanics.
-            G3. VANILLA Minecraft general knowledge (vanilla items, vanilla recipes, vanilla mechanics) may be
-                answered from your own knowledge even when the context is thin — mark it as general knowledge when
-                the context does not confirm it (see the tier rules below).
-                Do not invent exact crafting grids or quantitative mechanics when no verified evidence
-                supplies them. Evidence edition/version may differ from the installed Java Edition JAR.
+            G3. All factual vanilla and modded claims require the provided evidence. For current-game claims,
+                the selected snapshot's edition, Minecraft version, loader and mod versions are authoritative.
+                Document-scope answers describe that source's own scope; do not present unverified external
+                modpack facts as facts about the currently installed world.
+                Never fill sparse evidence with model memory, newer-version items or unsupported tactics.
+                Unversioned web text does not verify compatibility. State the specific uncertainty instead.
+                Image metadata only identifies exported appearances; it does not prove pixel details or mechanics.
             G4. If a MOD-SPECIFIC detail the user asks about is not covered by the context, state explicitly that
                 the local knowledge base does not cover it; never fill that gap with guesses.
             G5. When a [Premise Check] section is present, treat it as authoritative and address it in the answer.
@@ -217,7 +219,7 @@ public class AnswerAgent {
             if(message instanceof dev.langchain4j.data.message.UserMessage u) context.append("用户：").append(abbreviate(u.singleText(),600)).append('\n');
             else if(message instanceof dev.langchain4j.data.message.AiMessage a) context.append("回答：").append(abbreviate(a.text(),900)).append('\n');
         }
-        if(ctx.sourceScope()!=null && !ctx.sourceScope().isBlank()) context.append("[Installed JAR versions]\n").append(ctx.sourceScope()).append("\n\n");
+        if(ctx.sourceScope()!=null && !ctx.sourceScope().isBlank()) context.append("[Selected environment and evidence scope]\n").append(ctx.sourceScope()).append("\n\n");
         context.append("[Data Tier: ").append(dataTier).append("]\n\n");
         if (ctx.knowledgeEvidence() != null && !ctx.knowledgeEvidence().isBlank())
             context.append("[Imported evidence and allowed references]\n").append(ctx.knowledgeEvidence()).append("\n");

@@ -49,6 +49,29 @@ public final class ImageCacheMaintenance {
 
     public Report inspect() throws IOException {return scan().report();}
 
+    /** 仅移除 HTML 插图的旧 OCR 索引，图片资产与本地扫描资料仍受原引用保护。 */
+    public int cleanWebOcrIndex() throws java.sql.SQLException {
+        try(var connection=db.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                var blocks=new ArrayList<String>();var chunks=new LinkedHashSet<String>();
+                try(var statement=connection.createStatement();var rows=statement.executeQuery("SELECT b.id FROM rag_content_block b JOIN rag_document d ON d.id=b.document_id WHERE b.kind='IMAGE_OCR' AND LOWER(d.media_type) IN ('text/html','application/xhtml+xml')")) {while(rows.next())blocks.add(rows.getString(1));}
+                try(var query=connection.prepareStatement("SELECT c.id FROM rag_content_chunk c JOIN rag_chunk_block l ON l.chunk_id=c.id WHERE l.block_id=? AND c.id LIKE '%/ocr/chunk/%'")) {
+                    for(String block:blocks){query.setString(1,block);try(var rows=query.executeQuery()){while(rows.next())chunks.add(rows.getString(1));}}
+                }
+                for(String table:List.of("rag_vectors","rag_chunk_image","rag_chunk_block","rag_content_chunk")) {
+                    String column=table.equals("rag_content_chunk")?"id":"chunk_id";
+                    try(var delete=connection.prepareStatement("DELETE FROM "+table+" WHERE "+column+"=?")){for(String chunk:chunks){delete.setString(1,chunk);delete.addBatch();}delete.executeBatch();}
+                }
+                for(String block:blocks) {
+                    try(var delete=connection.prepareStatement("DELETE FROM rag_chunk_block WHERE block_id=?")){delete.setString(1,block);delete.executeUpdate();}
+                    try(var delete=connection.prepareStatement("DELETE FROM rag_content_block WHERE id=?")){delete.setString(1,block);delete.executeUpdate();}
+                }
+                connection.commit();return chunks.size();
+            }catch(java.sql.SQLException|RuntimeException failure){connection.rollback();throw failure;}
+        }
+    }
+
     public Cleanup cleanUnreferenced() throws IOException {
         Scan scan=scan();
         if(!scan.safe) throw new IOException("引用检查未完成，未清理任何图片："+String.join("；",scan.warnings));
@@ -99,6 +122,11 @@ public final class ImageCacheMaintenance {
                 while(rows.next()) add(scan,rows.getString(1),rows.getString(2),rows.getString(3),rows.getString(4));
             }
             try(var rows=s.executeQuery("SELECT COUNT(*) FROM rag_web_image_reference WHERE status<>'AVAILABLE'")) {rows.next();scan.buildPending=rows.getLong(1);}
+            try(var tables=c.getMetaData().getTables(null,null,"rag_web_image_download",null)) {
+                if(tables.next())try(var p=c.prepareStatement("SELECT asset_id,relative_path,url FROM rag_web_image_download WHERE fetched_at>=? AND asset_root=?")) {
+                    p.setLong(1,clock.millis()-WebImageDownloadCache.TTL);p.setString(2,dataDir.toString());try(var rows=p.executeQuery()){while(rows.next())add(scan,rows.getString(1),rows.getString(2),rows.getString(3),null);}
+                }
+            }
             try(var tables=c.getMetaData().getTables(null,null,"rag_public_resource",null)) {
                 if(tables.next()) try(var rows=s.executeQuery("SELECT COUNT(*),COALESCE(SUM(OCTET_LENGTH(body)),0) FROM rag_public_resource")) {
                     rows.next();scan.rawResources=rows.getLong(1);scan.rawBytes=rows.getLong(2);

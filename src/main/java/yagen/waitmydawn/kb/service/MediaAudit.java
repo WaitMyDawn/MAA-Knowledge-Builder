@@ -6,6 +6,7 @@ import yagen.waitmydawn.kb.model.AnswerArtifacts;
 /** 审计描述选择依据和资产可用性，不将元数据匹配等同于像素语义正确。 */
 public final class MediaAudit {
  private MediaAudit(){}
+ public record Performance(boolean indexCacheHit,int parsedRecords,int reusedAssets,long indexTimeNanos){}
  public record EntityCandidate(String registry,String stateKey,String decision,String reason,String imageRef,String stateLabel,String request){}
  public record EntityTrace(String profile,int scanned,int requested,int selected,boolean truncated,List<EntityCandidate> candidates,Map<String,String> requestedAxes){}
  static final class Trail {

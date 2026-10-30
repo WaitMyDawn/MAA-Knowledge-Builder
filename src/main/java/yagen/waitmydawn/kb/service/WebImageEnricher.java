@@ -5,16 +5,28 @@ import java.nio.file.*;
 import java.util.*;
 import javax.imageio.ImageIO;
 
-/** 网页图片的本机 OCR、步骤绑定和独立文字索引，仅写入构建暂存库。 */
+/** 网页图片默认仅关联正文与步骤；显式 OCR 调用保留用于独立分析。 */
 public final class WebImageEnricher {
     private final LocalOcrEngine ocr;
-    public WebImageEnricher(){this(LocalOcrEngine.windows());}
+    public WebImageEnricher(){this(null);}
     WebImageEnricher(LocalOcrEngine ocr){this.ocr=ocr;}
+    boolean requiresOcr(){return ocr!=null;}
     void enrich(BuildSourceProcessor.Context context,String document,String occurrence,KnowledgeContent.ImageAsset image,String caption,int ordinal) throws Exception {
         enrich(context,document,occurrence,image,caption,ordinal,null);
     }
     void enrich(BuildSourceProcessor.Context context,String document,String occurrence,KnowledgeContent.ImageAsset image,String caption,int ordinal,String inlineStep) throws Exception {
-        context.checkCancelled();var index=new GuideImageIndex(context.database());var cached=index.cached(image.id());
+        context.checkCancelled();var index=new GuideImageIndex(context.database());
+        if(!requiresOcr()) {
+            index.bind(occurrence,document,image.id(),caption,"","CONTEXT_ONLY",ordinal);
+            if(inlineStep==null)try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT step_text FROM rag_web_image_reference WHERE id=?")){p.setString(1,occurrence);try(var r=p.executeQuery()){if(r.next())inlineStep=r.getString(1);}}
+            if(inlineStep!=null&&inlineStep.strip().length()>=6) {
+                var anchor=index.anchor(document,ordinal);
+                if(anchor!=null)index.save(occurrence,image.id(),GuideImageSemantics.describe(caption,"","CONTEXT_ONLY",anchor.id(),anchor.lineage(),anchor.heading()+"\n"+inlineStep,"INLINE_STEP"));
+            }
+            context.content().setOccurrenceMetadata(occurrence,"ILLUSTRATION","DOM block "+ordinal,null,"CONTEXT_ONLY");
+            context.result().enrichedWebImages++;return;
+        }
+        var cached=index.cached(image.id());
         String text=cached==null?"":Objects.toString(cached.text(),""),description=cached==null?null:cached.description(),status=cached==null?null:cached.status();
         if(!text.isBlank()&&!GuideImageSemantics.usableOcr(text)&&"OCR_OK".equals(status)){status="OCR_LOW_SIGNAL";index.analysis(image.id(),status,cached.language());}
         boolean complete=status!=null&&Set.of("OCR_OK","OCR_NO_TEXT","OCR_LOW_SIGNAL","OCR_SKIPPED_SMALL","LEGACY_TEXT_REUSED").contains(status);

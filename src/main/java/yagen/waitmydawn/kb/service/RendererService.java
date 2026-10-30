@@ -15,6 +15,7 @@ public class RendererService {
     private static final ObjectMapper JSON=new ObjectMapper();
     private final AppConfig config;
     private final DatabaseBuilder db;
+    private final Path assetDirectory;
     public record IconEvidence(String itemId,String assetId,String source,String detail) {}
     public record SlotEvidence(int index,String role,int count,List<RecipePlan.Alternative> alternatives,
                                List<String> candidates,IconEvidence preview,List<String> warnings) {}
@@ -30,12 +31,13 @@ public class RendererService {
         public RenderBatch {images=Collections.unmodifiableMap(new LinkedHashMap<>(images));cards=List.copyOf(cards);diagnostics=List.copyOf(diagnostics);}
     }
     private record RecipeMeta(String id,String loader,String version,String minecraftVersion) {}
-    public RendererService(AppConfig config,DatabaseBuilder db) {this.config=config;this.db=db;}
+    public RendererService(AppConfig config,DatabaseBuilder db) {this(config,db,config.getDataDir());}
+    public RendererService(AppConfig config,DatabaseBuilder db,Path assetDirectory) {this.config=config;this.db=db;this.assetDirectory=assetDirectory;}
     public Map<String,String> renderRecipes(List<QaPipeline.RecipeMatch> matches) {return renderDetailed(matches).images();}
     public RenderBatch renderDetailed(List<QaPipeline.RecipeMatch> matches) {
         var images=new LinkedHashMap<String,String>();var cards=new ArrayList<RenderedRecipe>();var diagnostics=new ArrayList<String>();
         if(matches==null||matches.isEmpty())return new RenderBatch(images,cards,diagnostics);
-        var icons=new ItemIconService(db,config.getDataDir()).snapshot();
+        var icons=new ItemIconService(db,assetDirectory).snapshot();
         for(var match:matches) {
             if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("Recipe rendering cancelled");
             try {

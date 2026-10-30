@@ -13,7 +13,7 @@ public final class ArtifactFingerprint {
         MessageDigest digest = digest();
         try (var input = Files.newInputStream(file)) {
             byte[] bytes = new byte[65536]; int n;
-            while ((n = input.read(bytes)) >= 0) digest.update(bytes, 0, n);
+            while ((n = input.read(bytes)) >= 0) {BuildCancellation.check();digest.update(bytes, 0, n);}
         }
         return HexFormat.of().formatHex(digest.digest());
     }

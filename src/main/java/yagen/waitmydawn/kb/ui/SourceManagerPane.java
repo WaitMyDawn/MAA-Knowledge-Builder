@@ -42,7 +42,7 @@ public final class SourceManagerPane extends VBox {
         var all=new Button("整个来源");all.setMinWidth(Region.USE_PREF_SIZE);all.setOnAction(e->items.getSelectionModel().clearSelection());
         var selection=new HBox(10,items,all);HBox.setHgrow(items,Priority.ALWAYS);
         var right=new VBox(10,selection,replacement,actions,detail);VBox.setVgrow(detail,Priority.ALWAYS);
-        var split=new SplitPane(sources,right);split.setDividerPositions(.42);VBox.setVgrow(split,Priority.ALWAYS);
+        var split=new WorkspaceLayout().horizontal("sources",sources,right,.42,160,320);VBox.setVgrow(split,Priority.ALWAYS);
         var help=new Label("刷新只更新变化内容；重建用于解析版本升级；删除仅移除当前索引，保留历史会话和图片。模组维护沿用构建流程，可能联网获取百科。网页来源重建只用已有缓存。");help.setWrapText(true);
         getChildren().setAll(heading,help,target,split,status);
         sources.getSelectionModel().selectedItemProperty().addListener((o,a,b)->{

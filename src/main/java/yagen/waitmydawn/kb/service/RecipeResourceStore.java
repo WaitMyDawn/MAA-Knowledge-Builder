@@ -196,5 +196,5 @@ public final class RecipeResourceStore {
             }
         } finally { stack.remove(id); }
     }
-    private static void cancelled() { if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Recipe resource import cancelled"); }
+    private static void cancelled() { BuildCancellation.check(); }
 }

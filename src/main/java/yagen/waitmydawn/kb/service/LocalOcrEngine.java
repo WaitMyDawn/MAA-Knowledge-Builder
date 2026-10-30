@@ -20,10 +20,11 @@ public interface LocalOcrEngine {
         public WindowsEngine(){this(45);}
         public WindowsEngine(int timeoutSeconds){this.timeoutSeconds=Math.max(1,Math.min(45,timeoutSeconds));}
         @Override public Result recognize(BufferedImage image) throws Exception {
-            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("OCR cancelled");
+            BuildCancellation.check();
             if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win"))
                 return new Result("", "UNAVAILABLE", "");
-            Path scratch = Files.createTempDirectory("maa-ocr-");
+            var task=BuildTaskJournal.current();
+            Path scratch = task==null?Files.createTempDirectory("maa-ocr-"):Files.createTempDirectory(task.temporaryDirectory(),"ocr-");
             Process process = null;
             try {
                 Path input = scratch.resolve("input.png"), output = scratch.resolve("result.json"), script = scratch.resolve("ocr.ps1");
@@ -46,7 +47,9 @@ public interface LocalOcrEngine {
                 process = new ProcessBuilder(executable.toString(), "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
                         "-File", script.toString(), "-InputPath", input.toString(), "-OutputPath", output.toString())
                         .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
-                if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) return new Result("", "TIMEOUT", "");
+                long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(timeoutSeconds);
+                while(!process.waitFor(200,TimeUnit.MILLISECONDS)){BuildCancellation.check();if(System.nanoTime()>=deadline)return new Result("","TIMEOUT","");}
+                BuildCancellation.check();
                 if (!Files.exists(output)) return new Result("", "UNAVAILABLE", "");
                 var result = new ObjectMapper().readTree(output.toFile());
                 // Windows 将中文词拆成空格分隔的字；仅合并汉字间横向空白，保留换行和英文词界。

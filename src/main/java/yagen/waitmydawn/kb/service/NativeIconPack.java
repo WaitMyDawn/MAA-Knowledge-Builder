@@ -144,5 +144,5 @@ public final class NativeIconPack {
     private static String text(JsonNode node,String field,int max) throws IOException {var value=node.path(field);if(!value.isTextual() || value.asText().isBlank() || value.asText().length()>max)throw new IOException("清单字段缺失或无效："+field);return value.asText();}
     private static void hash(String hash)throws IOException {if(!hash.matches("[0-9a-f]{64}"))throw new IOException("必须使用小写 SHA-256");}
     static void rejectSensitive(Path path)throws IOException {for(Path p:path.toAbsolutePath().normalize())if(Set.of("secrets","credentials",".ssh",".aws",".maa_kb").contains(p.toString().toLowerCase(Locale.ROOT)))throw new IOException("不能读取敏感目录");}
-    private static void cancelled(){if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("Icon import cancelled");}
+    private static void cancelled(){BuildCancellation.check();}
 }

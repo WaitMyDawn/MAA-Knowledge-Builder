@@ -83,7 +83,9 @@ public final class KnowledgeImageSearch {
                             String topic=Objects.toString(source.heading(),"");
                             if(topic.isBlank() || topic.equals("正文")) topic=source.title();
                             boolean topicMatch=KnowledgeSearchText.overlap(query,topic)>0;
-                            if(Math.max(captionScore,ocrScore)<MIN_IMAGE_TEXT_RELEVANCE && (contextScore<MIN_CONTEXT_RELEVANCE || !topicMatch)) {
+                            boolean genericHeading=Set.of("","正文","网页资料","内容","介绍","概述","步骤","相关内容","主页","模组介绍").contains(Objects.toString(source.heading(),""));
+                            boolean directContext=genericHeading&&(source.id().equals(direct)||source.id().equals(anchorSource));
+                            if(Math.max(captionScore,ocrScore)<MIN_IMAGE_TEXT_RELEVANCE && (contextScore<MIN_CONTEXT_RELEVANCE || !topicMatch&&!directContext)) {
                                 decisions.putIfAbsent(occurrence,new Decision(occurrence,source.id(),"NONE",captionScore,ocrScore,"EXCLUDED","WEAK_TOPIC_MATCH"));continue;
                             }
                             if(Math.max(captionScore,ocrScore)<MIN_IMAGE_TEXT_RELEVANCE&&!grounding.stepText().isBlank()&&KnowledgeSearchText.overlap(query,grounding.stepText())<0.25) {
@@ -125,11 +127,13 @@ public final class KnowledgeImageSearch {
                 }
             }
             var pictures=new ArrayList<AnswerArtifacts.Picture>();var seen=new HashSet<String>();var perSource=new HashMap<String,Integer>();
+            var ranked=candidates.values().stream().filter(candidate->!candidate.state().equals("CACHE_MISSING")).sorted(Comparator.comparingDouble(Candidate::score).reversed().thenComparing(Candidate::occurrence)).map(Candidate::picture).toList();
+            var chosen=GuideIllustrationCoverage.select(query,ranked,4).stream().map(AnswerArtifacts.Picture::id).collect(java.util.stream.Collectors.toSet());
             for(var candidate:candidates.values().stream().sorted(Comparator.comparingDouble(Candidate::score).reversed().thenComparing(Candidate::occurrence)).toList()) {
                 String reason="SELECTED";var picture=candidate.picture();
                 if(candidate.state().equals("CACHE_MISSING")) reason="CACHE_MISSING";
                 else if(seen.contains(picture.assetId())) reason="DUPLICATE_ASSET";
-                else if(pictures.size()>=4 || perSource.getOrDefault(picture.sourceId(),0)>=2) reason="DISPLAY_BUDGET";
+                else if(!chosen.contains(picture.id())) reason="DISPLAY_BUDGET_OR_STEP_COVERAGE";
                 else {pictures.add(picture);seen.add(picture.assetId());perSource.merge(picture.sourceId(),1,Integer::sum);}
                 decisions.put(candidate.occurrence(),new Decision(candidate.occurrence(),picture.sourceId(),candidate.relation(),candidate.caption(),candidate.ocr(),candidate.state(),reason).grounded(groundingCache.get(candidate.occurrence())));
             }

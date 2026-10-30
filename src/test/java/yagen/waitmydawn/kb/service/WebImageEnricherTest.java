@@ -26,6 +26,42 @@ class WebImageEnricherTest {
     }
     private long count(DatabaseBuilder db,String sql)throws Exception {try(var c=db.getConnection();var s=c.createStatement();var r=s.executeQuery(sql)){r.next();return r.getLong(1);}}
     private AppConfig config()throws Exception {var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("data"));return config;}
+    @Test void defaultWebImagesUseContextWithoutOcrAndRemainSearchableAfterAppend()throws Exception {
+        var config=config();var db=new DatabaseBuilder(config);db.initDatabase();
+        try(var embedding=new EmbeddingService(null)) {
+            var builder=new KnowledgeBuilder(config,db,embedding,List.of(new UrlBuildProcessor(web())));
+            var source=BuildRequest.Source.of(BuildRequest.Kind.URL,"https://example.com/guide");
+            var request=RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(source),BuildRequest.Mode.APPEND),config.getDataDir());
+            var result=builder.build(request,null);
+            assertEquals(0,result.webOcrAttempts);assertEquals(0,result.webOcrChunks);assertEquals(0,result.deferredImageAnalyses);
+            assertEquals(2,count(db,"SELECT COUNT(*) FROM rag_image_grounding"));
+            assertEquals(0,count(db,"SELECT COUNT(*) FROM rag_image_analysis"));
+            assertEquals(0,count(db,"SELECT COUNT(*) FROM rag_content_block WHERE kind='IMAGE_OCR'"));
+            var retrieval=new KnowledgeRetrievalService(db,embedding,config.getDataDir(),false);
+            var answer=retrieval.retrieve("傀儡在菜单中安装升级芯片",new KnowledgeRetrievalService.Resolution(null,null,null,false),false);
+            assertFalse(answer.artifacts().pictures().isEmpty());
+            int fetched=fetches.get();var second=builder.build(request,null);
+            assertEquals(fetched,fetches.get());assertEquals(0,second.webOcrAttempts);
+            new KnowledgeContentStore(db).validate();
+        }finally{db.shutdown();}
+    }
+
+    @Test void clearingLegacyWebOcrKeepsImagesAndLocalPdfOcr()throws Exception {
+        var config=config();var db=new DatabaseBuilder(config);db.initDatabase();
+        try(var embedding=new EmbeddingService(null)) {
+            var builder=new KnowledgeBuilder(config,db,embedding,List.of(new UrlBuildProcessor(web(),null,new WebImageEnricher(image->new LocalOcrEngine.Result("UPGRADE SLOT 升级芯片安装","OK","zh-Hans")))));
+            builder.build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.URL,"https://example.com/guide"))),config.getDataDir()),null);
+            var store=new KnowledgeContentStore(db);var pdf=BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,temp.toString());store.saveSource(pdf);
+            store.saveDocument(new KnowledgeContent.Document("pdf",pdf.id(),"扫描资料","fixture.pdf","hash","application/pdf"));
+            store.saveBlock(new KnowledgeContent.Block("pdf-ocr","pdf","扫描页","扫描页",0,1,"IMAGE_OCR",null,"本地扫描资料的识别结果","OCR"));
+            store.saveChunk(new KnowledgeContent.Chunk("pdf/ocr/chunk/0","pdf","本地扫描资料的识别结果","扫描页",1,0));store.linkBlock("pdf/ocr/chunk/0","pdf-ocr");
+            long images=count(db,"SELECT COUNT(*) FROM rag_image_occurrence");
+            assertTrue(new ImageCacheMaintenance(db,config.getDataDir()).cleanWebOcrIndex()>0);
+            assertEquals(images,count(db,"SELECT COUNT(*) FROM rag_image_occurrence"));
+            assertEquals(1,count(db,"SELECT COUNT(*) FROM rag_content_block WHERE kind='IMAGE_OCR'"));
+            assertEquals(1,count(db,"SELECT COUNT(*) FROM rag_content_chunk WHERE id='pdf/ocr/chunk/0'"));store.validate();
+        }finally{db.shutdown();}
+    }
     @Test void webOcrIsCachedButPurposeAndStepBelongToEachOccurrence()throws Exception {
         var config=config();var db=new DatabaseBuilder(config);db.initDatabase();
         try(var embedder=new EmbeddingService(null)) {

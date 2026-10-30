@@ -129,6 +129,6 @@ final class WordDocumentReader {
         }
     }
     private static void checkCancelled() {
-        if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Word import cancelled");
+        BuildCancellation.check();
     }
 }

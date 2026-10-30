@@ -79,6 +79,7 @@ public class DatabaseBuilder {
                         try (var insert = target.prepareStatement(sql)) {
                             int batch = 0;
                             while (rows.next()) {
+                                yagen.waitmydawn.kb.service.BuildTaskJournal.checkCancellation();
                                 if (!BuildTableDelta.take(additions, rows)) continue;
                                 for (int j = 0; j < columns.size(); j++) {
                                     int column = columns.get(j);

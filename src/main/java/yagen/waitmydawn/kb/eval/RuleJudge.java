@@ -29,6 +29,9 @@ import java.util.Locale;
  *   <li>answer_image_purpose_any（实际展示且绑定有效的插图命中指定用途）</li>
  *   <li>answer_media_refs_valid（实际展示的图文引用均有效）</li>
  *   <li>answer_images_absent（本轮正文不展示图片）</li>
+ *   <li>answer_media_identity_all / answer_media_identity_only（已展示图片的结构化注册名与精确状态，不从图注猜测）</li>
+ *   <li>answer_media_sources_bound（已展示图片都绑定消息内的来源快照）</li>
+ *   <li>answer_image_page_any（已展示插图的来源页码）</li>
  * </ul>
  */
 public final class RuleJudge {
@@ -48,7 +51,16 @@ public final class RuleJudge {
                               String tier, long totalTimeMs,
                               int tokenIn, int tokenOut, boolean retrievalHit, java.util.Map<String,String> catalogMembers,
                               yagen.waitmydawn.kb.model.AnswerArtifacts artifacts,
-                              yagen.waitmydawn.kb.service.AnswerMedia.Assessment media) {
+                              yagen.waitmydawn.kb.service.AnswerMedia.Assessment media,
+                              yagen.waitmydawn.kb.service.RetrievalTelemetry.ResourceAudit resourceAccess,
+                              yagen.waitmydawn.kb.service.RuntimeEvidencePolicy.Snapshot runtimeEvidence) {
+        public Observation(String answer,boolean error,String errorMessage,List<String> recipeOutputs,List<String> resolvedRegistries,
+                           int renderCount,List<RenderedImage> renderedImages,List<String> subPageLabels,List<String> subPageUrls,
+                           List<String> webCacheHitLabels,String tier,long totalTimeMs,int tokenIn,int tokenOut,boolean retrievalHit,
+                           java.util.Map<String,String> catalogMembers,yagen.waitmydawn.kb.model.AnswerArtifacts artifacts,
+                           yagen.waitmydawn.kb.service.AnswerMedia.Assessment media) {
+            this(answer,error,errorMessage,recipeOutputs,resolvedRegistries,renderCount,renderedImages,subPageLabels,subPageUrls,webCacheHitLabels,tier,totalTimeMs,tokenIn,tokenOut,retrievalHit,catalogMembers,artifacts,media,null,null);
+        }
         public Observation(String answer,boolean error,String errorMessage,List<String> recipeOutputs,List<String> resolvedRegistries,
                            int renderCount,List<RenderedImage> renderedImages,List<String> subPageLabels,List<String> subPageUrls,
                            List<String> webCacheHitLabels,String tier,long totalTimeMs,int tokenIn,int tokenOut,boolean retrievalHit,
@@ -144,6 +156,35 @@ public final class RuleJudge {
         String detail;
 
         switch (a.kind()) {
+            case "resource_http_zero" -> {ok=obs.resourceAccess()!=null&&obs.resourceAccess().requests()==0;detail=obs.resourceAccess()==null?"resource telemetry unavailable":"resource HTTP="+obs.resourceAccess().requests();}
+            case "runtime_snapshot_selected" -> {var snapshot=obs.runtimeEvidence();ok=snapshot!=null&&snapshot.profile()!=null&&!snapshot.profile().isBlank()&&snapshot.minecraftVersion()!=null&&!java.util.Set.of("","unknown").contains(snapshot.minecraftVersion());detail=snapshot==null?"snapshot unavailable":"Minecraft="+snapshot.minecraftVersion()+", loader="+snapshot.loader();}
+            case "answer_image_facets_all" -> {
+                var missing=values.stream().filter(facet->obs.artifacts()==null||obs.artifacts().pictures().stream().filter(image->{var audit=yagen.waitmydawn.kb.service.GuideIllustrationCoverage.audit(facet,obs.answer(),new yagen.waitmydawn.kb.model.AnswerArtifacts(obs.artifacts().scopeId(),obs.artifacts().scopeLabel(),obs.artifacts().sources(),List.of(image)));return !audit.requested().isEmpty()&&audit.missing().isEmpty();}).count()<(a.min()==null?1:a.min())).toList();
+                ok=!values.isEmpty()&&missing.isEmpty();detail="missing illustrated facets="+missing;
+            }
+            case "answer_media_identity_all", "answer_media_identity_only" -> {
+                var displayed=new java.util.HashSet<String>();var refs=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(yagen.waitmydawn.kb.service.AnswerMedia.referenceText(obs.answer()));
+                while(refs.find())displayed.add(refs.group(1));
+                var images=obs.artifacts()==null?List.<yagen.waitmydawn.kb.model.AnswerArtifacts.Picture>of():obs.artifacts().pictures().stream().filter(p->displayed.contains(p.id())).toList();
+                var missing=values.stream().filter(selector->images.stream().noneMatch(p->identityMatches(p,selector))).toList();
+                if(a.kind().equals("answer_media_identity_only")) {
+                    var unexpected=images.stream().filter(p->values.stream().noneMatch(selector->identityMatches(p,selector))).map(p->p.id()).toList();
+                    ok=unexpected.isEmpty();detail="unexpected structured identities="+unexpected;
+                } else {ok=missing.isEmpty()&&!values.isEmpty();detail="missing structured identities="+missing;}
+            }
+            case "answer_media_sources_bound" -> {
+                var artifacts=obs.artifacts();var sourceIds=new java.util.HashSet<String>();
+                if(artifacts!=null)artifacts.sources().forEach(s->sourceIds.add(s.id()));
+                var refs=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(yagen.waitmydawn.kb.service.AnswerMedia.referenceText(obs.answer()));
+                ok=artifacts!=null;var unbound=new ArrayList<String>();
+                while(refs.find()){String id=refs.group(1);if(artifacts==null||artifacts.pictures().stream().noneMatch(p->p.id().equals(id)&&sourceIds.contains(p.sourceId())))unbound.add(id);}
+                ok=ok&&unbound.isEmpty();detail="unbound displayed images="+unbound;
+            }
+            case "answer_image_page_any" -> {
+                var bound=obs.artifacts()==null?List.<yagen.waitmydawn.kb.model.AnswerArtifacts.Source>of():obs.artifacts().sources();
+                ok=bound.stream().anyMatch(s->s.pageNumber()!=null&&values.contains(Integer.toString(s.pageNumber()))&&obs.artifacts().pictures().stream().anyMatch(p->s.id().equals(p.sourceId())&&yagen.waitmydawn.kb.service.AnswerMedia.referenceText(obs.answer()).contains("kb-image:"+p.id()+")")));
+                detail="expected displayed page="+values;
+            }
             case "knowledge_scope" -> {
                 String scope=obs.artifacts()==null?null:obs.artifacts().scopeId();
                 ok=scope!=null && (values.contains(scope) || scope.equals(a.value()));
@@ -316,6 +357,13 @@ public final class RuleJudge {
 
     private static String describe(String prefix, List<String> expect, String evidence) {
         return prefix + " " + expect + (evidence == null ? "" : " -> " + evidence);
+    }
+
+    private static boolean identityMatches(yagen.waitmydawn.kb.model.AnswerArtifacts.Picture picture,String selector) {
+        String[] parts=selector.split("\\|",-1);var identity=picture.runtimeIdentity();
+        if(parts.length<2||identity==null||!parts[0].equals(picture.role())||!parts[1].equals(identity.registry()))return false;
+        for(int i=2;i<parts.length;i++){int equals=parts[i].indexOf('=');if(equals<=0||!parts[i].substring(equals+1).equals(identity.attributes().get(parts[i].substring(0,equals))))return false;}
+        return true;
     }
 
     private static String firstHit(String text, List<String> values) {

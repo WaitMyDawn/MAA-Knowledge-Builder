@@ -103,8 +103,8 @@ public final class GoldenSet {
             assertions.add(new Assertion("answer_contains_all", answerPoints, null, null,
                     null, null, 1.0, true));
         }
-        return new Turn(id, question, referenceAnswer, referenceSources, type, category, stability,
-                answerPoints, rubric, assertions);
+        return MultimodalAcceptance.apply(new Turn(id, question, referenceAnswer, referenceSources, type, category, stability,
+                answerPoints, rubric, assertions));
     }
 
     private static List<String> readStringList(JsonNode node) {

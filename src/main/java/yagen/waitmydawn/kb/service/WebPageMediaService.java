@@ -19,7 +19,7 @@ public final class WebPageMediaService {
         catch(Exception failed){throw new IllegalStateException("网页图文处理未完成："+url,failed);}
     }
     public void complete(Collection<String> documents){
-        try{var context=context();lastResult=context.result();new WebImageCompletion(scraper,new WebImageEnricher()).complete(documents,context);}
+        try(var reason=RetrievalTelemetry.resourceCause("HISTORY_PAGE_IMAGES")){var context=context();lastResult=context.result();new WebImageCompletion(scraper,new WebImageEnricher()).complete(documents,context);}
         catch(java.util.concurrent.CancellationException cancelled){throw cancelled;}
         catch(Exception failed){throw new IllegalStateException("网页图片补全未完成",failed);}
     }

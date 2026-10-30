@@ -98,7 +98,7 @@ public final class JarScanCache {
     public static String hash(Path path)throws IOException{return hashes(path).sha512();}
     public static Hashes hashes(Path path)throws IOException{
         try{
-            var digest=MessageDigest.getInstance("SHA-512");var buildDigest=MessageDigest.getInstance("SHA-256");try(var input=Files.newInputStream(path)){byte[] bytes=new byte[128*1024];int n;while((n=input.read(bytes))!=-1){if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("扫描校验已取消");digest.update(bytes,0,n);buildDigest.update(bytes,0,n);}}
+            var digest=MessageDigest.getInstance("SHA-512");var buildDigest=MessageDigest.getInstance("SHA-256");try(var input=Files.newInputStream(path)){byte[] bytes=new byte[128*1024];int n;while((n=input.read(bytes))!=-1){BuildCancellation.check();digest.update(bytes,0,n);buildDigest.update(bytes,0,n);}}
             return new Hashes(HexFormat.of().formatHex(digest.digest()),HexFormat.of().formatHex(buildDigest.digest()));
         }catch(NoSuchAlgorithmException e){throw new IllegalStateException(e);}
     }

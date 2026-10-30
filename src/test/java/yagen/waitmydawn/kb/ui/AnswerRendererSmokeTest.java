@@ -17,7 +17,7 @@ import java.util.concurrent.*;
 import javax.imageio.ImageIO;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 显式运行的 JavaFX 渲染检查，不打开窗口、不占用用户会话。 */
+/** 显式运行的 JavaFX 渲染检查；真实预览窗口在截图后立即关闭。 */
 @EnabledIfSystemProperty(named="maa.ui.smoke",matches="true")
 class AnswerRendererSmokeTest {
     @TempDir Path temp;
@@ -71,12 +71,77 @@ class AnswerRendererSmokeTest {
                 assertTrue(recipeView.getFitWidth()<=recipeBox.getWidth());
                 recipeRoot.resize(360,620);recipeRoot.layout();
                 assertTrue(recipeView.getFitWidth()<=recipeBox.getWidth(),"Narrow windows must not overflow");
+                var first=new AnswerArtifacts.Picture("entity1",asset.id(),asset.relativePath(),"火龙 · 一阶 · 成年","s1","ENTITY",List.of(),"growthStage=1");
+                var second=new AnswerArtifacts.Picture("entity2",asset.id(),asset.relativePath(),"火龙 · 五阶 · 成年","s1","ENTITY",List.of(),"growthStage=5");
+                var comparison=new AnswerArtifacts(null,null,List.of(web),List.of(first,second));
+                var pair=new VBox(AnswerRenderer.render("![一阶](kb-image:entity1)\n\n![五阶](kb-image:entity2)\n\n![重复](kb-image:entity1)",comparison,temp));
+                scene.setRoot(pair);pair.applyCss();pair.layout();
+                assertEquals(2,pair.lookupAll(".answer-picture").size(),"Only identical references are suppressed; shared pixels preserve state identity");
+                var grid=(javafx.scene.layout.FlowPane)pair.lookup(".answer-picture-grid");
+                assertNotNull(grid);assertEquals(2,grid.getChildren().size());
+                assertEquals(grid.getChildren().get(0).getLayoutY(),grid.getChildren().get(1).getLayoutY(),1);
+                pair.resize(360,900);pair.layout();grid.layout();
+                assertTrue(grid.getChildren().get(1).getLayoutY()>grid.getChildren().get(0).getLayoutY(),"Narrow views wrap comparison cards");
+                var viewer=AnswerImageViewer.create(pair,List.of(first,second),first.id(),java.util.Map.of("s1",web),temp);
+                var pane=viewer.getDialogPane();pane.applyCss();pane.layout();
+                assertEquals(first.caption(),((javafx.scene.control.Label)pane.lookup(".answer-preview-caption")).getText());
+                ((javafx.scene.control.Button)pane.lookup(".answer-preview-next")).fire();
+                assertEquals(second.caption(),((javafx.scene.control.Label)pane.lookup(".answer-preview-caption")).getText());
+                assertTrue(((javafx.scene.control.Label)pane.lookup(".answer-preview-detail")).getText().contains("独立缩放"));
+                assertTrue(pane.lookupAll(".hyperlink").size()>=2,"Preview preserves both evidence and original page navigation");
+                viewer.close();
+                String historyRoot=System.getProperty("maa.ui.historyRoot");
+                if(historyRoot!=null) {
+                    Path history=Path.of(historyRoot);var service=new ChatHistoryService(history);
+                    var sessions=service.listSessions().stream().filter(s->s.title.startsWith("P1P2真实问答 | ")).toList();
+                    assertEquals(16,sessions.size());int rendered=0;boolean comparisonCaptured=false;
+                    for(var session:sessions)for(var message:session.messages)if(message.artifacts()!=null) {
+                        var replay=new VBox(AnswerRenderer.render(message.content(),message.artifacts(),history));
+                        scene.setRoot(replay);replay.applyCss();replay.layout();
+                        assertEquals(AnswerMedia.assess(message.content(),message.artifacts(),history).displayed(),replay.lookupAll(".answer-picture").size());
+                        if(rendered++==0)writeSnapshot(scene,"target/p4-history-replay.png");
+                        var entities=message.artifacts().pictures().stream().filter(p->"ENTITY".equals(p.role())).toList();
+                        if(!comparisonCaptured&&entities.size()>=2) {
+                            String markers=entities.stream().map(p->"![外观](kb-image:"+p.id()+")").collect(java.util.stream.Collectors.joining("\n\n"));
+                            var display=new VBox(AnswerRenderer.render(markers,message.artifacts(),history));display.setPadding(new Insets(16));
+                            scene.setRoot(display);scene.getStylesheets().add(AnswerRenderer.class.getResource("/ui/workspace.css").toExternalForm());
+                            for(String theme:List.of("theme-light","theme-dark")) {
+                                display.getStyleClass().removeAll("theme-light","theme-dark");display.getStyleClass().add(theme);display.applyCss();display.layout();
+                                writeSnapshot(scene,"target/p4-comparison-"+theme+".png");
+                            }
+                            var sourceMap=new java.util.HashMap<String,AnswerArtifacts.Source>();message.artifacts().sources().forEach(s->sourceMap.put(s.id(),s));
+                            var actualViewer=AnswerImageViewer.create(display,entities,entities.getFirst().id(),sourceMap,history);
+                            try {
+                                actualViewer.show();var dialogPane=actualViewer.getDialogPane();dialogPane.applyCss();dialogPane.layout();
+                                assertTrue(dialogPane.lookup(".answer-preview-image").getBoundsInParent().getHeight()>100);
+                                writeNode(dialogPane,"target/p4-image-viewer.png");
+                            } finally {actualViewer.close();}
+                            comparisonCaptured=true;
+                        }
+                    }
+                    assertEquals(16,rendered);
+                    assertTrue(comparisonCaptured);
+                }
                 Files.delete(AnswerMedia.resolveImage(temp,image));
                 assertNotNull(AnswerRenderer.render(answer,artifacts,temp));
+                var missingViewer=AnswerImageViewer.create(pair,List.of(first,second),first.id(),java.util.Map.of("s1",web),temp);
+                assertTrue(((javafx.scene.control.Label)missingViewer.getDialogPane().lookup(".answer-preview-detail")).getText().contains("不可用"));
+                ((javafx.scene.control.Button)missingViewer.getDialogPane().lookup(".answer-preview-next")).fire();
+                assertEquals(second.caption(),((javafx.scene.control.Label)missingViewer.getDialogPane().lookup(".answer-preview-caption")).getText());
+                missingViewer.close();
                 done.complete(null);
             } catch(Throwable failure) {done.completeExceptionally(failure);}
         });
         try {done.get(30,TimeUnit.SECONDS);} finally {Platform.exit();}
+    }
+    private static void writeSnapshot(Scene scene,String file)throws Exception {
+        writeImage(scene.snapshot(null),file);
+    }
+    private static void writeNode(javafx.scene.Node node,String file)throws Exception {writeImage(node.snapshot(null,null),file);}
+    private static void writeImage(javafx.scene.image.WritableImage image,String file)throws Exception {
+        int w=(int)image.getWidth(),h=(int)image.getHeight();int[] pixels=new int[w*h];
+        image.getPixelReader().getPixels(0,0,w,h,javafx.scene.image.PixelFormat.getIntArgbInstance(),pixels,0,w);
+        var output=new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB);output.setRGB(0,0,w,h,pixels,0,w);ImageIO.write(output,"png",Path.of(file).toFile());
     }
     private static final class PdfDocumentReaderForTest {
         static byte[] png(BufferedImage image) throws Exception {var out=new java.io.ByteArrayOutputStream();ImageIO.write(image,"png",out);return out.toByteArray();}

@@ -1,0 +1,315 @@
+{
+  "version": "2",
+  "name": "固定图文评测：运行时对象、状态、配方、整合包与本地资料",
+  "conversations": [
+    {
+      "id": "MM-01",
+      "name": "箭的物品图",
+      "turns": [
+        {
+          "id": "MM-01",
+          "question": "展示箭的物品外观，并给出简短说明。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-02",
+      "name": "钻石剑物品图",
+      "turns": [
+        {
+          "id": "MM-02",
+          "question": "钻石剑长什么样？请展示物品图片。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-03",
+      "name": "钻石剑配方",
+      "turns": [
+        {
+          "id": "MM-03",
+          "question": "钻石剑怎么合成？请展示当前环境中的合成图。",
+          "type": "multimodal",
+          "category": "recipe"
+        }
+      ]
+    },
+    {
+      "id": "MM-04",
+      "name": "成年与幼年牛",
+      "turns": [
+        {
+          "id": "MM-04",
+          "question": "对比成年牛和幼年牛的外观，分别展示图片。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-05",
+      "name": "火龙一阶与五阶",
+      "turns": [
+        {
+          "id": "MM-05",
+          "question": "对比冰火传说火龙的一阶与五阶，分别展示实体图片。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-06",
+      "name": "火龙与冰龙",
+      "turns": [
+        {
+          "id": "MM-06",
+          "question": "对比红色火龙和蓝色冰龙的外观，分别展示图片。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-07",
+      "name": "火龙性别颜色阶段",
+      "turns": [
+        {
+          "id": "MM-07",
+          "question": "展示五阶雄性红色火龙的实体外观。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-08",
+      "name": "越界成长阶段",
+      "turns": [
+        {
+          "id": "MM-08",
+          "question": "展示 iceandfire:fire_dragon growth_stage=99 成年实体外观；没有对应状态就说明。",
+          "type": "multimodal",
+          "category": "missing-state"
+        }
+      ]
+    },
+    {
+      "id": "MM-09",
+      "name": "不存在的六阶",
+      "turns": [
+        {
+          "id": "MM-09",
+          "question": "展示六阶火龙的实体图片；没有对应状态就说明。",
+          "type": "multimodal",
+          "category": "missing-state"
+        }
+      ]
+    },
+    {
+      "id": "MM-10",
+      "name": "未知性别",
+      "turns": [
+        {
+          "id": "MM-10",
+          "question": "展示 iceandfire:fire_dragon sex=unknown 实体图片；没有对应状态就说明。",
+          "type": "multimodal",
+          "category": "missing-state"
+        }
+      ]
+    },
+    {
+      "id": "MM-11",
+      "name": "红蓝绵羊",
+      "turns": [
+        {
+          "id": "MM-11",
+          "question": "对比红色绵羊和蓝色绵羊的实体外观，分别展示图片。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-12",
+      "name": "配对颜色性别",
+      "turns": [
+        {
+          "id": "MM-12",
+          "question": "对比红色雌性火龙和绿色雄性火龙，分别展示图片。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-13",
+      "name": "两种龙两个阶段",
+      "turns": [
+        {
+          "id": "MM-13",
+          "question": "分别展示火龙和冰龙的一阶与五阶实体外观。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-14",
+      "name": "箭实体与物品",
+      "turns": [
+        {
+          "id": "MM-14",
+          "question": "对比箭实体和箭物品的图片；缺少实体图时请说明。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-15",
+      "name": "命名空间变种",
+      "turns": [
+        {
+          "id": "MM-15",
+          "question": "展示 minecraft:cat variant=minecraft:tabby 实体外观。",
+          "type": "multimodal",
+          "category": "runtime"
+        }
+      ]
+    },
+    {
+      "id": "MM-16",
+      "name": "缺少装备状态",
+      "turns": [
+        {
+          "id": "MM-16",
+          "question": "展示戴着钻石头盔的牛的实体图片；没有对应装备状态就说明。",
+          "type": "multimodal",
+          "category": "missing-state"
+        }
+      ]
+    },
+    {
+      "id": "MM-MP-01",
+      "name": "龙之冒险新征程的T3的装备+武器+饰品推荐",
+      "turns": [
+        {
+          "id": "MM-MP-01",
+          "question": "龙之冒险新征程的T3的装备+武器+饰品推荐",
+          "type": "multimodal",
+          "category": "modpack",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MM-MP-02",
+      "name": "龙之冒险新征程如何组装并升级傀儡",
+      "turns": [
+        {
+          "id": "MM-MP-02",
+          "question": "龙之冒险新征程如何组装并升级傀儡",
+          "type": "multimodal",
+          "category": "modpack",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MM-MP-03",
+      "name": "龙之冒险新征程的女仆有什么用",
+      "turns": [
+        {
+          "id": "MM-MP-03",
+          "question": "龙之冒险新征程的女仆有什么用",
+          "type": "multimodal",
+          "category": "modpack",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MM-MP-04",
+      "name": "龙之冒险新征程的Goety怎么玩",
+      "turns": [
+        {
+          "id": "MM-MP-04",
+          "question": "龙之冒险新征程的Goety怎么玩",
+          "type": "multimodal",
+          "category": "modpack",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MM-MP-05",
+      "name": "龙之冒险新征程的亚波伦怎么打",
+      "turns": [
+        {
+          "id": "MM-MP-05",
+          "question": "龙之冒险新征程的亚波伦怎么打",
+          "type": "multimodal",
+          "category": "modpack",
+          "referenceSources": [
+            "https://www.mcmod.cn/modpack/737.html",
+            "https://www.mcmod.cn/post/5454.html",
+            "https://www.mcmod.cn/post/5355.html"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MM-DOC-01",
+      "name": "环境外模组网页插图",
+      "turns": [
+        {
+          "id": "MM-DOC-01",
+          "question": "灾变模组有哪些主要Boss？请结合灾变网页资料中的相关插图说明，并区分网页知识与当前游戏已安装的模组。",
+          "type": "multimodal",
+          "category": "web-document"
+        }
+      ]
+    },
+    {
+      "id": "MM-DOC-02",
+      "name": "PDF页码与流程图",
+      "turns": [
+        {
+          "id": "MM-DOC-02",
+          "question": "图文验收指南.pdf第2页的升级流程（GOLEM UPGRADE）是什么？请展示该页相关插图并注明页码。",
+          "type": "multimodal",
+          "category": "local-document"
+        }
+      ]
+    },
+    {
+      "id": "MM-DOC-03",
+      "name": "本地教程步骤图",
+      "turns": [
+        {
+          "id": "MM-DOC-03",
+          "question": "图文验收指南.docx中的第2步如何升级傀儡？请展示对应步骤图，而不是第1步的组装图。",
+          "type": "multimodal",
+          "category": "local-document"
+        }
+      ]
+    }
+  ]
+}

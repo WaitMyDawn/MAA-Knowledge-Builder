@@ -10,6 +10,23 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class AnswerMediaAssessmentTest {
     @TempDir Path temp;
+    @Test void retrievedWebSourcesCanBindUrlMarkersButUnprovidedUrlsCannot() {
+        var result=new QaPipeline.QaResult();String url="https://example.com/entity";
+        AnswerMedia.attachVectorSources(result,List.of(new VectorStore.SearchResult("chunk","名称：测试生物\n有效摘录","test","测试模组","web",1,url)));
+        String answer="说明 [[source:"+url+"]]";
+        result.artifacts=AnswerMedia.snapshotCitations(answer,result.artifacts);
+        String bound=AnswerMedia.bind(answer,result.artifacts);
+        assertTrue(bound.contains("kb-source:sv"));assertFalse(bound.contains("[[source:"));
+        assertEquals(1,AnswerMedia.assess(bound,result.artifacts,temp).citedSources());
+        assertFalse(result.artifacts.citedSourceIds().isEmpty());
+        assertEquals(1,AnswerMedia.assess(AnswerMedia.bind("[[source:https://unprovided.example/test]]",result.artifacts),result.artifacts,temp).invalidReferences());
+        assertTrue(AnswerMedia.bind("`[[source:"+url+"]]`",result.artifacts).contains("`[[source:"+url+"]]`"));
+    }
+    @Test void unresolvedModelMarkersAreInvalidButQuotedExamplesAreIgnored() {
+        var checked=AnswerMedia.assess("正文 [[source:https://example.com/page]] [[image:missing]]",AnswerArtifacts.empty(),temp);
+        assertEquals(2,checked.invalidReferences());
+        assertEquals(0,AnswerMedia.assess("`[[source:https://example.com/page]]`\n\n```\n[[image:missing]]\n```",AnswerArtifacts.empty(),temp).invalidReferences());
+    }
     @Test void countsActualValidIllustrationsSeparatelyFromCandidatesAndRecipes() throws Exception {
         var asset=new ImageAssetStore(temp).put(Files.readAllBytes(Path.of("src/test/resources/web/tiny.webp")));
         var picture=new AnswerArtifacts.Picture("i1",asset.id(),asset.relativePath(),"插图","s1","ILLUSTRATION",List.of(),"");

@@ -13,6 +13,7 @@ import java.util.HexFormat;
 public final class ImageAssetStore {
     private final Path root;
     public ImageAssetStore(Path dataDir) { root = dataDir.toAbsolutePath().normalize().resolve("assets/images"); }
+    Path directory(){return root.getParent().getParent();}
 
     public ImageAsset put(byte[] bytes) throws IOException {
         return put(bytes,null);
@@ -28,7 +29,7 @@ public final class ImageAssetStore {
         if (bytes.length == 0 || bytes.length > 32 * 1024 * 1024) throw new IOException("图片文件大小超限");
         String format;
         int width, height;
-        try (var stream = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
+        try (var stream = new javax.imageio.stream.MemoryCacheImageInputStream(new ByteArrayInputStream(bytes))) {
             var readers = ImageIO.getImageReaders(stream);
             if (!readers.hasNext()) throw new IOException("无法识别图片格式");
             var reader = readers.next();
@@ -56,11 +57,13 @@ public final class ImageAssetStore {
         Path file = ArchivePaths.resolve(root, relative);
         Files.createDirectories(file.getParent());
         if (!valid(file,hash)) {
-            Path temp = Files.createTempFile(file.getParent(), "asset-", ".tmp");
+            var task=BuildTaskJournal.current();
+            Path temp = Files.createTempFile(task==null?file.getParent():task.temporaryDirectory(), "asset-", ".tmp");
             try {
                 Files.write(temp, bytes);
                 try { Files.move(temp, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE,java.nio.file.StandardCopyOption.REPLACE_EXISTING); }
                 catch (java.nio.file.AtomicMoveNotSupportedException e) { Files.move(temp, file,java.nio.file.StandardCopyOption.REPLACE_EXISTING); }
+                if(task!=null)task.created(hash,bytes.length);
             } finally { Files.deleteIfExists(temp); }
         }
         if (!hash.equals(hash(Files.readAllBytes(file)))) throw new IOException("图片缓存内容校验失败");

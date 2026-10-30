@@ -344,7 +344,7 @@ public final class EvalRunner {
                 m == null ? elapsedMs : m.totalTimeMs,
                 m == null ? 0 : m.tokenEstimateInput,
                 m == null ? 0 : m.tokenEstimateOutput,
-                m != null && m.retrievalHit, catalogMembers(result.catalogEvidence),result.artifacts,media);
+                m != null && m.retrievalHit, catalogMembers(result.catalogEvidence),result.artifacts,media,m==null?null:m.resourceAccess,m==null?null:m.runtimeEvidence);
     }
 
     private static Map<String,String> catalogMembers(String evidence) {
@@ -494,6 +494,7 @@ public final class EvalRunner {
     private static Map<String, Object> observationMap(RuleJudge.Observation obs,String question) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("tier", obs.tier());
+        map.put("resourceAccess",obs.resourceAccess());map.put("runtimeEvidence",obs.runtimeEvidence());
         map.put("retrievalHit", obs.retrievalHit());
         map.put("renderCount", obs.renderCount());
         List<Map<String, Object>> imgs = new ArrayList<>();
@@ -555,6 +556,7 @@ public final class EvalRunner {
         map.put("contextUtilization", m.contextUtilization);
         map.put("knowledgeRetrieval",m.knowledgeRetrieval);
         map.put("mediaAudit",m.mediaAudit);
+        map.put("mediaPerformance",m.mediaPerformance);
         map.put("knowledgeContextChunkIds",m.knowledgeContextChunkIds);
         map.put("knowledgeCitedSourceIds",m.knowledgeCitedSourceIds);
         map.put("llmCallCount", m.llmCallCount);

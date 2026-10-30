@@ -87,7 +87,9 @@ public final class KnowledgeRetrievalService {
         String normalized = KnowledgeSearchText.normalize(question);
         var matches = scopes.stream().filter(s -> {
             String name = KnowledgeSearchText.normalize(s.label());
-            return name.length() >= 3 && normalized.contains(name);
+            String cue="MOD".equals(s.kind())?"模组":"MODPACK".equals(s.kind())?"整合包":null;
+            boolean explicitShortName=name.length()==2&&cue!=null&&java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(name)+"(?:这个|这款|该)?"+cue).matcher(normalized).find();
+            return (name.length() >= 3 || explicitShortName) && normalized.contains(name);
         }).sorted(Comparator.comparingInt((Scope s) -> KnowledgeSearchText.normalize(s.label()).length()).reversed()).toList();
         if (!matches.isEmpty()) {
             int length = KnowledgeSearchText.normalize(matches.getFirst().label()).length();
@@ -294,12 +296,7 @@ public final class KnowledgeRetrievalService {
         completedImages.repairs().stream().filter(p -> present.stream().noneMatch(i -> i.id().equals(p.id()))).forEach(present::add);
         var completion=pageMedia.lastResult();
         var hydration=new KnowledgeImageHydrator.Audit(completion.webImageAttempts,completion.webImageAttempts,completion.webImages,completion.deferredWebImages,completion.deferredWebImages>0?"PAGE_CACHE_INCOMPLETE":"PAGE_CACHE_COMPLETE",completion.webOcrAttempts,0);
-        var pictures=new ArrayList<AnswerArtifacts.Picture>();var seen=new HashSet<String>();var sourceCounts=new HashMap<String,Integer>();
-        present.stream().filter(p -> imageAssets.available(p.assetId(),p.relativePath())).forEach(p -> {
-            if(pictures.size()<4 && !seen.contains(p.assetId()) && sourceCounts.getOrDefault(p.sourceId(),0)<2) {
-                pictures.add(p);seen.add(p.assetId());sourceCounts.merge(p.sourceId(),1,Integer::sum);
-            }
-        });
+        var pictures=GuideIllustrationCoverage.select(question,present.stream().filter(p->imageAssets.available(p.assetId(),p.relativePath())).toList(),4);
         var artifacts=retrieval.artifacts();
         var expanded=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),pictures);
         var d=retrieval.diagnostics();
@@ -319,7 +316,15 @@ public final class KnowledgeRetrievalService {
 
     private static String imageQuery(Retrieval retrieval,String fallback) {
         var d=retrieval.diagnostics();
-        return d==null?fallback:d.query()+" "+d.aliases().stream().map(AliasExpansion::equivalent).distinct().limit(8).collect(java.util.stream.Collectors.joining(" "));
+        String query=d==null?fallback:d.query()+" "+d.aliases().stream().map(AliasExpansion::equivalent).distinct().limit(8).collect(java.util.stream.Collectors.joining(" "));
+        // 文件名与展示指令不是图像主题，不能稀释短图注或 OCR 中的有效关键词。
+        String focused=query;
+        for(var source:retrieval.artifacts().sources())if(source.title()!=null&&source.title().matches("(?i).+\\.(pdf|docx?|txt|md)"))focused=focused.replace(source.title()," ");
+        focused=focused.replaceAll("(?:请)?(?:展示|显示|给出|附上|提供)(?:该页|本页|对应|相关|资料中|正文中|一张|的)*(?:步骤图|图片|插图|配图|截图)"," ")
+                .replaceAll("(?:并且|并)?(?:注明|标明)(?:来源|页码)(?:和|与|及)?(?:来源|页码)?"," ")
+                .replaceAll("(?:而不是|而非)[^，。；;!?？]+"," ")
+                .replaceAll("第\\s*[0-9]+\\s*页"," ");
+        return KnowledgeSearchText.terms(focused).isEmpty()?query:focused;
     }
 
     static String sourceId(Retrieval retrieval,String chunkId) {

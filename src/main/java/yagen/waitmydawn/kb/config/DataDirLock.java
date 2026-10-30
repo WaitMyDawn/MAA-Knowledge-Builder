@@ -23,6 +23,8 @@ public final class DataDirLock implements AutoCloseable {
     private final FileChannel channel;
     private final FileLock lock;
     private final Path file;
+    private String recoverySummary="";
+    public String recoverySummary(){return recoverySummary;}
 
     private DataDirLock(FileChannel channel, FileLock lock, Path file) {
         this.channel = channel;
@@ -56,7 +58,10 @@ public final class DataDirLock implements AutoCloseable {
             channel.close();
             throw new IOException(occupiedMessage(dataDir));
         }
-        return new DataDirLock(channel, lock, file);
+        var held=new DataDirLock(channel,lock,file);
+        try{var recovery=yagen.waitmydawn.kb.service.BuildTaskJournal.recover(dataDir);if(recovery.files()>0||!recovery.warnings().isEmpty())held.recoverySummary="遗留构建清理：任务 "+recovery.tasks()+" 个，暂存文件 "+recovery.files()+" 个；缓存图片保留。"+(recovery.warnings().isEmpty()?"":" 部分文件未能清理，详情见日志。");}
+        catch(IOException failure){org.slf4j.LoggerFactory.getLogger(DataDirLock.class).warn("Abandoned build cleanup incomplete",failure);}
+        return held;
     }
 
     private static String occupiedMessage(Path dataDir) {

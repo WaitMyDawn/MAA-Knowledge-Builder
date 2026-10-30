@@ -35,7 +35,7 @@ public final class KnowledgeBrowser extends VBox {
         snapshotStatus.setWrapText(true); snapshotStatus.getStyleClass().add("muted");
         metadata.getStyleClass().add("card");
         var preview=new VBox(10,metadata,snapshotStatus,detail); VBox.setVgrow(detail,Priority.ALWAYS);
-        var split=new SplitPane(tree,preview); split.setDividerPositions(.45); VBox.setVgrow(split,Priority.ALWAYS);
+        var split=new WorkspaceLayout().horizontal("knowledge",tree,preview,.45,170,300); VBox.setVgrow(split,Priority.ALWAYS);
         tree.getSelectionModel().selectedItemProperty().addListener((o,b,node)->{
             var item=members.get(node);
             metadata.getChildren().clear();

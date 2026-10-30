@@ -74,7 +74,7 @@ public class EmbeddingService implements AutoCloseable {
         docCount += texts.size();
         List<float[]> result = new ArrayList<>(texts.size());
         for (String t : texts) {
-            if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Embedding cancelled");
+            BuildCancellation.check();
             result.add(embedMeasured(t,true));
         }
         return result;

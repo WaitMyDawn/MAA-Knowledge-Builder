@@ -15,6 +15,7 @@ public final class AnswerMedia {
     private static final Pattern CONTROLLED = Pattern.compile("!?\\[[^\\]\\r\\n]*]\\(kb-(?:image|source):[^)]+\\)");
     private static final Pattern IMAGE_REFERENCE=Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)");
     private static final Pattern SOURCE_REFERENCE=Pattern.compile("(?<!!)\\[[^\\]\\r\\n]*]\\(kb-source:([a-zA-Z0-9]+)\\)");
+    private static final Pattern SOURCE_URL_MARKER=Pattern.compile("\\[\\[source:(https?://[^\\]\\r\\n]+)]]");
     private static final Pattern CODE=Pattern.compile("(?s)```.*?(?:```|\\z)|~~~.*?(?:~~~|\\z)|`[^`\\r\\n]*`");
 
     public record Assessment(int candidates,int displayed,int valid,int validIllustrations,int unavailable,int citedSources,int invalidReferences) {
@@ -34,9 +35,11 @@ public final class AnswerMedia {
         var sources=new HashSet<String>();artifacts.sources().forEach(s -> sources.add(s.id()));
         var usedImages=new HashSet<String>();var usedSources=new HashSet<String>();
         String active=referenceText(text);
+        var orphanMarkers=new HashSet<String>();var orphan=Pattern.compile("\\[\\[(?:source|image):[^\\]\\r\\n]*]]").matcher(active);
+        while(orphan.find())orphanMarkers.add(orphan.group());
         var matcher=IMAGE_REFERENCE.matcher(active);while(matcher.find()) usedImages.add(matcher.group(1));
         usedSources.addAll(citedSourceIds(text,artifacts));
-        int valid=0,illustrations=0,unavailable=0,invalid=0;
+        int valid=0,illustrations=0,unavailable=0,invalid=orphanMarkers.size();
         for(String id:usedImages) {
             var picture=images.get(id);
             if(picture==null) {invalid++;continue;}
@@ -56,6 +59,10 @@ public final class AnswerMedia {
 
     public static Set<String> citedSourceIds(String text,AnswerArtifacts artifacts) {
         var ids=new HashSet<>(citedSourceIds(text));
+        if(artifacts!=null) {
+            var urls=SOURCE_URL_MARKER.matcher(referenceText(text));
+            while(urls.find()){String url=urls.group(1);artifacts.sources().stream().filter(s->url.equals(s.location())).forEach(s->ids.add(s.id()));}
+        }
         if(ModpackSources.applies(artifacts)) ids.addAll(ModpackSources.inlineSourceIds(text,artifacts));
         return Set.copyOf(ids);
     }
@@ -74,6 +81,12 @@ public final class AnswerMedia {
         String safe = answer == null ? "" : answer;
         safe = CONTROLLED.matcher(safe).replaceAll("");
         safe = IMAGE.matcher(safe).replaceAll("[未提供的图片]");
+        var urlMarkers=SOURCE_URL_MARKER.matcher(referenceText(safe));var normalized=new StringBuilder();int markerEnd=0;
+        while(urlMarkers.find()) {
+            String url=urlMarkers.group(1);var source=artifacts.sources().stream().filter(s->url.equals(s.location())).findFirst();
+            normalized.append(safe,markerEnd,urlMarkers.start()).append(source.map(s->"[[source:"+s.id()+"]]").orElse(urlMarkers.group()));markerEnd=urlMarkers.end();
+        }
+        safe=normalized.append(safe.substring(markerEnd)).toString();
         var sources = new HashMap<String, AnswerArtifacts.Source>();
         var pictures = new HashMap<String, AnswerArtifacts.Picture>();
         artifacts.sources().forEach(s -> sources.put(s.id(), s)); artifacts.pictures().forEach(p -> pictures.put(p.id(), p));
@@ -104,7 +117,8 @@ public final class AnswerMedia {
             }
             matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(replacement));
         }
-        matcher.appendTail(out); safe = out.toString();
+        matcher.appendTail(out); safe = alignIllustrations(out.toString(),artifacts);
+        usedImages.clear();var visibleImages=IMAGE_REFERENCE.matcher(referenceText(safe));while(visibleImages.find())usedImages.add(visibleImages.group(1));
         for (var image : artifacts.pictures()) {
             if (usedImages.contains(image.id()) || java.util.Set.of("ENTITY","ITEM","RECIPE").contains(image.role())) continue;
             var paragraphs = new ArrayList<>(List.of(safe.split("\\n\\s*\\n")));
@@ -112,7 +126,9 @@ public final class AnswerMedia {
             for (int i = 0; i < paragraphs.size(); i++) {
                 String paragraph = paragraphs.get(i);
                 if (paragraph.contains("```") || paragraph.strip().startsWith("#") || paragraph.strip().startsWith("![")) continue;
-                double value = KnowledgeSearchText.overlap(image.caption() + " " + image.context(), paragraph);
+                if(image.grounding()!=null&&GuideImageSemantics.exclusion(paragraph,new GuideImageSemantics.Grounding(image.grounding().purpose(),image.grounding().basis(),image.grounding().blockId(),null,image.grounding().stepText(),image.grounding().relation(),image.grounding().analysisStatus()))!=null)continue;
+                String context=image.grounding()==null?image.context():image.grounding().stepText();
+                double value = KnowledgeSearchText.overlap(image.caption() + " " + context, paragraph);
                 if (value > score) { score = value; best = i; }
             }
             if (best >= 0 && score >= 0.08) {
@@ -127,6 +143,38 @@ public final class AnswerMedia {
             safe += "\n\n资料来源：" + String.join(" · ", labels.values().stream().limit(5).toList());
         }
         return ModpackSources.format(safe,artifacts);
+    }
+
+    private static String alignIllustrations(String text,AnswerArtifacts artifacts) {
+        var images=new HashMap<String,AnswerArtifacts.Picture>();artifacts.pictures().forEach(image->images.put(image.id(),image));
+        var matcher=IMAGE_REFERENCE.matcher(text);var result=new StringBuilder();String visible=referenceText(text);
+        while(matcher.find()) {
+            var image=images.get(matcher.group(1));String replacement=matcher.group();
+            if(image!=null&&image.grounding()!=null&&visible.substring(matcher.start(),matcher.end()).contains("kb-image:")) {
+                int from=text.lastIndexOf("\n\n",matcher.start());String paragraph=text.substring(from<0?0:from+2,matcher.start()).strip();
+                if(paragraph.isBlank()&&from>0){int previous=text.lastIndexOf("\n\n",from-1);paragraph=text.substring(previous<0?0:previous+2,from).strip();}
+                var g=image.grounding();
+                if(GuideImageSemantics.exclusion(paragraph,new GuideImageSemantics.Grounding(g.purpose(),g.basis(),g.blockId(),null,g.stepText(),g.relation(),g.analysisStatus()))!=null)replacement="";
+            }
+            matcher.appendReplacement(result,java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(result);return result.toString();
+    }
+
+    /** 网页向量同样属于传给回答模型的证据，来源必须先进入消息快照才能安全绑定引用。 */
+    public static void attachVectorSources(QaPipeline.QaResult result,List<VectorStore.SearchResult> evidence) {
+        var artifacts=result.artifacts;var sources=new ArrayList<>(artifacts.sources());var present=new HashSet<String>();sources.forEach(s->present.add(s.location()));
+        var groups=new LinkedHashMap<String,List<VectorStore.SearchResult>>();
+        for(var hit:evidence)if(AnswerSourceLinks.safeUrl(hit.sourcePath())&&!present.contains(hit.sourcePath()))groups.computeIfAbsent(hit.sourcePath(),key->new ArrayList<>()).add(hit);
+        int added=0;
+        for(var group:groups.entrySet()) {
+            if(added++>=12)break;
+            var text=new StringBuilder();for(var hit:group.getValue()){if(text.length()>=2400)break;String body=Objects.toString(hit.chunkText(),"");text.append(body,0,Math.min(body.length(),2400-text.length())).append('\n');}
+            String title=Objects.toString(group.getValue().getFirst().modName(),"网页资料");
+            var heading=Pattern.compile("(?m)^(?:名称|标题)：+\\s*(.+)$").matcher(text);if(heading.find())title=heading.group(1);
+            String key=BuildRequest.fingerprint(group.getKey());sources.add(new AnswerArtifacts.Source("sv"+key.substring(0,20),"vector:"+key,title,group.getKey(),"本轮网页检索摘录",null,"RETRIEVED_TEXT",text.toString()));
+        }
+        result.artifacts=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),sources,artifacts.pictures(),artifacts.citedSourceIds());
     }
 
     private static String label(String value) { return Objects.toString(value, "").replaceAll("[\\[\\]\\r\\n]", " "); }
@@ -155,7 +203,8 @@ public final class AnswerMedia {
             String evidence=card.summary()+"\n原始配方：\n"+card.recipeJson();if(evidence.length()>24000)evidence=evidence.substring(0,24000);
             String location=card.sourceType().equals("RUNTIME_SNAPSHOT")?"mkb-runtime:"+Objects.toString(card.profileId(),"active")+"/"+card.recipeId():"jar:"+card.sourceMod()+"!/"+card.recipeId();
             if(sources.stream().noneMatch(s -> s.id().equals(sourceId)))sources.add(new AnswerArtifacts.Source(sourceId,"recipe:"+card.fingerprint(),card.recipeId(),location,card.plan().kind().label,null,card.sourceType(),evidence));
-            pictures.add(new AnswerArtifacts.Picture(picture.id(),picture.assetId(),picture.relativePath(),card.plan().kind().station+" · "+picture.caption(),sourceId,"RECIPE",List.of(),card.summary()));
+            pictures.add(new AnswerArtifacts.Picture(picture.id(),picture.assetId(),picture.relativePath(),card.plan().kind().station+" · "+picture.caption(),sourceId,"RECIPE",List.of(),card.summary(),null,null,null,
+                    new AnswerArtifacts.RuntimeIdentity(Objects.toString(card.plan().output().itemId(),"dynamic"),card.recipeId(),Map.of("kind",card.plan().kind().name()))));
         }
         result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
     }
@@ -163,7 +212,7 @@ public final class AnswerMedia {
         if (rendered.isEmpty()) return;
         var artifacts = result.artifacts == null ? AnswerArtifacts.empty() : result.artifacts;
         var images = new ArrayList<>(artifacts.pictures());
-        String answer = result.answer;
+        String answer = Objects.toString(result.answer,"");
         var store = new ImageAssetStore(dataDir);
         for (var entry : rendered.entrySet()) {
             if (images.size() >= 8) break;

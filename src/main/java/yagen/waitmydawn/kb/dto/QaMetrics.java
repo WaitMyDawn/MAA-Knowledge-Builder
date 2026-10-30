@@ -16,11 +16,15 @@ public class QaMetrics {
     public yagen.waitmydawn.kb.service.KnowledgeRetrievalService.Diagnostics knowledgeRetrieval;
     public String answerGeneration;
     public yagen.waitmydawn.kb.service.MediaAudit.Report mediaAudit;
+    public yagen.waitmydawn.kb.service.MediaAudit.Performance mediaPerformance;
     /** 表示实际传入的证据块与引用身份，不表示模型正确使用了这些证据。 */
     public List<String> knowledgeContextChunkIds=List.of(), knowledgeCitedSourceIds=List.of();
     public int httpRequestCount, httpErrorCount, memoryPageCacheHits, persistentPageCacheHits;
     public int documentEmbeddingCount, queryEmbeddingCount, reusedEmbeddingCount;
     public long httpResponseBytes, embeddingTimeMs;
+    public yagen.waitmydawn.kb.service.RuntimeEvidencePolicy.Snapshot runtimeEvidence;
+    public yagen.waitmydawn.kb.service.GuideIllustrationCoverage.Audit guideIllustrations;
+    public yagen.waitmydawn.kb.service.RetrievalTelemetry.ResourceAudit resourceAccess;
 
     // ===== 性能指标 (ms) =====
     public long classifyTimeMs;
@@ -221,6 +225,7 @@ public class QaMetrics {
                     .append(check.sourceIds().isEmpty()?"本轮未找到依据":"存在候选依据，仍需事实核对").append('\n');
         }
         if(mediaAudit!=null)sb.append("│ 最终配图：").append(mediaAudit.availability().valid()).append(" 张有效；候选审计 ").append(mediaAudit.entities()==null?0:mediaAudit.entities().candidates().size()).append(" 条\n");
+        if(mediaPerformance!=null)sb.append("│ 配图索引：").append(mediaPerformance.indexCacheHit()?"复用":"载入").append("；解析 ").append(mediaPerformance.parsedRecords()).append(" 条；复用资产 ").append(mediaPerformance.reusedAssets()).append(" 张\n");
         if(mediaAudit!=null&&mediaAudit.entities()!=null){
             var reasons=new TreeMap<String,Integer>();for(var candidate:mediaAudit.entities().candidates()){
                 if(candidate.decision().equals("SELECTED"))sb.append("│ 实体选图：").append(candidate.registry()).append(" · ").append(candidate.stateLabel()).append('\n');
@@ -245,6 +250,9 @@ public class QaMetrics {
         // Cost
         sb.append("┌── Cost ──────────────────────────────────────────┐\n");
         sb.append(String.format("│ HTTP: %d 次 / 错误 %d / 正文 %d bytes\n",httpRequestCount,httpErrorCount,httpResponseBytes));
+        if(resourceAccess!=null){sb.append("│ 资源请求：网页 ").append(resourceAccess.documents()).append(" / 图片 ").append(resourceAccess.images()).append(" / 未分类 ").append(resourceAccess.unknown()).append(" / 重试 ").append(resourceAccess.retries()).append(" / 重定向 ").append(resourceAccess.redirects()).append('\n');sb.append("│ 资源耗时：限流等待 ").append(resourceAccess.waitMs()).append("ms / 退避 ").append(resourceAccess.backoffMs()).append("ms / HTTP ").append(resourceAccess.fetchMs()).append("ms\n");for(var event:resourceAccess.events().stream().limit(12).toList())sb.append("│ ").append(event.kind()).append(' ').append(event.host()).append(event.path()).append(" → ").append(event.status()).append(" · ").append(event.cause()).append('\n');}
+        if(runtimeEvidence!=null)sb.append("│ 当前证据环境：Minecraft ").append(runtimeEvidence.minecraftVersion()).append(" · ").append(runtimeEvidence.loader()).append(" · ").append(runtimeEvidence.profile()).append('\n');
+        if(guideIllustrations!=null&&!guideIllustrations.requested().isEmpty())sb.append("│ 步骤插图：已覆盖 ").append(guideIllustrations.covered()).append(" / 未选到 ").append(guideIllustrations.missing()).append('\n');
         sb.append(String.format("│ 页面缓存: 内存 %d / 持久化 %d\n",memoryPageCacheHits,persistentPageCacheHits));
         sb.append(String.format("│ 向量推理: 正文 %d / 查询 %d / 复用 %d / %dms\n",documentEmbeddingCount,queryEmbeddingCount,reusedEmbeddingCount,embeddingTimeMs));
         sb.append(String.format("│ LLM Calls:    %-4d   Tokens (reported): %d in / %d out\n",

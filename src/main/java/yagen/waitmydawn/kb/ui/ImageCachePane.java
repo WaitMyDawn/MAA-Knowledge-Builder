@@ -22,7 +22,9 @@ public final class ImageCachePane extends VBox {
         var inspect=new Button("检查图片缓存");
         var repair=new Button("修复缺失或损坏的网页图片");
         var clean=new Button("清理7天前的未引用图片");
-        buttons=List.of(inspect,repair,clean);
+        var cleanOcr=new Button("清理旧网页OCR索引");
+        buttons=List.of(inspect,repair,clean,cleanOcr);
+        cleanOcr.setOnAction(event -> run(()->"已清理旧网页 OCR 文本块及其向量："+maintenance.cleanWebOcrIndex()+" 条；保留图片、正文关联和本地扫描资料。"));
         inspect.setOnAction(event -> run(()->format(maintenance.inspect())));
         repair.setOnAction(event -> run(()->{
             var result=maintenance.repairMissing(new WikiScraperService(),4);
@@ -36,7 +38,7 @@ public final class ImageCachePane extends VBox {
         status.setEditable(false);status.setWrapText(true);status.setPrefRowCount(7);
         var note=new Label("检查范围包括基础库、聊天历史和评测记录。清理只删除文件已保留7天且没有引用的图片；历史记录无法读取时停止清理。修复仅按已记录网址恢复原图，每次最多尝试4次，遵循现有限流与缓存；本地资料缺图请重新构建。");
         note.setWrapText(true);note.getStyleClass().add("muted");
-        getChildren().addAll(new FlowPane(8,6,inspect,repair,clean),note,status);
+        getChildren().addAll(new FlowPane(8,6,inspect,repair,clean,cleanOcr),note,status);
     }
 
     private void run(Operation operation) {

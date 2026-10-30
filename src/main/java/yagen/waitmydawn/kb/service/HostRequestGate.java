@@ -19,7 +19,7 @@ final class HostRequestGate {
     boolean await(String url,long interval) {
         String host=site(url);
         while(true) {
-            if(Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException("Web request cancelled");
+            BuildCancellation.check();
             long wait;
             synchronized(this) {
                 long now=clock.getAsLong();
@@ -27,7 +27,7 @@ final class HostRequestGate {
                 wait=next.getOrDefault(host,0L)-now;
                 if(wait<=0) { next.put(host,now+interval); return true; }
             }
-            try { sleeper.sleep(wait); }
+            try { sleeper.sleep(Math.min(wait,200)); }
             catch(InterruptedException e) { Thread.currentThread().interrupt(); throw new java.util.concurrent.CancellationException("Web request cancelled"); }
         }
     }

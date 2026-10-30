@@ -8,8 +8,9 @@ import java.io.*;
 
 /** 实体插图只按当前快照的精确实体注册名关联；历史回答保存不可变图片身份。 */
 final class RuntimeEntityMedia {
-    private final DatabaseBuilder db;private final Path directory;
-    RuntimeEntityMedia(DatabaseBuilder db,Path directory){this.db=db;this.directory=directory;}
+    private final DatabaseBuilder db;private final Path directory;private final boolean readOnlyAssets;
+    RuntimeEntityMedia(DatabaseBuilder db,Path directory){this(db,directory,false);}
+    RuntimeEntityMedia(DatabaseBuilder db,Path directory,boolean readOnlyAssets){this.db=db;this.directory=directory;this.readOnlyAssets=readOnlyAssets;}
     static byte[] bytes(JsonNode row)throws IOException {
         try{byte[] bytes=Base64.getDecoder().decode(row.path("pngBase64").asText());if(bytes.length>2*1024*1024)throw new IOException("实体图像超过预算");return bytes;}catch(IllegalArgumentException e){throw new IOException("实体 PNG 编码无效",e);}
     }
@@ -57,15 +58,45 @@ final class RuntimeEntityMedia {
     }
     private String catalogProfile;
     private List<MediaRequestPlanner.Subject> catalog=List.of();
+    private Map<String,JsonNode> indexedRows=Map.of();
+    private Map<String,List<JsonNode>> indexedEntities=Map.of();
+    private String indexedGeneration;
+
+    private KnowledgeContent.ImageAsset asset(JsonNode row)throws IOException {
+        if(row.has("assetPath")) {
+            String id=row.path("sha256").asText(),relative=row.path("assetPath").asText();
+            var store=new ImageAssetStore(directory);
+            if(!store.available(id,relative))throw new IOException("实体图片缓存缺失或哈希不匹配");
+            return new KnowledgeContent.ImageAsset(id,relative,"image/png",row.path("width").asInt(),row.path("height").asInt(),null,null);
+        }
+        if(readOnlyAssets)throw new IOException("只读审计不归档旧内嵌图片");
+        return new ImageAssetStore(directory).put(storedBytes(row));
+    }
+
+    private static AnswerArtifacts.RuntimeIdentity identity(JsonNode row,String state)throws IOException {
+        var attributes=new TreeMap<String,String>();var traits=row.path("state").path("traits");
+        traits.fields().forEachRemaining(entry->{if(entry.getValue().isValueNode())attributes.put(entry.getKey(),entry.getValue().asText());});
+        traits.path("axes").fields().forEachRemaining(entry->{if(entry.getValue().isValueNode())attributes.put(entry.getKey(),entry.getValue().asText());});
+        if(traits.has("growthStage"))attributes.put("growth_stage",traits.path("growthStage").asText());
+        if(traits.path("equipment").isObject())attributes.put("equipped",Boolean.toString(!traits.path("equipment").isEmpty()));
+        return new AnswerArtifacts.RuntimeIdentity(row.path("id").asText(),state,attributes);
+    }
     void prepare(QaPipeline.QaResult result,String question){
         if(result.runtimeMediaPrepared)return;result.runtimeMediaPrepared=true;
         String profile=RuntimeKnowledgeStore.active(db);var trail=new MediaAudit.Trail(profile,question);result.entityImageAudit=trail.snapshot();if(profile==null)return;
-        if(!profile.equals(catalogProfile)){catalog=MediaCatalog.load(db,profile);catalogProfile=profile;}
+        long indexStarted=System.nanoTime();String generation=db.buildGeneration();
+        boolean cacheHit=profile.equals(catalogProfile)&&generation.equals(indexedGeneration);int parsed=0,reused=0;
+        if(!cacheHit) {
+            var loadedCatalog=MediaCatalog.load(db,profile);var loadedRows=new LinkedHashMap<String,JsonNode>();var loadedEntities=new HashMap<String,List<JsonNode>>();var json=new ObjectMapper();
+            try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_id,record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_icons' ORDER BY record_id")){
+                p.setString(1,profile);try(var rows=p.executeQuery()){while(rows.next()){var row=json.readTree(rows.getString(2));loadedRows.put(rows.getString(1),row);loadedEntities.computeIfAbsent(row.path("id").asText(),k->new ArrayList<>()).add(row);parsed++;}}
+            }catch(Exception failure){throw new IllegalStateException("实体图片引用读取失败",failure);}
+            loadedEntities.replaceAll((id,rows)->List.copyOf(rows));
+            catalog=loadedCatalog;indexedRows=Map.copyOf(loadedRows);indexedEntities=Map.copyOf(loadedEntities);catalogProfile=profile;indexedGeneration=generation;
+        }
+        long indexTime=System.nanoTime()-indexStarted;
         var resolved=new LinkedHashSet<String>();result.resolvedEntities.stream().filter(e->e.confidence()>=.8f).forEach(e->resolved.add(e.registry()));
-        var imageRows=new LinkedHashMap<String,JsonNode>();var byId=new HashMap<String,List<JsonNode>>();
-        try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_id,record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_icons' ORDER BY record_id")){
-            p.setString(1,profile);try(var rows=p.executeQuery()){while(rows.next()){var row=new ObjectMapper().readTree(rows.getString(2));imageRows.put(rows.getString(1),row);byId.computeIfAbsent(row.path("id").asText(),k->new ArrayList<>()).add(row);}}
-        }catch(Exception failure){throw new IllegalStateException("实体图片引用读取失败",failure);}
+        var imageRows=indexedRows;var byId=indexedEntities;
         var subjects=new ArrayList<>(catalog);var known=subjects.stream().map(MediaRequestPlanner.Subject::registry).collect(java.util.stream.Collectors.toSet());for(String id:byId.keySet())if(!known.contains(id))subjects.add(new MediaRequestPlanner.Subject(id,"ENTITY",List.of(id)));
         var plan=MediaRequestPlanner.plan(question,subjects,resolved);result.mediaPlan=plan;result.mediaWarnings.addAll(plan.warnings());
         var pictures=new ArrayList<>(result.artifacts.pictures());var sources=new ArrayList<>(result.artifacts.sources());ItemIconService.Snapshot icons=null;
@@ -85,7 +116,7 @@ final class RuntimeEntityMedia {
                     if(pictures.stream().anyMatch(p->p.id().equals(key)))continue;
                     String proof="注册名："+id+"；实机默认物品图；不代表指定组件/NBT状态；环境："+profile;
                     addSource(sources,new AnswerArtifacts.Source(sourceId,"runtime-item:"+profile+":"+id,icon.name(),"mkb-runtime:"+profile+"/item_icons/"+id,"物品默认外观",null,"GAME_GUI",proof));
-                    pictures.add(new AnswerArtifacts.Picture(key,icon.assetId(),relative,icon.name()+"（"+id+"；实机默认物品外观）",sourceId,"ITEM",List.of(),proof));continue;
+                    pictures.add(new AnswerArtifacts.Picture(key,icon.assetId(),relative,icon.name()+"（"+id+"；实机默认物品外观）",sourceId,"ITEM",List.of(),proof,null,null,null,new AnswerArtifacts.RuntimeIdentity(id,"default",Map.of())));continue;
                 }
                 var candidates=new ArrayList<JsonNode>();var equipment=equipment(request.query());
                 for(var row:byId.getOrDefault(id,List.of())){
@@ -100,15 +131,16 @@ final class RuntimeEntityMedia {
                 for(int i=1;i<candidates.size();i++)trail.record(candidates.get(i),"EXCLUDED","LOWER_STATE_PREFERENCE");
                 String state=EntityAppearanceState.key(row),key="e"+BuildRequest.fingerprint(profile+id+state+request.query()).substring(0,20),sourceId="s"+BuildRequest.fingerprint("entity:"+profile+id+state).substring(0,20);
                 if(pictures.stream().anyMatch(p->p.id().equals(key)))continue;
-                var asset=new ImageAssetStore(directory).put(storedBytes(EntityImageReferences.resolve(row,imageRows)));String label=EntityAppearanceState.label(row)+EntityCompositionInfo.caption(row);
+                var imageRow=EntityImageReferences.resolve(row,imageRows);var asset=asset(imageRow);if(imageRow.has("assetPath"))reused++;String label=EntityAppearanceState.label(row)+EntityCompositionInfo.caption(row);
                 if(row.path("framing").asText().equals("POSSIBLY_CLIPPED"))label+="；取景可能不完整";else if(row.path("framing").asText().equals("UNSTABLE_FRAMING"))label+="；取景未收敛，待复核";
                 String proof="注册名："+id+"；请求："+request.label()+"；状态键："+state+"；"+label;
                 addSource(sources,new AnswerArtifacts.Source(sourceId,"runtime-entity:"+profile+":"+id+":"+state,request.label(),"mkb-runtime:"+profile+"/entity_icons/"+id+"/"+state,"导出实体状态",null,"GAME_GUI",proof));
                 result.runtimeMediaStates.put(key,row);
-                pictures.add(new AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),request.label()+"（"+id+"；"+label+"）",sourceId,"ENTITY",List.of(),proof));trail.selected++;trail.record(row,"SELECTED","REGISTRY_AND_STATE_MATCH");
+                pictures.add(new AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),request.label()+"（"+id+"；"+label+"）",sourceId,"ENTITY",List.of(),proof,null,null,null,identity(row,state)));trail.selected++;trail.record(row,"SELECTED","REGISTRY_AND_STATE_MATCH");
             }catch(Exception failure){missing(result,request,"图片不可用："+failure.getClass().getSimpleName());}
         }
         result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());result.entityImageAudit=trail.snapshot();
+        result.mediaPerformance=new MediaAudit.Performance(cacheHit,parsed,reused,indexTime);
     }
     private static int preference(JsonNode row,String query){
         int original=EntityAppearanceState.preference(row);if(original<0||query.matches("(?is).*(age=|growth_stage=|幼年|成年|baby|adult|[一二三四五0-9]+阶).*"))return original;

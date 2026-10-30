@@ -123,6 +123,8 @@ public class WikiScraperService {
     private boolean cachedBuildResourcesOnly;
     public void setBuildRefresh(boolean value){refreshBuildResources=value;}
     public void setBuildCacheOnly(boolean value){cachedBuildResourcesOnly=value;}
+    boolean buildCacheOnly(){return cachedBuildResourcesOnly;}
+    boolean buildRefreshing(){return refreshBuildResources;}
     private yagen.waitmydawn.kb.model.DatabaseBuilder resourceDatabase;
     private final Map<String, Map<String, String>> resourceCookies = new ConcurrentHashMap<>();
     public void setResourceDatabase(yagen.waitmydawn.kb.model.DatabaseBuilder db) { resourceDatabase=db;resourceCache = new WebResourceCache(db, this); }
@@ -585,8 +587,11 @@ public class WikiScraperService {
     /** 图文构建与旧百科检索共用请求执行器、请求预算、冷却和间隔。 */
     public Resource fetchResource(String url, String referer, boolean image, Map<String, String> headers) {
         var cookies = resourceCookies.computeIfAbsent(hostOf(url), host -> new ConcurrentHashMap<>());
-        var out = executeResource(url, cookies, referer, true, MAX_RETRIES_DEFAULT,
-                headers, true, image ? 32 * 1024 * 1024 : 4 * 1024 * 1024);
+        FetchOutcome out;
+        String cause=RetrievalTelemetry.resourceCause();
+        try(var scope=RetrievalTelemetry.resourceCause(image&&!cause.contains("SOURCE_DOCUMENT")?"BODY_IMAGE_CACHE/"+cause:cause)) {
+            out=executeResource(url,cookies,referer,true,MAX_RETRIES_DEFAULT,headers,true,image?32*1024*1024:4*1024*1024,image);
+        }
         if (out.status() == 200 && out.body() != null && containsBlockMarker(out.body())) {
             REQUEST_GATE.coolDown(url, 300_000L);
             return new Resource(403, null, out.contentType(), url, null, null);
@@ -612,8 +617,7 @@ public class WikiScraperService {
     }
 
     private static void checkCancelled() {
-        if (Thread.currentThread().isInterrupted())
-            throw new java.util.concurrent.CancellationException("Web request cancelled");
+        BuildCancellation.check();
     }
 
     private FetchOutcome executeRaw(String url, Map<String, String> cookies, String referer,
@@ -623,19 +627,21 @@ public class WikiScraperService {
 
     private FetchOutcome executeRaw(String url, Map<String,String> cookies,String referer,
                                     boolean captureCookies,int maxRetries,Map<String,String> headers) {
-        return executeResource(url, cookies, referer, captureCookies, maxRetries, headers, false, 2 * 1024 * 1024);
+        return executeResource(url, cookies, referer, captureCookies, maxRetries, headers, false, 2 * 1024 * 1024,false);
     }
 
     private FetchOutcome executeResource(String url, Map<String,String> cookies, String referer,
                                          boolean captureCookies, int maxRetries, Map<String,String> headers,
-                                         boolean publicWeb, int maxBytes) {
+                                         boolean publicWeb, int maxBytes,boolean imageResource) {
         if (publicWeb) url = WebUrlPolicy.normalize(url); else validateFetchUrl(url);
         int redirects = 0;
         int lastStatus = 0;
         int lastBodyLen = -1;
         for (int attempt = 0; attempt < maxRetries; attempt++) {
             checkCancelled();
-            if (!REQUEST_GATE.await(url, MIN_REQUEST_INTERVAL_MS + jitter())) {
+            long gateStarted=System.nanoTime();boolean allowed;
+            try{allowed=REQUEST_GATE.await(url,MIN_REQUEST_INTERVAL_MS+jitter());}finally{RetrievalTelemetry.waitTime(System.nanoTime()-gateStarted);}
+            if (!allowed) {
                 log.debug("Knowledge site cooling down: {}", HostRequestGate.site(url));
                 return new FetchOutcome(429,null,attempt);
             }
@@ -663,7 +669,10 @@ public class WikiScraperService {
                 conn.headers(headers);
 
                 RetrievalTelemetry.httpAttempt();
-                var resp = conn.execute();
+                long fetchStarted=System.nanoTime();org.jsoup.Connection.Response resp;
+                try{resp=conn.execute();}
+                catch(java.io.IOException failed){RetrievalTelemetry.resourceAttempt(imageResource,url,0,System.nanoTime()-fetchStarted,attempt>0,redirects>0);throw failed;}
+                RetrievalTelemetry.resourceAttempt(imageResource,url,resp.statusCode(),System.nanoTime()-fetchStarted,attempt>0,redirects>0);
                 RetrievalTelemetry.httpResponse(resp.statusCode(),resp.bodyAsBytes().length);
                 checkCancelled();
                 int status = resp.statusCode();
@@ -721,17 +730,17 @@ public class WikiScraperService {
                 } else {
                     delay = RETRY_BASE_DELAY_MS + jitter();
                 }
-                sleepQuietly(Math.min(delay, 30_000L));
+                sleepBackoff(Math.min(delay, 30_000L));
             } catch (java.util.concurrent.CancellationException | IllegalArgumentException e) {
                 throw e;
             } catch (java.net.SocketTimeoutException e) {
                 lastStatus = 0;
                 log.warn("Socket timeout for {} (attempt {}/{})", url, attempt + 1, maxRetries);
-                sleepQuietly((long) RETRY_BASE_DELAY_MS * (attempt + 1) + jitter());
+                sleepBackoff((long) RETRY_BASE_DELAY_MS * (attempt + 1) + jitter());
             } catch (Exception e) {
                 lastStatus = 0;
                 log.debug("Fetch attempt failed for {}: {}", url, e.getMessage());
-                sleepQuietly(RETRY_BASE_DELAY_MS + jitter());
+                sleepBackoff(RETRY_BASE_DELAY_MS + jitter());
             }
         }
         log.warn("Fetch gave up after {} attempts for {} (last HTTP {}, body {} chars)",
@@ -742,11 +751,13 @@ public class WikiScraperService {
     private static long jitter() {
         return ThreadLocalRandom.current().nextLong(0, JITTER_MAX_MS + 1);
     }
+    private static void sleepBackoff(long millis){long started=System.nanoTime();try{sleepQuietly(millis);}finally{RetrievalTelemetry.backoffTime(System.nanoTime()-started);}}
 
     private static void sleepQuietly(long ms) {
         if (ms <= 0) return;
         try {
-            Thread.sleep(ms);
+            long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(ms);
+            while(System.nanoTime()<deadline){checkCancelled();Thread.sleep(Math.min(200,Math.max(1,java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline-System.nanoTime()))));}
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             checkCancelled();
