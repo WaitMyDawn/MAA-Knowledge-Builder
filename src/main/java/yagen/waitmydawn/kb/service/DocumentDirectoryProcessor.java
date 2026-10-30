@@ -82,6 +82,8 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
 
     void importBytes(String location, String title, String format, byte[] bytes, BuildRequest.Source source,
                      Context context, Map<String, Analysis> analysisCache) throws Exception {
+        try(var timingScope=BuildTrace.phase("document.parse",title+" ["+format+"]")) {
+
         if (!FORMATS.contains(format)) throw new IOException("不支持的文档格式");
         if (bytes.length > (format.equals("txt") ? 8L : 64L) * 1024 * 1024) throw new IOException("文档大小超限");
         String documentId = BuildRequest.fingerprint(location);
@@ -131,6 +133,7 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
         if (writer.partial) context.result().warnings.add("部分图像内容未识别：" + title);
         if (context.progress() != null) context.progress().onProgress("documents", context.result().documents, 0,
                 "已处理：" + title + "（" + status + "）");
+        }
     }
 
     record Analysis(String ocrText, String description, String status, boolean partial) {}
@@ -143,7 +146,7 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
         else {
             context.result().ocrAttempts++;
             LocalOcrEngine.Result result;
-            try { result = ocr.recognize(image); }
+            try(var ocrTiming=BuildTrace.step("document.ocr","本地文字识别")) { result = ocr.recognize(image); }
             catch (java.util.concurrent.CancellationException e) { throw e; }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.util.concurrent.CancellationException("OCR cancelled"); }
             catch (Exception e) { result = new LocalOcrEngine.Result("", "UNAVAILABLE", ""); }
@@ -156,7 +159,7 @@ final class DocumentDirectoryProcessor implements BuildSourceProcessor {
             if (context.result().visionAttempts >= maxVision) { status += ";VISION_DEFERRED"; partial = true; }
             else {
                 context.checkCancelled(); context.result().visionAttempts++;
-                try { description = vision.describe(png); status += ";VISION_OK"; context.result().visionImages++; }
+                try(var visionTiming=BuildTrace.step("document.vision","已启用的图像描述")) { description = vision.describe(png); status += ";VISION_OK"; context.result().visionImages++; }
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new java.util.concurrent.CancellationException("Vision request cancelled"); }
                 catch (java.util.concurrent.CancellationException e) { throw e; }
                 catch (Exception e) { status += ";VISION_FAILED"; partial = true; }

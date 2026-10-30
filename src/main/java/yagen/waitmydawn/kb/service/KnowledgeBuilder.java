@@ -111,15 +111,22 @@ public class KnowledgeBuilder {
     public BuildResult build(BuildRequest request, ProgressCallback progressCallback) {
         Objects.requireNonNull(request);
         checkCancelled();
+        long timingStarted=System.nanoTime();String timingStartedAt=java.time.Instant.now().toString();
         final BuildTaskJournal task;
         try{task=BuildTaskJournal.begin(config.getDataDir());}catch(java.io.IOException failure){throw new IllegalStateException("无法创建构建任务记录",failure);}
+        var timing=BuildTrace.begin(task.reportDirectory(),progressCallback,timingStarted,timingStartedAt);
+        BuildResult completedResult=null;
         Path stagingPath=task.staging();DatabaseBuilder staging=DatabaseBuilder.atPath(stagingPath);
         String outcome="FAILED";boolean validated=false;
         try {
+        timing.metadata("mode",request.mode().name());timing.metadata("sourceCount",request.sources().size());
+        timing.metadata("prewarmPages",Math.max(0,Math.min(30,Integer.getInteger("maa.build.prewarmPages",config.getPrewarmPages()))));
+        timing.metadata("embeddingProfile",embedder.profile());timing.metadata("cachePolicy","EXISTING_PUBLIC_CACHE_NOT_RESET");
         final RuntimeBuildContract.Prepared prepared;
-        try{prepared=RuntimeBuildContract.prepare(request,db,scanPreparations,environments);}
+        try(var phase=BuildTrace.phase("preflight.snapshot","完整快照与 JAR 身份校验")){prepared=RuntimeBuildContract.prepare(request,db,scanPreparations,environments);}
         catch(java.io.IOException failure){throw new IllegalArgumentException("MKB-Export 预检查失败，原库保留："+failure.getMessage(),failure);}
         report(progressCallback,"preflight",1,1,"完整游戏快照校验通过；JAR 不参与资源解析。");
+        timing.metadata("snapshotManifestHash",prepared.pack().manifestHash());timing.metadata("minecraft",prepared.pack().minecraftVersion());timing.metadata("loader",prepared.pack().loader());
         var iconPacks=Map.of(prepared.source().id(),prepared.pack());
         boolean append=request.mode()==BuildRequest.Mode.APPEND;
         if(append)VectorStore.verifyProfile(db,embedder.profile(),false);
@@ -129,12 +136,17 @@ public class KnowledgeBuilder {
         long started = System.currentTimeMillis();
         String generation = "build-" + UUID.randomUUID();
             checkCancelled();validated=true;
+            String originalFingerprint;
+            int originalVectors;
+            KnowledgeBuilder candidate;
+            var stagingTiming=BuildTrace.phase("staging.prepare","暂存库、补充复制及旧资源迁移");
+            try {
             staging.initDatabase();
             new VectorStore(staging,embedder.getDimension());
             if(append) staging.replaceBuildDataFrom(db);
-            String originalFingerprint=append?staging.contentFingerprint():null;
-            int originalVectors=append?new VectorStore(staging,embedder.getDimension()).count():0;
-            var candidate = new KnowledgeBuilder(config, staging, embedder, sourceProcessors,wikiScraper);
+            originalFingerprint=append?staging.contentFingerprint():null;
+            originalVectors=append?new VectorStore(staging,embedder.getDimension()).count():0;
+            candidate = new KnowledgeBuilder(config, staging, embedder, sourceProcessors,wikiScraper);
             candidate.selectedJarMods=selectedJarMods;candidate.gameSnapshot=prepared;
             candidate.environments=environments;candidate.bindingDrafts=bindingDrafts;candidate.preparations=scannedMods;candidate.requireBoundWiki=requireBoundWiki;
             candidate.jarSources=request.sources().stream().filter(s->s.kind()==BuildRequest.Kind.JAR_DIRECTORY).toList();
@@ -153,15 +165,17 @@ public class KnowledgeBuilder {
                 if(!new SourceLifecycleStore(staging).strings("SELECT profile_id FROM rag_runtime_snapshot WHERE source_id=?",old.id()).isEmpty())new SourceLifecycleStore(staging).deleteSource(old);
             }
             RuntimeBuildContract.removeLegacyResources(staging);
+            }finally{stagingTiming.close();}
             BuildResult result = candidate.buildInto(append, (phase, cur, total, message) -> {
                 if (!"done".equals(phase)) report(progressCallback, phase, cur, total, message);
             });
+            completedResult=result;
             var content = new KnowledgeContentStore(staging);
             var images = new ImageAssetStore(config.getDataDir());
             int completedSources=0;report(progressCallback,"progress:来源",0,request.sources().size(),"开始处理来源");
             for (var source : request.sources()) {
                 checkCancelled();
-                try{
+                try(var phase=BuildTrace.phase("source."+source.kind().name().toLowerCase(Locale.ROOT),source.location())){
                 if(append && source.kind()==BuildRequest.Kind.URL && content.publishedRequest().stream()
                         .flatMap(r -> r.sources().stream()).anyMatch(s -> s.id().equals(source.id()))) {
                     var enrichmentContext=new BuildSourceProcessor.Context(staging,content,images,candidate.vectorStore,embedder,progressCallback,result);
@@ -185,6 +199,7 @@ public class KnowledgeBuilder {
             }
             if (candidate.vectorStore.count() == 0 && result.parsed == 0 && !new ItemIconStore(staging).hasUsableIcons())
                 throw new IllegalStateException("没有可发布的有效内容；原基础库保留");
+            try(var phase=BuildTrace.phase("validation.index","索引关系、图片与数据库健康")) {
             RuntimeBuildContract.mark(staging,prepared.source().id());
             if(result.runtimeSnapshots>0||!append)new ItemIconStore(staging).selectProfile(RuntimeKnowledgeStore.active(staging));
             var lifecycle=new SourceLifecycleStore(staging);
@@ -193,14 +208,16 @@ public class KnowledgeBuilder {
                 r.next();if(r.getInt(1)>0) result.warnings.add("复用了 "+r.getInt(1)+" 篇旧分块资料；完整标题与段落扩展需要对目标基础库执行完整重建。");
             }
             checkCancelled();
-            images.validate(content, staging);
+            try(var assetsTiming=BuildTrace.step("validation.assets","图片内容与引用")){images.validate(content, staging);}
             if (result.deferredWebImages > 0) result.warnings.add("未缓存的网页图片：" + result.deferredWebImages + "；原始地址与处理状态已保留");
             checkCancelled();
             staging.healthCheck();
             checkCancelled();
             result.embeddings = candidate.vectorStore.count();
             result.addedEmbeddings=result.embeddings-originalVectors;
-            RuntimeBuildContract.verifyUnchanged(prepared,request,db,scanPreparations,environments);
+            }
+            try(var phase=BuildTrace.phase("validation.inputs","重新校验快照、文件与 JAR")){RuntimeBuildContract.verifyUnchanged(prepared,request,db,scanPreparations,environments);}
+            try(var publicationPreparation=BuildTrace.phase("publish.prepare","内容指纹对比与发布准备")) {
             if(append && originalFingerprint.equals(staging.contentFingerprint())) {
                 outcome="UNCHANGED";
                 result.durationMs=System.currentTimeMillis()-started;
@@ -212,26 +229,33 @@ public class KnowledgeBuilder {
                 throw new IllegalStateException("构建期间目标基础库发生变化，请重新执行补充构建");
             checkCancelled();task.state("PUBLISHING");
             report(progressCallback,"publish",0,1,"正在原子发布构建结果，完成前不再取消。");checkCancelled();
-            db.replaceBuildDataFrom(staging);outcome="PUBLISHED";
+            }
+            try(var phase=BuildTrace.phase("publish","原子发布构建表")){db.replaceBuildDataFrom(staging);outcome="PUBLISHED";}
             result.durationMs = System.currentTimeMillis() - started;
             try {
                 report(progressCallback, "done", request.sources().size(), request.sources().size(), "Build published: " + result.embeddings + " vectors, "+result.nativeIcons+" imported icons");
             } catch (RuntimeException e) { log.warn("Build published, but progress listener failed", e); }
             return result;
         } catch (java.util.concurrent.CancellationException e) {
+            timing.failure(e);
             outcome="CANCELLED";
             throw e;
         } catch (Exception e) {
+            timing.failure(e);
             if(task.cancelRequested()){outcome="CANCELLED";var cancelled=new java.util.concurrent.CancellationException("Knowledge build cancelled");cancelled.initCause(e);throw cancelled;}
             if(!validated&&e instanceof IllegalArgumentException invalid)throw invalid;
             throw new IllegalStateException("构建失败，原基础库保留：" + e.getMessage(), e);
         } finally {
             boolean interrupted=Thread.interrupted();
-            try {
+            try(var phase=BuildTrace.phase("cleanup","关闭暂存库、清理任务文件并保留可复用缓存")) {
                 try{if(java.nio.file.Files.exists(Path.of(stagingPath+".mv.db")))staging.shutdown();}catch(Exception failure){log.warn("Staging shutdown failed",failure);}
                 try{report(progressCallback,"cleanup",1,1,task.finish(outcome)+retainedCacheSummary());}
                 catch(Exception failure){log.warn("Build cleanup incomplete",failure);try{report(progressCallback,"cleanup",0,1,"暂存清理未完成，下次打开数据目录时重试；图片缓存保留。");}catch(RuntimeException ignored){}}
-            }finally{try{task.close();}catch(java.io.IOException failure){log.warn("Task lock release failed",failure);}if(interrupted)Thread.currentThread().interrupt();}
+            }finally{
+                try{task.close();}catch(java.io.IOException failure){log.warn("Task lock release failed",failure);}
+                try{long wall=timing.finish(outcome,completedResult);if(completedResult!=null){completedResult.durationMs=wall;completedResult.timingReport=task.reportDirectory().resolve("timing.md").toString();}}
+                finally{if(interrupted)Thread.currentThread().interrupt();}
+            }
         }
     }
 
@@ -261,6 +285,7 @@ public class KnowledgeBuilder {
         if(!append) db.clearBuildData();
 
         var importedMods=new ArrayList<ModEntry>();
+        try(var identityTiming=BuildTrace.phase("identity.import","快照模组身份与实体注册名")) {
         var incoming=RuntimeGameIdentity.entries(gameSnapshot);
         var identities=new HashMap<String,RuntimeBuildContract.Identity>();gameSnapshot.identities().forEach(i->identities.put(i.mod().getModId(),i));
         result.totalJars=gameSnapshot.identities().size();
@@ -284,13 +309,16 @@ public class KnowledgeBuilder {
             report(progressCallback,"progress:身份",++done,incoming.size(),entry.getModId());
         }
         try{RuntimeGameIdentity.entities(db,gameSnapshot.pack());}catch(Exception failure){throw new IllegalStateException("快照实体注册表导入失败",failure);}
+        }
         // ===== Phase F: Baseline MC Wiki =====
         if (!jarSources.isEmpty() && !importedMods.isEmpty() && (!append || !hasBaselineWiki())) {
+            try(var wikiTiming=BuildTrace.phase("wiki.baseline","原版 Wiki")) {
             int total = WikiScraperService.BASELINE_PAGES.length;
             List<TextChunker.TextChunk> wikiChunks = new ArrayList<>();
             int idx = 0;
             report(progressCallback,"progress:Wiki",0,total,"开始处理 Wiki");
             for (String page : WikiScraperService.BASELINE_PAGES) {
+                try(var pageTiming=BuildTrace.step("wiki.page",page)) {
                 idx++;
                 report(progressCallback, "wiki", idx, total, "MC Wiki: " + page);
                 WikiScraperService.WebPage wp = wikiScraper.fetchMcWiki(page);
@@ -301,15 +329,18 @@ public class KnowledgeBuilder {
                 try { Thread.sleep(200); } catch (InterruptedException cancelled) {
                     Thread.currentThread().interrupt();throw new java.util.concurrent.CancellationException("Knowledge build cancelled");
                 }
+                }
             }
             if (!wikiChunks.isEmpty()) {
                 vectorStore.storeBatch(wikiChunks, publicCache.embeddings(wikiChunks,embedder),embedder.profile());
                 result.embeddings += wikiChunks.size();
                 log.info("Baseline Wiki: {} chunks from {} pages", wikiChunks.size(), idx);
             }
+            }
         }
 
         // ===== Phase G: MC百科 mod scraping =====
+        try(var modsTiming=BuildTrace.phase("wiki.mods","已绑定模组的目录、正文和详情预热")) {
         List<ModEntry> mods = importedMods;
         // Deduplicate by modId (prevent double-scrape from old entries with different KEY)
         Map<String, ModEntry> uniqueMods = new LinkedHashMap<>();
@@ -323,7 +354,7 @@ public class KnowledgeBuilder {
         report(progressCallback,"progress:百科",0,deduped.size(),"开始处理模组百科");
         for (ModEntry modEntry : deduped) {
             sIdx++;
-            try{
+            try(var modTiming=BuildTrace.phase("wiki.mod",modEntry.getModId())){
             if ("minecraft".equals(modEntry.getModId()) || "vanilla".equals(modEntry.getLoader())) continue;
             var binding=modEntry.getMcmodBinding();
             if(binding==null||binding.url()==null||binding.status().equals("DISABLED")) {
@@ -418,6 +449,7 @@ public class KnowledgeBuilder {
             if(warmLimit==0) warmed.clear();
             for(var entry:warmed.values()) {
                 if(warm++>=warmLimit+hintUrls.size()) break;
+                try(var detailTiming=BuildTrace.step("wiki.prewarm",entry.url())) {
                 checkCancelled();
                 report(progressCallback,"prewarm",warm,warmed.size(),"预取常用详情（"+warm+"/"+warmed.size()+"）："+entry.label());
                 var fetched=wikiScraper.fetchPageWithRegistries(entry.url(),"mcmod");
@@ -428,10 +460,12 @@ public class KnowledgeBuilder {
                 result.embeddings+=chunks.size();
                 var owner=jarSources.stream().filter(source->java.nio.file.Path.of(modEntry.getJarPath()).toAbsolutePath().normalize().startsWith(java.nio.file.Path.of(source.location()).toAbsolutePath().normalize())).findFirst().orElse(null);
                 if(owner!=null){var context=new BuildSourceProcessor.Context(db,new KnowledgeContentStore(db),new ImageAssetStore(config.getDataDir()),vectorStore,embedder,progressCallback,result);new UrlBuildProcessor(wikiScraper).processDocument(owner,entry.url(),context,modEntry.getModId(),modEntry.getDisplayName());}
+                }
             }
             report(progressCallback,"prewarm",warmed.size(),warmed.size(),warmLimit==0?"已关闭常用详情预取":"详情预取完成：成功 "+prepared+" 页，跳过/失败 "+skipped+" 页（站点冷却期间不继续访问）");
             try { Thread.sleep(500); } catch (InterruptedException cancelled) {Thread.currentThread().interrupt();throw new java.util.concurrent.CancellationException("Knowledge build cancelled");}
             }finally{report(progressCallback,"progress:百科",sIdx,deduped.size(),"已处理模组百科");}
+        }
         }
 
         result.durationMs = System.currentTimeMillis() - timeStamp0;
@@ -469,5 +503,6 @@ public class KnowledgeBuilder {
         public final List<String> warnings = new ArrayList<>();
         public int textures, entities, recipes, textChunks, embeddings, runtimeSnapshots;
         public long durationMs;
+        public String timingReport;
     }
 }

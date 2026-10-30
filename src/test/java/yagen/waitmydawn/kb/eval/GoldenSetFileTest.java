@@ -24,7 +24,7 @@ class GoldenSetFileTest {
 
     @Test
     void goldenSetFileMatchesDesign() throws Exception {
-        Path file = Path.of("golden-set.json");
+        Path file = Path.of("test-set/old/golden-set.json");
         assumeTrue(Files.exists(file), "golden-set.json not found (run from project root)");
 
         GoldenSet.Spec spec = GoldenSet.load(file);

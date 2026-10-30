@@ -669,11 +669,11 @@ public class WikiScraperService {
                 conn.headers(headers);
 
                 RetrievalTelemetry.httpAttempt();
-                long fetchStarted=System.nanoTime();org.jsoup.Connection.Response resp;
-                try{resp=conn.execute();}
-                catch(java.io.IOException failed){RetrievalTelemetry.resourceAttempt(imageResource,url,0,System.nanoTime()-fetchStarted,attempt>0,redirects>0);throw failed;}
+                long fetchStarted=System.nanoTime();org.jsoup.Connection.Response resp;byte[] responseBytes;
+                try{resp=conn.execute();responseBytes=resp.bodyAsBytes();}
+                catch(java.io.IOException|java.io.UncheckedIOException failed){RetrievalTelemetry.resourceAttempt(imageResource,url,0,System.nanoTime()-fetchStarted,attempt>0,redirects>0);throw failed;}
                 RetrievalTelemetry.resourceAttempt(imageResource,url,resp.statusCode(),System.nanoTime()-fetchStarted,attempt>0,redirects>0);
-                RetrievalTelemetry.httpResponse(resp.statusCode(),resp.bodyAsBytes().length);
+                RetrievalTelemetry.httpResponse(resp.statusCode(),responseBytes.length);
                 checkCancelled();
                 int status = resp.statusCode();
                 if(status==304) return new FetchOutcome(304,"",attempt+1,resp.header("ETag"),resp.header("Last-Modified"));
@@ -691,7 +691,6 @@ public class WikiScraperService {
                     attempt--;
                     continue;
                 }
-                byte[] responseBytes = resp.bodyAsBytes();
                 if (responseBytes.length > maxBytes) return new FetchOutcome(413, null, attempt + 1);
                 String responseType = resp.contentType();
                 boolean textResponse = !publicWeb || responseType == null || responseType.toLowerCase(Locale.ROOT).startsWith("text/")

@@ -8,8 +8,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ModpackRegressionSpecTest {
     @Test void regressionAddsParaphrasesCounterexampleAndExplicitEvidenceGaps() throws Exception {
-        var core=GoldenSet.load(Path.of("golden-set-modpack.json"));
-        var regression=GoldenSet.load(Path.of("golden-set-modpack-regression.json"));
+        var core=GoldenSet.load(Path.of("test-set/old/golden-set-modpack.json"));
+        var regression=GoldenSet.load(Path.of("test-set/old/golden-set-modpack-regression.json"));
         assertEquals(5,core.conversations().size());assertEquals(8,regression.conversations().size());
         var ids=new HashSet<String>();
         for(var conversation:regression.conversations()) for(var turn:conversation.turns()) {

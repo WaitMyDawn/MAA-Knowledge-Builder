@@ -47,7 +47,7 @@ class MultimodalLocalFixtureTest {
         try(var embedding=new EmbeddingService(null)) {
             new KnowledgeBuilder(config,db,embedding,List.of(new DocumentDirectoryProcessor(config,ocr,new VisionDescriptionService(config)))).build(RuntimeBuildFixtures.withSnapshot(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,folder.toString()))),data),null);
             var service=new KnowledgeRetrievalService(db,embedding,data,false);
-            var turns=yagen.waitmydawn.kb.eval.GoldenSet.load(Path.of("golden-set-media.json")).conversations().stream().flatMap(c->c.turns().stream()).filter(t->t.category().equals("local-document")).toList();
+            var turns=yagen.waitmydawn.kb.eval.GoldenSet.load(Path.of("test-set/old/golden-set-media.json")).conversations().stream().flatMap(c->c.turns().stream()).filter(t->t.category().equals("local-document")).toList();
             String pdfQuestion=turns.getFirst().question(),guideQuestion=turns.getLast().question();
             var pdf=service.retrieve(pdfQuestion,service.resolve(pdfQuestion,null,null),false);
             assertFalse(pdf.artifacts().pictures().isEmpty());

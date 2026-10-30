@@ -24,6 +24,8 @@ public final class ItemIconStore {
         }
     }
     public void importPack(BuildRequest.Source source,NativeIconPack.Pack prepared,BuildSourceProcessor.Context context)throws Exception {
+        try(var timingScope=BuildTrace.phase("snapshot.icons",source.location())) {
+
         var pack=NativeIconPack.read(prepared.root());
         if(!pack.manifestHash().equals(prepared.manifestHash()))throw new IllegalStateException("预检查后导出包内容发生变化");
         new RuntimeKnowledgeStore(db).importPack(source,pack,context);
@@ -58,6 +60,7 @@ public final class ItemIconStore {
         if(updateSelection&&!compatibility.equals("CONFLICT")){selectProfile(profile);context.result().warnings.add("已更新当前来源的图标环境；旧会话图片快照保持不变。");}
         if(new SourceLifecycleStore(db).strings("SELECT profile_id FROM rag_runtime_snapshot WHERE source_id=?",source.id()).isEmpty())context.result().warnings.add("旧版仅图标包仅供历史回放，不满足完整快照构建要求。");
         if(context.progress()!=null)context.progress().onProgress("icons",context.result().nativeIcons,pack.icons().size(),"已导入图标包："+source.location());
+        }
     }
     static String compatibility(NativeIconPack.Pack pack,List<ModEntry> installed) {
         return compatibility(pack.environment(), installed);

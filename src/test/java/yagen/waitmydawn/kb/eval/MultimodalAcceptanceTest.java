@@ -19,7 +19,7 @@ class MultimodalAcceptanceTest {
         assertFalse(RuleJudge.judge(turn,nonzero).passed());
     }
     @Test void fixedQuestionsHaveCodeDefinedAcceptanceAndAllRequiredCategories()throws Exception {
-        var set=GoldenSet.load(Path.of("golden-set-media.json"));assertEquals(24,set.conversations().size());
+        var set=GoldenSet.load(Path.of("test-set/old/golden-set-media.json"));assertEquals(24,set.conversations().size());
         var categories=new HashSet<String>();
         for(var conversation:set.conversations())for(var turn:conversation.turns()) {
             categories.add(turn.category());assertFalse(turn.judgeRubric().isEmpty());assertTrue(turn.assertions().stream().anyMatch(a->a.kind().equals("answer_media_refs_valid")));
@@ -32,7 +32,7 @@ class MultimodalAcceptanceTest {
         var image=new java.awt.image.BufferedImage(16,16,2);image.setRGB(4,4,0xff2255aa);var bytes=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",bytes);
         var asset=new ImageAssetStore(temp).put(bytes.toByteArray());
         var adult=picture("a",asset.id(),asset.relativePath(),"adult");var baby=picture("b",asset.id(),asset.relativePath(),"baby");
-        var turn=GoldenSet.load(Path.of("golden-set-media.json")).conversations().stream().filter(c->c.id().equals("MM-04")).findFirst().orElseThrow().turns().getFirst();
+        var turn=GoldenSet.load(Path.of("test-set/old/golden-set-media.json")).conversations().stream().filter(c->c.id().equals("MM-04")).findFirst().orElseThrow().turns().getFirst();
         var artifacts=new AnswerArtifacts(null,null,List.of(source),List.of(adult,baby));
         String answer="成年和幼年。![成年](kb-image:a)\n\n![幼年](kb-image:b)";
         assertTrue(RuleJudge.judge(turn,observation(answer,artifacts)).passed());

@@ -714,7 +714,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         logText("实体图片资产："+result.entityUniqueImages+" 张；复用状态："+result.entityImageAliases);
         logText("组成诊断：完整 "+result.entityCompositionComplete+"，部分 "+result.entityCompositionPartial+"，未验证 "+result.entityCompositionUnverified+"，异常空图 "+result.entityUnexpectedEmpty);
         result.warnings.forEach(this::logText);
-        logText("耗时："+(result.durationMs/1000.0)+"s");
+        logText("耗时："+(result.durationMs/1000.0)+"s（含预检查和清理，不含 Scan/Bind Url）");
+        if(result.timingReport!=null)logText("阶段计时报告："+result.timingReport);
     }
 
     // =================== QA Page ===================

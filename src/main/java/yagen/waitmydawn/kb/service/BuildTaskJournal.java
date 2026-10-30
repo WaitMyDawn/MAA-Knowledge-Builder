@@ -41,6 +41,7 @@ public final class BuildTaskJournal implements AutoCloseable {
         return ()->{var previous=CURRENT.get();if(captured==null)CURRENT.remove();else CURRENT.set(captured);try{work.run();}finally{if(previous==null)CURRENT.remove();else CURRENT.set(previous);}};
     }
     Path staging(){return root.resolve("staging-"+id);}
+    Path reportDirectory(){return folder;}
     Path temporaryDirectory()throws IOException {Path tmp=ArchivePaths.resolve(root,"build-tasks/"+id+"/tmp");Files.createDirectories(tmp);return tmp;}
     void created(String hash,long bytes){assets.putIfAbsent(hash,bytes);}
     int createdImages(){return assets.size();}

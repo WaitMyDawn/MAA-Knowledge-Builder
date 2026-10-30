@@ -136,7 +136,7 @@ Windows 10/11 使用系统自带 OCR 和已安装的识别语言，通过 Window
 
 默认限制：TXT 8 MiB，其他本地文件 64 MiB，单张图片 32 MiB；PDF 最多 200 页（`maa.documents.maxPdfPages`）。每次构建最多 OCR 128 张图片、生成 16 次视觉描述，可通过 `maa.documents.maxOcrImages` 和 `maa.documents.maxVisionImages` 调整。超出分析预算仍保留图片并报告部分识别；文件损坏、加密不可读、解析超限或取消会保留原基础库。DOCX 解压上限与图片像素上限防止异常文档耗尽内存。无法直接解码的 Word 插图会报告，复杂 DOC 布局及 PDF 表格不保证还原为原始版式。
 
-`rag_document_import` 记录各文件的处理状态，`rag_content_chunk.extraction_method` 区分原生文字、OCR、模型推断和仅元数据，图片出现位置保留分析状态。构建日志显示文件结果及图片/OCR统计。本机 OCR 验收见 [`test-data/document-import`](test-data/document-import/README.md)，可用 Maven 参数 `-Dtest=LocalOcrLiveTest -Dmaa.live.localOcr=true` 显式运行，测试不联网。
+`rag_document_import` 记录各文件的处理状态，`rag_content_chunk.extraction_method` 区分原生文字、OCR、模型推断和仅元数据，图片出现位置保留分析状态。构建日志显示文件结果及图片/OCR统计。本机 OCR 验收见 [`docs/archive/test-data/document-import`](docs/archive/test-data/document-import/README.md)，可用 Maven 参数 `-Dtest=LocalOcrLiveTest -Dmaa.live.localOcr=true` 显式运行，测试不联网。
 
 网址按类型处理：MC 百科模组主页复用模组目录构建流程，只访问主页实际出现的非零分类链接；整合包主页读取名称、正文和教程区域内的 `/post/正整数.html` 链接，将关联教程全文分块入库，不继续追踪教程正文中的任意链接。普通网页只采集当前页有效正文和插图，不遍历整个站点。网址直接指向受支持文档或图片时复用文件解析链路，远程资源大小上限为 32 MiB（TXT 仍为 8 MiB）。正文获取失败会保留原基础库，避免发布缺失教程的整合包知识。
 
@@ -148,7 +148,7 @@ Windows 10/11 使用系统自带 OCR 和已安装的识别语言，通过 Window
 
 网页插图使用本机 OCR，并按图片所在位置绑定具体步骤，区分配方、界面、结构、地图、战斗、外观和装饰用途。数字网格噪声不进入知识向量；由上下文推定的用途会明确标识。补充 Build 时重新填入已导入的网址，可为缓存图片补建 OCR 和步骤索引；局部步骤仅从本地 HTML 缓存恢复，并与已发布正文核对，不联网刷新旧网页。每次构建默认最多 OCR 64 张网页图片（`maa.web.maxOcrImages`），问答按需下载时最多临时 OCR 1 张（`maa.qa.maxImageOcr`），不改写基础库。参见 [攻略配图与验收](docs/guide-images-r5.md)。
 
-整合包专项题集为根目录的 [`golden-set-modpack.json`](golden-set-modpack.json)，沿用黄金集的参考答案、规则断言与模型裁判细则，独立运行 `--eval golden-set-modpack.json`。参考要点按公开 v2.4a 教程核对，覆盖 5 个问题，并要求检索范围及实际引用来源正确；规则命中不替代答案语义核对。构建与检索历史记录见 [`test-data/modpack-737`](test-data/modpack-737/README.md)：已在线验证发现 6 篇教程并完成主页与教程入库，模型生成答案的事实正确性尚未验收。显式联网验收可通过 Maven 参数 `-Dtest=UrlBuildLiveTest -Dmaa.live.modpack737=true` 启用，默认测试不联网；该验收使用每页 2 次、全局 14 次图片下载预算，并将统计写入 `target/stage2-live-report.json`。
+历史整合包专项题集位于 `test-set/old`，文件为 [`golden-set-modpack.json`](test-set/old/golden-set-modpack.json)，沿用黄金集的参考答案、规则断言与模型裁判细则，独立运行 `--eval test-set/old/golden-set-modpack.json`。参考要点按公开 v2.4a 教程核对，覆盖 5 个问题，并要求检索范围及实际引用来源正确；规则命中不替代答案语义核对。构建与检索历史记录见 [`docs/archive/test-data/modpack-737`](docs/archive/test-data/modpack-737/README.md)：已在线验证发现 6 篇教程并完成主页与教程入库，模型生成答案的事实正确性尚未验收。显式联网验收可通过 Maven 参数 `-Dtest=UrlBuildLiveTest -Dmaa.live.modpack737=true` 启用，默认测试不联网；该验收使用每页 2 次、全局 14 次图片下载预算，并将统计写入 `target/stage2-live-report.json`。
 
 问答页的资料范围默认自动识别，也可手动限定整合包、模组或资料目录。问题中的来源名、文件名及“第 N 页”用于限定检索，带“继续”“它”等指代的追问沿用上一轮范围；同名来源需要手动选择。正文语义、词面匹配及关联图片的图注、OCR、模型描述共同参与检索。整合包问题只使用该包资料；仅已绑定实际 JAR 的模组来源可继续使用对应模组的本地配方。没有命中资料时明确提示证据不足，未配置回答模型时展示可追溯的离线摘录。
 
@@ -162,11 +162,11 @@ P3 的网址与文件导入保存完整原文块、标题层级与表格行，�
 
 P4 在当前资料范围和页码内检查复合问题的不同侧重点，缺口最多触发两轮、合计六次定向补检，再重新组装有上限的上下文。要点命中只是候选依据，回答仍需核对事实，未找到的部分明确说明。P5 支持从同章节的图注与 OCR 独立召回插图，区分尚未下载、缓存丢失和没有合适图片，控制重复与无关配图；问答的“来源、覆盖范围与性能”可查看补检和图片缓存状态。这两项不更换模型，也不要求再次重建 P3 已生成的结构库。
 
-生成回归另有 [`golden-set-modpack-regression.json`](golden-set-modpack-regression.json)，包含 5 道同义问法和 3 道前提/证据缺口题，与原 5 题分开运行。评测将图片归档到独立运行目录，校验与历史回放使用同一份资产，并区分真实模型回答、离线摘录及模型失败。规则和文本裁判不能证明图片语义相关；缺失证据题检查不展示无关图片。运行命令、用量口径与模型保留结论见[检索诊断说明](docs/retrieval-diagnostics.md)。
+生成回归另有 [`golden-set-modpack-regression.json`](test-set/old/golden-set-modpack-regression.json)，包含 5 道同义问法和 3 道前提/证据缺口题，与原 5 题分开运行。评测将图片归档到独立运行目录，校验与历史回放使用同一份资产，并区分真实模型回答、离线摘录及模型失败。规则和文本裁判不能证明图片语义相关；缺失证据题检查不展示无关图片。运行命令、用量口径与模型保留结论见[检索诊断说明](docs/retrieval-diagnostics.md)。
 
 “按需缓存来源插图”默认开启：仅补取 Build 已记录、且邻近最终命中正文的图片地址，每次问答默认最多尝试 2 次下载（`maa.qa.imageDownloads`，可设 0–4），每次回答最多选取 4 张资料插图。关闭后仍可使用已有本地图片。下载复用百科的限流、退避与原始资源缓存，不修改已发布知识库；`rag_web_image_reference` 保留构建时的缓存状态，因此问答补取成功不会减少该表的未缓存数量。图片不可用时保留正文和来源。
 
-会话保存来源摘录、图片身份和相对资产路径快照，重启或重新 Build 后仍能回放；删除原始导入文件不影响已保存摘录，删除缓存图片则显示缺图提示。旧会话继续按原格式读取。离线回归及界面冒烟测试说明见 [`test-data/knowledge-answer`](test-data/knowledge-answer/README.md)。
+会话保存来源摘录、图片身份和相对资产路径快照，重启或重新 Build 后仍能回放；删除原始导入文件不影响已保存摘录，删除缓存图片则显示缺图提示。旧会话继续按原格式读取。离线回归及界面冒烟测试说明见 [`docs/archive/test-data/knowledge-answer`](docs/archive/test-data/knowledge-answer/README.md)。
 
 设置页的“图片缓存维护”提供检查、网页图片修复和未引用图片清理。检查统计本地图片、缺失/损坏资产、可回收图片和原始网页缓存占用。修复使用已记录的原图网址，共用现有限流、冷却与缓存，每次最多尝试 4 次获取；只恢复原内容哈希，网址返回的新图不能替换旧会话中的图片。新会话快照保存原图网址及来源页，基础库重建后仍可尝试修复；旧快照缺少这些信息且当前库没有对应记录时，只能显示缺图提示。本地文档及配方图片缺失时需重新构建或生成对应资源。
 
@@ -317,7 +317,7 @@ Operations:
   --append             补充构建，保留已有知识；不能与 --clean 同用
   --dialogue <4,5>      只运行测试文件中指定序号的对话（1 起始，逗号分隔，
                         例如 --dialogue 4,5 只跑第 4、5 个对话）
-  --eval [file]         运行黄金评测集（默认 golden-set.json）：规则判分 + LLM 裁判，
+  --eval [file]         运行黄金评测集（默认 test-set/old/golden-set.json）：规则判分 + LLM 裁判，
                         产物隔离在 {dataDir}/eval-runs/{runId}/
   --tag <name>          评测 run 的标签（例如 --tag baseline）
   --repeat <n>          题级未指定时的默认重复次数（稳定性 pass@N）
@@ -520,7 +520,7 @@ Copyright (c) 2026 Yagen. All Rights Reserved.
 
 脚本先运行 release 构建，再为每次执行创建新的 `target/e2e-*` 数据目录。顺序为：扫描及 Modrinth slug 绑定 → Bind Url 百科候选绑定 → 从完整游戏快照与绑定网页构建基础库 → `test-questions.json` 的完整多轮测试 → `golden-set.json` 的规则判分与在线裁判。会消耗已配置的 DeepSeek API Key 对应的额度；凭据仅用于当前进程，不输出、不写入测试目录。全局设置与 GUI 数据目录不改写。`-SkipBuild` 可复用已经编译好的程序，`-FailUnder 0.85` 可设置黄金题集通过率门槛。未设门槛时退出成功仅表示流水线执行完成，需查看质量报告。
 
-也可直接启动 CLI，使用 `--isolated --use-saved-key --data-dir <新目录> --build <JAR目录> --build-documents <MKB-Export目录> --test test-questions.json --eval golden-set.json --judge`。`--isolated` 默认不读取全局设置；`--use-saved-key` 明确授权借用已保存的 API Key 和嵌入模型名。普通多轮测试生成 `test-report-*.txt`、`test-metrics-*.csv`；黄金评测在 `eval-runs/<runId>/` 保存规则、裁判、坏例及输入指纹。
+也可直接启动 CLI，使用 `--isolated --use-saved-key --data-dir <新目录> --build <JAR目录> --build-documents <MKB-Export目录> --test test-questions.json --eval test-set/old/golden-set.json --judge`。`--isolated` 默认不读取全局设置；`--use-saved-key` 明确授权借用已保存的 API Key 和嵌入模型名。普通多轮测试生成 `test-report-*.txt`、`test-metrics-*.csv`；黄金评测在 `eval-runs/<runId>/` 保存规则、裁判、坏例及输入指纹。
 
 Java 网络启动策略使用 `-Djava.net.preferIPv6Addresses=system`，遵循操作系统的地址优先级。部分网络中 IPv4 与 IPv6 的连通性不同，Java 默认 IPv4 优先可能导致连接超时，而浏览器或 curl 正常。此选项不是代理，也不会修复不可达的网络；IDE、Maven `exec:java` 等已经启动的宿主 JVM 需在宿主启动参数中设置，修改源码后的进程需要重启。
 
@@ -689,3 +689,7 @@ P0 图文审计：最终图片、实体候选与排除理由纳入指标和评�
 问答记录当前快照的 Minecraft 版本、加载器和模组版本，禁止用模型记忆补齐未确认机制，也不再进行第二次自由知识补答。文档及整合包问答保留原资料范围，不把外部模组视为已安装，未验证的版本兼容性保持未知。组装、升级和更换等复合操作先分配各步骤的插图名额，再填充其他图片；标记位置与操作不符的插图会尝试移到匹配段落，缺少对应插图时明确说明。
 
 固定图文题集仍为 `golden-set-media.json` 的 24 题，验收规则在 Java 代码中维护。16 道快照题额外要求已记录当前环境且网页／图片 HTTP 为 0；模型 API 单独计数。性能详情与评测记录区分网页、图片、重试、重定向、限流等待、退避和 HTTP 耗时，并记录触发原因；网络明细只保存主机和路径，不保存查询参数。旧报告缺少这些字段时，不能证明零请求。评测会话可在知识问答页通过“导入评测会话…”查看。
+
+当前 modEnv1 人工双线评测入口为 [test-set/manager.md](test-set/manager.md)：61轮、11个会话，使用独立执行与人工提交脚本，不启用额外模型裁判；旧题集保留在 test-set/old。
+
+Build 阶段日志与持久化计时见 [Build P0](docs/build-timing-p0.md)：任务目录保存 events.jsonl、timing.json、timing.md；总耗时包含预检查与清理，累计网络/嵌入/图片工作时间与阶段墙钟分开统计。现库无需因计时功能重建。

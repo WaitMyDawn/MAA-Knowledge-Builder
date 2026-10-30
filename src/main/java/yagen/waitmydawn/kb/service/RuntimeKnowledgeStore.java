@@ -19,6 +19,8 @@ public final class RuntimeKnowledgeStore {
         }
     }
     public void importPack(BuildRequest.Source source,NativeIconPack.Pack pack,BuildSourceProcessor.Context context)throws Exception {
+        try(var timingScope=BuildTrace.phase("snapshot.runtime",source.location())) {
+
         var data=RuntimeSnapshotData.read(pack);
         if(!data.categories().keySet().containsAll(List.of("mod_metadata","registries","language","recipes","tags"))) {
             try(var c=db.getConnection();var p=c.prepareStatement("SELECT 1 FROM rag_runtime_snapshot WHERE source_id=?")){p.setString(1,source.id());try(var r=p.executeQuery()){if(r.next())throw new IllegalStateException("已有运行时知识的来源不能降级为不完整快照");}}return;
@@ -39,24 +41,28 @@ public final class RuntimeKnowledgeStore {
         deleteSource(source.id());
         try(var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_runtime_snapshot VALUES(?,?,?)")) {p.setString(1,source.id());p.setString(2,profile);p.setString(3,data.descriptor().toString());p.executeUpdate();}
         var entityAssets=new HashMap<String,String>();
+        try(var entityTiming=BuildTrace.step("snapshot.entity_assets","实体图片校验与归档")) {
         if(entities!=null)for(var row:entities.path("records"))if(!row.has("error")&&!row.has("imageRef")){
             byte[] bytes=entities.has("imageStorage")?RuntimeEntityMedia.externalBytes(pack.root(),row):RuntimeEntityMedia.bytes(row);RuntimeEntityMedia.validate(row,bytes);
             var asset=context.images().put(bytes);context.content().saveImage(asset);entityAssets.put(row.path("id").asText()+"|"+EntityAppearanceState.key(row),asset.relativePath());
         }
+        }
         var chunks=new ArrayList<TextChunker.TextChunk>();
         try(var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_runtime_record VALUES(?,?,?,?)")) {
-            for(var category:data.categories().entrySet())for(var row:category.getValue().path("records")) {
+            for(var category:data.categories().entrySet())try(var categoryTiming=BuildTrace.step("snapshot.prepare."+category.getKey(),category.getValue().path("records").size()+" records")) {
+            for(var row:category.getValue().path("records")) {
                 context.checkCancelled();String id=row.path("id").asText();String identity=(category.getKey().equals("registries")||category.getKey().equals("tags")?row.path("registry").asText()+"|":"")+id;
                 if(category.getKey().equals("entity_icons"))identity+="|"+EntityAppearanceState.key(row);
                 p.setString(1,profile);p.setString(2,category.getKey());p.setString(3,identity);JsonNode stored=row;if(category.getKey().equals("entity_icons")){var metadata=((com.fasterxml.jackson.databind.node.ObjectNode)row).deepCopy();metadata.remove("pngBase64");metadata.remove("assetPath");String asset=entityAssets.get(identity);if(asset!=null)metadata.put("assetPath",asset);stored=metadata;}
                 p.setString(4,stored.toString());p.addBatch();
             }
+            }
             if(entities!=null)for(var row:entities.path("exclusions")) {
                 p.setString(1,profile);p.setString(2,"entity_exclusions");p.setString(3,row.path("id").asText());p.setString(4,row.toString());p.addBatch();
-            }p.executeBatch();
+            }try(var writeTiming=BuildTrace.step("snapshot.records.write","运行时原始记录批量入库")){p.executeBatch();}
         }
         var language=new HashMap<String,JsonNode>();for(var row:data.categories().get("language").path("records"))language.put(row.path("id").asText(),row.path("translations"));
-        try(var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_runtime_name VALUES(?,?,?,?)")) {
+        try(var namesTiming=BuildTrace.step("snapshot.names","名称、语言和物品提示");var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_runtime_name VALUES(?,?,?,?)")) {
             for(var row:data.categories().get("registries").path("records")) {
                 String id=row.path("id").asText(),key=row.path("descriptionId").asText();
                 if(row.path("registry").asText().equals("item"))for(String lang:List.of("current","zh_cn","en_us")) {
@@ -70,6 +76,7 @@ public final class RuntimeKnowledgeStore {
         for(var row:data.categories().get("mod_metadata").path("records")) {
             String description=row.path("description").asText();if(!description.isBlank())addChunks(chunks,profile,"description",row.path("id").asText(),row.path("displayName").asText(),description);
         }
+        try(var languageTiming=BuildTrace.step("snapshot.language","语言说明文本提取")) {
         var seenTranslations=new HashSet<String>();
         var modIds=new HashSet<String>();data.categories().get("mod_metadata").path("records").forEach(row->modIds.add(row.path("id").asText()));
         for(String lang:List.of("current","zh_cn","en_us")) {
@@ -80,7 +87,8 @@ public final class RuntimeKnowledgeStore {
                 addChunks(chunks,profile,"language",key,key,value,mod);
             }
         }
-        try(var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_runtime_recipe VALUES(?,?,?,?,?,?,?,?)")) {
+        }
+        try(var recipesTiming=BuildTrace.step("snapshot.recipes","配方规范化与索引");var c=db.getConnection();var p=c.prepareStatement("INSERT INTO rag_runtime_recipe VALUES(?,?,?,?,?,?,?,?)")) {
             for(var row:data.categories().get("recipes").path("records")) {
                 String id=row.path("id").asText();JsonNode definition=row.has("definition")?row.path("definition"):row.path("renderJson");
                 String status=row.path("normalizationStatus").asText(),output=null,summary;
@@ -104,6 +112,7 @@ public final class RuntimeKnowledgeStore {
             }
         }
         if(!chunks.isEmpty()){
+            try(var textIndexTiming=BuildTrace.step("snapshot.text_index",chunks.size()+" 文本块、段落与文档关联")) {
             var groups=chunks.stream().collect(java.util.stream.Collectors.groupingBy(TextChunker.TextChunk::type));
             context.content().setSourceScope(source.id(),"runtime:"+source.id(),"LOCAL","游戏快照 "+pack.root().getFileName()+" · "+pack.minecraftVersion()+" "+pack.loader(),null);
             for(var group:groups.entrySet()) {
@@ -120,11 +129,13 @@ public final class RuntimeKnowledgeStore {
                     context.content().linkBlock(chunk.id(),chunk.id());
                 }
             }
+            }
             VectorStore.verifyProfile(db,context.embedder().profile(),false);context.vectors().storeBatch(chunks,context.embedder());context.result().addedEmbeddings+=chunks.size();
         }
         context.result().runtimeSnapshots++;
         context.result().recipes+=data.categories().get("recipes").path("records").size();
         if(context.progress()!=null)context.progress().onProgress("runtime",data.categories().get("recipes").path("records").size(),0,"已导入运行时知识快照");
+        }
     }
     private static void collectLootNames(JsonNode node,Set<String> names,Map<String,Set<String>> lookup) {
         if(node.isTextual())names.addAll(lookup.getOrDefault(node.asText(),Set.of()));

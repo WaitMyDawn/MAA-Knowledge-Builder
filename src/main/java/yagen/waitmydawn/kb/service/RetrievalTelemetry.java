@@ -21,9 +21,10 @@ public final class RetrievalTelemetry {
         var c=CURRENT.get();if(c==null)return null;
         synchronized(c){return new ResourceAudit(c.httpRequests,c.documentRequests,c.imageRequests,Math.max(0,c.httpRequests-c.documentRequests-c.imageRequests),c.retries,c.redirects,c.waitNanos/1_000_000,c.backoffNanos/1_000_000,c.fetchNanos/1_000_000,java.util.List.copyOf(c.events),c.eventsTruncated);}
     }
-    static void waitTime(long nanos){var c=CURRENT.get();if(c!=null)synchronized(c){c.waitNanos+=Math.max(0,nanos);}}
-    static void backoffTime(long nanos){var c=CURRENT.get();if(c!=null)synchronized(c){c.backoffNanos+=Math.max(0,nanos);}}
+    static void waitTime(long nanos){BuildTrace.work("network.wait",nanos,1);var c=CURRENT.get();if(c!=null)synchronized(c){c.waitNanos+=Math.max(0,nanos);}}
+    static void backoffTime(long nanos){BuildTrace.work("network.backoff",nanos,1);var c=CURRENT.get();if(c!=null)synchronized(c){c.backoffNanos+=Math.max(0,nanos);}}
     static void resourceAttempt(boolean image,String url,int status,long nanos,boolean retry,boolean redirect) {
+        BuildTrace.network(image&&!resourceCause().contains("SOURCE_DOCUMENT"),url,status,nanos,retry,redirect);
         var c=CURRENT.get();if(c==null)return;
         String cause=resourceCause();boolean imageKind=image&&!cause.contains("SOURCE_DOCUMENT");
         String host="",path="";try{var uri=java.net.URI.create(url);host=java.util.Objects.toString(uri.getHost(),"");path=java.util.Objects.toString(uri.getPath(),"");if(path.length()>180)path=path.substring(0,180);}catch(IllegalArgumentException ignored){}
@@ -37,10 +38,12 @@ public final class RetrievalTelemetry {
         var c = CURRENT.get(); if (c != null) { c.responseBytes += bytes; if (status >= 400) c.httpErrors++; }
     }
     static void pageHit(boolean persistent) {
+        BuildTrace.work(persistent?"cache.page.persistent":"cache.page.memory",0,1);
         var c = CURRENT.get(); if (c != null) { if (persistent) c.persistentPageHits++; else c.memoryPageHits++; }
     }
-    static void vectorHit(int count) { var c = CURRENT.get(); if (c != null) c.reusedEmbeddings += count; }
+    static void vectorHit(int count) { BuildTrace.work("embedding.reused",0,count);var c = CURRENT.get(); if (c != null) c.reusedEmbeddings += count; }
     static void inference(boolean document, long nanos) {
+        BuildTrace.work(document?"embedding.document":"embedding.query",nanos,1);
         var c = CURRENT.get(); if (c != null) { if (document) c.documentEmbeddings++; else c.queryEmbeddings++; c.embeddingNanos += nanos; }
     }
     public static final class Counters {

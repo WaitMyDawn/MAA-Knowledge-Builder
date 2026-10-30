@@ -16,7 +16,8 @@ src/main/resources/models/
 Thumbs.db
 
 docs/
-test-data/
+test-set/
+!test-set/old/
 run.bat
 run.sh
 MKB-QA.md

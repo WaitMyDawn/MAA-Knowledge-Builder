@@ -12,6 +12,8 @@ public final class RuntimeSnapshotData {
     public record Data(JsonNode descriptor,Map<String,JsonNode> categories) {}
     private RuntimeSnapshotData() {}
     public static Data read(NativeIconPack.Pack pack)throws IOException {
+        try(var timingScope=BuildTrace.step("snapshot.read",pack.root().toString())) {
+
         Path descriptor=ArchivePaths.resolve(pack.root(),"snapshot.json");
         if(!Files.exists(descriptor)) {
             if(!yagen.waitmydawn.kb.model.BuildRequest.fingerprint(pack.manifestJson()).equals(pack.manifestHash()))throw new IOException("预检查后知识声明丢失");
@@ -30,6 +32,7 @@ public final class RuntimeSnapshotData {
             payloads.put(category,payload);
         }
         return new Data(root,Collections.unmodifiableMap(payloads));
+        }
     }
     static void validate(String category,JsonNode payload,JsonNode declaration)throws IOException {validate(category,payload,declaration,null);}
     static void validate(String category,JsonNode payload,JsonNode declaration,Path root)throws IOException {

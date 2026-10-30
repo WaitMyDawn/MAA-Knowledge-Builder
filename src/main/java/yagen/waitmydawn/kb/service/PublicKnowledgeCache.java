@@ -67,6 +67,8 @@ public final class PublicKnowledgeCache {
     }
     /** 内容哈希属于 chunk_id；模型指纹属于联合键，防止模型切换后复用错误向量。 */
     public List<float[]> embeddings(List<TextChunker.TextChunk> chunks, EmbeddingService embedder) {
+        try(var timingScope=BuildTrace.step("embedding.cache",chunks.size()+" chunks")) {
+
         var vectors = new ArrayList<float[]>();
         var missing = new ArrayList<Integer>();
         String profile = embedder.profile();
@@ -95,5 +97,6 @@ public final class PublicKnowledgeCache {
             }
             return vectors;
         } catch (SQLException e) { throw new IllegalStateException("Public embedding cache failed", e); }
+        }
     }
 }

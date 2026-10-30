@@ -12,7 +12,7 @@
     "includeFullTutorialBodies": true,
     "deduplicateTutorialUrls": true
   },
-  "questionSet": "golden-set-modpack.json",
+  "questionSet": "test-set/old/golden-set-modpack.json",
   "referenceStatus": "source_checked_v2.4a_model_answers_not_verified",
-  "lastVerification": "test-data/modpack-737/build-verification.json"
+  "lastVerification": "docs/archive/test-data/modpack-737/build-verification.json"
 }

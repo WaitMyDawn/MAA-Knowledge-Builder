@@ -85,6 +85,7 @@ public class VectorStore {
 
     /** 已有公共向量可直接复制到会话库，保留会话检索范围而不重复推理。 */
     public void storeBatch(List<TextChunker.TextChunk> chunks, List<float[]> vectors, String profile) {
+        long storingStarted=System.nanoTime();
         if (chunks.size() != vectors.size()) throw new IllegalArgumentException("Chunk/vector count mismatch");
         if (chunks.isEmpty()) return;
         verifyProfile(profile, true);
@@ -110,6 +111,8 @@ public class VectorStore {
             log.info("Stored {} vectors", chunks.size());
         } catch (SQLException e) {
             throw new IllegalStateException("Vector batch store failed", e);
+        } finally {
+            BuildTrace.work("vector.write",System.nanoTime()-storingStarted,chunks.size());
         }
     }
 

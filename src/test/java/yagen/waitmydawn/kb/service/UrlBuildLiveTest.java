@@ -46,7 +46,7 @@ class UrlBuildLiveTest {
             report.put("imageAssets", images); report.put("webpConverted", webp);
             report.put("uncachedImageOccurrences", result.deferredWebImages);
             report.put("imageDownloadBudget", 14);
-            var questions=yagen.waitmydawn.kb.eval.GoldenSet.load(Path.of("golden-set-modpack.json"));
+            var questions=yagen.waitmydawn.kb.eval.GoldenSet.load(Path.of("test-set/old/golden-set-modpack.json"));
             var retrievals=new ArrayList<Map<String,Object>>();
             var retrieval=new KnowledgeRetrievalService(db,embedder,config.getDataDir());
             for(var conversation:questions.conversations()) for(var turn:conversation.turns()) {

@@ -66,7 +66,7 @@ public class HeadlessRunner {
         boolean doClean = false;
         boolean doTest = false;
         boolean doWebTest = false;
-        String evalFile = "golden-set.json";
+        String evalFile = "test-set/old/golden-set.json";
         String evalTag = null;
         int evalRepeat = 1;
         boolean doEval = false;
@@ -593,7 +593,7 @@ public class HeadlessRunner {
               --test [file]         Run automated tests (default: test-questions.json)
               --dialogue <4,5>      Run only the listed dialogues (1-based index in the test
                                     file, comma-separated; e.g. --dialogue 4,5)
-              --eval [file]         Run golden-set evaluation (default: golden-set.json):
+              --eval [file]         Run golden-set evaluation (default: test-set/old/golden-set.json):
                                     rule scoring + LLM judge, isolated under {data}/eval-runs/
               --tag <name>          Tag for the eval run id (e.g. --tag baseline)
               --repeat <n>          Default repeats per turn for stability (default 1)

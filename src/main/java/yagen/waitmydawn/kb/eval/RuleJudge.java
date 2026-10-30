@@ -156,6 +156,11 @@ public final class RuleJudge {
         String detail;
 
         switch (a.kind()) {
+            case "answer_media_displayed_min" -> {
+                int valid=obs.media()==null?0:obs.media().valid();
+                int minimum=a.min()==null?1:a.min();
+                ok=valid>=minimum;detail="valid displayed images="+valid+", min="+minimum;
+            }
             case "resource_http_zero" -> {ok=obs.resourceAccess()!=null&&obs.resourceAccess().requests()==0;detail=obs.resourceAccess()==null?"resource telemetry unavailable":"resource HTTP="+obs.resourceAccess().requests();}
             case "runtime_snapshot_selected" -> {var snapshot=obs.runtimeEvidence();ok=snapshot!=null&&snapshot.profile()!=null&&!snapshot.profile().isBlank()&&snapshot.minecraftVersion()!=null&&!java.util.Set.of("","unknown").contains(snapshot.minecraftVersion());detail=snapshot==null?"snapshot unavailable":"Minecraft="+snapshot.minecraftVersion()+", loader="+snapshot.loader();}
             case "answer_image_facets_all" -> {

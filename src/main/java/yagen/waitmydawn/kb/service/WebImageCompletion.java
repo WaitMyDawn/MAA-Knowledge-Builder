@@ -23,6 +23,8 @@ public final class WebImageCompletion {
         complete(documents,context);
     }
     public void complete(Collection<String> documents,BuildSourceProcessor.Context context)throws Exception {
+        try(var timingScope=BuildTrace.phase("images.pipeline",documents.size()+" documents")) {
+
         var groups=new LinkedHashMap<String,List<Image>>();int total=0;
         try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT r.*,d.location,o.image_id,a.relative_path,a.media_type,a.width,a.height,g.step_text AS bound_step FROM rag_web_image_reference r JOIN rag_document d ON d.id=r.document_id LEFT JOIN rag_image_occurrence o ON o.id=r.id LEFT JOIN rag_image_asset a ON a.id=o.image_id LEFT JOIN rag_image_grounding g ON g.id=r.id AND g.analysis_version=? WHERE r.document_id=? ORDER BY r.block_ordinal,r.id")) {
             for(String document:new LinkedHashSet<>(documents)){p.setString(1,GuideImageSemantics.VERSION);p.setString(2,document);try(var rows=p.executeQuery()){while(rows.next()) {
@@ -34,7 +36,7 @@ public final class WebImageCompletion {
         var cache=new WebImageDownloadCache(scraper.resourceDatabase()==null?context.database():scraper.resourceDatabase(),context.images());
         var queue=new ArrayBlockingQueue<Download>(1);var attempts=new AtomicInteger();var peak=new AtomicInteger();var stop=new java.util.concurrent.atomic.AtomicBoolean();long[] fetchNanos={0};
         var executor=Executors.newSingleThreadExecutor(r->{var thread=new Thread(r,"mkb-web-image-download-"+UUID.randomUUID());thread.setDaemon(true);return thread;});
-        var producer=executor.submit(BuildTaskJournal.carry(RetrievalTelemetry.carry(BuildCancellation.carry(stop::get,()-> {
+        var producer=executor.submit(BuildTrace.carry(BuildTaskJournal.carry(RetrievalTelemetry.carry(BuildCancellation.carry(stop::get,()-> {
             var checked=new HashMap<String,Boolean>();var blockedSites=new HashMap<String,String>();
             var task=BuildTaskJournal.current();
             for(var entry:groups.entrySet()) {
@@ -65,7 +67,7 @@ public final class WebImageCompletion {
                 try{var value=new Download(references,asset,bytes,failure,reused);while(!queue.offer(value,200,TimeUnit.MILLISECONDS))context.checkCancelled();peak.accumulateAndGet(queue.size(),Math::max);}
                 catch(InterruptedException cancelled){Thread.currentThread().interrupt();throw new CancellationException("Image download cancelled");}
             }
-        }))));
+        })))));
         var bindings=new WebImageBindings(context);var batch=new ArrayList<WebImageBindings.Ready>();var decoded=new HashMap<String,ImageAsset>();
         int completed=0;long lastProgress=0;long processNanos=0,storeNanos=0;
         try {
@@ -122,11 +124,13 @@ public final class WebImageCompletion {
             catch(InterruptedException cancelled){interrupted=true;while(!executor.isTerminated())try{executor.awaitTermination(1,TimeUnit.SECONDS);}catch(InterruptedException again){interrupted=true;}}
             finally {
                 context.result().webImageAttempts+=attempts.get();context.result().webImageQueuePeak=Math.max(context.result().webImageQueuePeak,peak.get());
+                BuildTrace.work("images.fetch_or_reuse",fetchNanos[0],attempts.get());BuildTrace.work("images.process",processNanos,completed);BuildTrace.work("images.bind",storeNanos,completed);
                 context.result().webImageFetchMs+=fetchNanos[0]/1_000_000;context.result().webImageProcessMs+=processNanos/1_000_000;context.result().webImageStoreMs+=storeNanos/1_000_000;
                 if(interrupted)Thread.currentThread().interrupt();
             }
         }
         progress(context,completed,total,attempts.get(),"正文图片处理完成");
+        }
     }
     private static void progress(BuildSourceProcessor.Context context,int completed,int total,int attempts,String message) {
         if(context.progress()!=null)context.progress().onProgress("web-images",completed,total,message+"；获取尝试 "+attempts+"，复用 "+context.result().reusedWebImages+"，已关联 "+context.result().webImageBindings+"，失败 "+context.result().deferredWebImages);

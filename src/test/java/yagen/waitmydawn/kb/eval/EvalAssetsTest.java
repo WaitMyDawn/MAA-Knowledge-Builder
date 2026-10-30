@@ -83,7 +83,7 @@ class EvalAssetsTest {
         assertFalse(RuleJudge.judge(turn,obs).passed());
     }
     @Test void judgeUsageIsCapturedAndRelativeEvaluationRootsAreNormalized() {
-        var config=new EvalRunner.Config(Path.of("target/p6-relative"),Path.of("golden-set-modpack.json"),Set.of(),"unit",1,false);
+        var config=new EvalRunner.Config(Path.of("target/p6-relative"),Path.of("test-set/old/golden-set-modpack.json"),Set.of(),"unit",1,false);
         assertTrue(config.dataDir().isAbsolute());assertTrue(config.goldenSetFile().isAbsolute());
         ChatModel model=new ChatModel(){@Override public ChatResponse doChat(ChatRequest request) {
             return ChatResponse.builder().aiMessage(AiMessage.from("{\"verdict\":\"pass\",\"faithfulness\":5,\"completeness\":5,\"correctness\":5}"))

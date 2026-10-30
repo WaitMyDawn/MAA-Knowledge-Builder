@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 验证专项评测规格可加载；线上教程发现与答案事实另行验收。 */
 class Modpack737AcceptanceSpecTest {
     @Test void referenceAnswersPassRulesButWrongScopeOrInventedCitationsFail() throws Exception {
-        var spec=GoldenSet.load(Path.of("golden-set-modpack.json"));
+        var spec=GoldenSet.load(Path.of("test-set/old/golden-set-modpack.json"));
         for(var conversation:spec.conversations()) {
             var turn=conversation.turns().getFirst();
             var source=new yagen.waitmydawn.kb.model.AnswerArtifacts.Source("s1","d1","流程教程","https://www.mcmod.cn/post/5454.html",null,null,"NATIVE","证据");

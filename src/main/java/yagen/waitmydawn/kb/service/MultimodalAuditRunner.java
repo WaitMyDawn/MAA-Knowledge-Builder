@@ -21,7 +21,7 @@ public final class MultimodalAuditRunner {
                 throw new IllegalArgumentException("参数：--data-dir <已有库> --output <新报告目录> [--questions <golden-set-media.json>]");
         }
         if(!options.containsKey("--data-dir")||!options.containsKey("--output"))throw new IllegalArgumentException("缺少数据目录或报告目录");
-        run(Path.of(options.get("--data-dir")),Path.of(options.get("--output")),Path.of(options.getOrDefault("--questions","golden-set-media.json")));
+        run(Path.of(options.get("--data-dir")),Path.of(options.get("--output")),Path.of(options.getOrDefault("--questions","test-set/old/golden-set-media.json")));
     }
 
     public static void run(Path data,Path output,Path questions)throws Exception {

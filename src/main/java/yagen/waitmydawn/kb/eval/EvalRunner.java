@@ -82,9 +82,11 @@ public final class EvalRunner {
 
     public Outcome run() throws IOException {
         GoldenSet.Spec spec = GoldenSet.load(cfg.goldenSetFile());
-        String runId = buildRunId(cfg.tag());
-        Path runDir = cfg.dataDir().resolve("eval-runs").resolve(runId);
-        Files.createDirectories(runDir);
+        verifyDeclaredEnvironment(cfg.goldenSetFile(),baseDb);
+        String runId = System.getProperty("maa.eval.runId", buildRunId(cfg.tag()));
+        Path runDir = outputDirectory(cfg,runId);
+        Files.createDirectories(runDir.getParent());
+        Files.createDirectory(runDir);
         Files.copy(cfg.goldenSetFile(), runDir.resolve("golden-set.json"), StandardCopyOption.REPLACE_EXISTING);
         baseVectorStore.verifyProfile(embedder.profile(), false);
 
@@ -138,6 +140,34 @@ public final class EvalRunner {
             return new Outcome(runId, runDir, total, passed, rate,
                     EvalReport.markdown(summary, records), summary);
         }
+    }
+
+    static Path outputDirectory(Config config,String runId) throws IOException {
+        if (!runId.matches("[A-Za-z0-9._-]+") || runId.equals(".") || runId.equals(".."))
+            throw new IllegalArgumentException("Invalid evaluation run id");
+        Path root=Path.of(System.getProperty("maa.eval.outputRoot",
+                config.dataDir().resolve("eval-runs").toString())).toAbsolutePath().normalize();
+        Path result=root.resolve(runId);
+        if(Files.exists(result))throw new IOException("Evaluation run already exists: "+result);
+        return result;
+    }
+
+    /** 题集显式声明的前置条件在生成答案与创建运行目录之前校验。 */
+    static void verifyDeclaredEnvironment(Path file,DatabaseBuilder database) throws IOException {
+        var environment=new com.fasterxml.jackson.databind.ObjectMapper().readTree(file.toFile()).path("environment");
+        if(environment.isMissingNode())return;
+        var snapshot=yagen.waitmydawn.kb.service.RuntimeEvidencePolicy.snapshot(database);
+        if(snapshot==null)throw new IllegalStateException("测试前置条件缺失：基础库没有活动游戏快照");
+        String minecraft=environment.path("minecraft").asText(""),loader=environment.path("loader").asText("");
+        if(!minecraft.isBlank()&&!minecraft.equals(snapshot.minecraftVersion()))throw new IllegalStateException("测试前置条件不匹配：Minecraft 版本");
+        if(!loader.isBlank()&&!loader.equalsIgnoreCase(snapshot.loader()))throw new IllegalStateException("测试前置条件不匹配：加载器");
+        try(var connection=database.getConnection();var query=connection.prepareStatement("SELECT COUNT(*) FROM rag_knowledge_source s WHERE s.location=? AND (EXISTS(SELECT 1 FROM rag_document d WHERE d.source_id=s.id) OR EXISTS(SELECT 1 FROM rag_document_source l WHERE l.source_id=s.id))")) {
+            for(var source:environment.path("requiredExternalSources")) {
+                query.setString(1,source.asText());try(var rows=query.executeQuery()) {
+                    rows.next();if(rows.getInt(1)==0)throw new IllegalStateException("测试前置资料未入库："+source.asText());
+                }
+            }
+        }catch(java.sql.SQLException failure){throw new IllegalStateException("测试前置资料检查失败",failure);}
     }
 
     // ==================== conversation / turn execution ====================
@@ -214,6 +244,7 @@ public final class EvalRunner {
         rec.put("runId", runId);
         rec.put("dialogueIndex", dialogueIndex);
         rec.put("dialogueId", conv.id());
+        rec.put("sessionId", session.sessionId);
         rec.put("dialogueName", conv.name());
         rec.put("modId", conv.modId());
         rec.put("turnId", turn.id());

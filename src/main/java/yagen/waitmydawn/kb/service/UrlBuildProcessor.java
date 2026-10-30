@@ -139,6 +139,8 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
 
     void ingest(BuildRequest.Source source, String url, WebDocumentParser.Parsed parsed,
                         String sourceName, String modId, Context context) throws Exception {
+        try(var timingScope=BuildTrace.phase("web.document",url)) {
+
         context.checkCancelled();
         String documentId = BuildRequest.fingerprint(url);
         context.visitedDocuments().add(documentId);
@@ -199,6 +201,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
         context.result().documents++;
         context.result().textChunks += vectors.size();
         report(context, "web", context.result().documents, 0, "已导入网页：" + parsed.title());
+        }
     }
 
     private static String documentFormat(String type, String url) {
