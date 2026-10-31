@@ -24,7 +24,7 @@ public final class KnowledgeBrowser extends VBox {
     private final Map<TreeItem<String>,Item> members=new IdentityHashMap<>();
     public KnowledgeBrowser(DatabaseBuilder db,Executor worker) {
         super(16); setPadding(new Insets(24)); getStyleClass().add("workspace-page");
-        var heading=new Label("知识目录"); heading.getStyleClass().add("page-title");
+        var heading=new Label("网页目录"); heading.getStyleClass().add("page-title");
         var help=new Label("按模组与网站原有分类浏览。目录证明名称和归属，具体机制由正文证据确认。"); help.getStyleClass().add("muted");
         search.setPromptText("搜索中文名、英文名或分类路径");
         var refresh=new Button("刷新目录"); refresh.getStyleClass().add("primary-button");

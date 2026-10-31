@@ -33,7 +33,7 @@ final class WebImageBindings {
                 var saved=new HashSet<String>();
                 for(var ready:batch) {
                     context.checkCancelled();var image=ready.image();var asset=ready.asset();
-                    states.setString(1,ready.failure()==null?"AVAILABLE":"FAILED");states.setString(2,ready.failure());states.setString(3,image.id());states.addBatch();
+                    states.setString(1,ready.failure()==null?"AVAILABLE":ready.failure().contains("SMALL:")?"EXCLUDED_SMALL":"FAILED");states.setString(2,ready.failure());states.setString(3,image.id());states.addBatch();
                     if(ready.failure()!=null)continue;
                     if(saved.add(asset.id())){assets.setString(1,asset.id());assets.setString(2,asset.relativePath());assets.setString(3,asset.mediaType());assets.setInt(4,asset.width());assets.setInt(5,asset.height());assets.addBatch();}
                     occurrences.setString(1,image.id());occurrences.setString(2,image.document());occurrences.setString(3,asset.id());occurrences.setString(4,image.caption());occurrences.setString(5,image.url());occurrences.setInt(6,image.ordinal());occurrences.setString(7,"DOM block "+image.block());occurrences.addBatch();

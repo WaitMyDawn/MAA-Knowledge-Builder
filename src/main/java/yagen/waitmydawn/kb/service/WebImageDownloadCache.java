@@ -16,8 +16,18 @@ final class WebImageDownloadCache {
         this.db=db;this.assets=assets;
         try(var c=db.getConnection();var s=c.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS rag_web_image_download(url VARCHAR(4000) NOT NULL,asset_root VARCHAR(4000) NOT NULL,asset_id VARCHAR(64) NOT NULL,relative_path VARCHAR(1000) NOT NULL,media_type VARCHAR(200) NOT NULL,width INT NOT NULL,height INT NOT NULL,fetched_at BIGINT NOT NULL,PRIMARY KEY(url,asset_root))");
+            s.execute("CREATE TABLE IF NOT EXISTS rag_web_image_rejection(url VARCHAR(4000) PRIMARY KEY, checked_at BIGINT NOT NULL)");
             s.execute("CREATE INDEX IF NOT EXISTS idx_web_image_download_origin ON rag_web_image_reference(url)");
         }catch(java.sql.SQLException failure){throw new IllegalStateException("图片下载索引初始化失败",failure);}
+    }
+    boolean rejected(String url) {
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT checked_at FROM rag_web_image_rejection WHERE url=?")){p.setString(1,WebUrlPolicy.normalize(url));try(var r=p.executeQuery()){return r.next()&&System.currentTimeMillis()-r.getLong(1)<TTL;}}catch(java.sql.SQLException e){throw new IllegalStateException(e);}
+    }
+    void reject(String url) {
+        try(var c=db.getConnection();var p=c.prepareStatement("MERGE INTO rag_web_image_rejection KEY(url) VALUES(?,?)")){p.setString(1,WebUrlPolicy.normalize(url));p.setLong(2,System.currentTimeMillis());p.executeUpdate();
+            try(var tables=c.getMetaData().getTables(null,null,"rag_public_resource",null)){if(tables.next())try(var remove=c.prepareStatement("DELETE FROM rag_public_resource WHERE url=? AND LOWER(content_type) LIKE 'image/%'")){remove.setString(1,WebUrlPolicy.normalize(url));remove.executeUpdate();}}
+        }
+        catch(java.sql.SQLException e){throw new IllegalStateException(e);}
     }
     ImageAsset find(String url,boolean cacheOnly) {
         try(var c=db.getConnection();var p=c.prepareStatement("SELECT * FROM rag_web_image_download WHERE url=? AND asset_root=?")) {

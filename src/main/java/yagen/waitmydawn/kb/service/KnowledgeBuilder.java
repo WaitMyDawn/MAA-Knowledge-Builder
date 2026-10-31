@@ -491,6 +491,7 @@ public class KnowledgeBuilder {
         public int totalJars, parsed, skipped;
         public int reusedSources, reusedDocuments, conflicts, addedEmbeddings;
         public int documents, tutorials, webImages, webImageAttempts, deferredWebImages;
+        public int excludedSmallWebImages;
         public int reusedWebImages,webImageBindings,webImageQueuePeak,webImageDecodes,permanentImageFailures,temporaryImageFailures,cooldownImageFailures;
         public long webImageFetchMs,webImageProcessMs,webImageStoreMs;
         public int localImages, ocrAttempts, ocrImages, visionAttempts, visionImages;

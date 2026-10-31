@@ -21,6 +21,9 @@ public final class RetrievalTelemetry {
         var c=CURRENT.get();if(c==null)return null;
         synchronized(c){return new ResourceAudit(c.httpRequests,c.documentRequests,c.imageRequests,Math.max(0,c.httpRequests-c.documentRequests-c.imageRequests),c.retries,c.redirects,c.waitNanos/1_000_000,c.backoffNanos/1_000_000,c.fetchNanos/1_000_000,java.util.List.copyOf(c.events),c.eventsTruncated);}
     }
+    public record Work(long count,long millis){}
+    public static java.util.Map<String,Work> work(){var c=CURRENT.get();if(c==null)return java.util.Map.of();synchronized(c){var result=new java.util.TreeMap<String,Work>();c.work.forEach((key,value)->result.put(key,new Work(value[0],value[1]/1_000_000)));return java.util.Map.copyOf(result);}}
+    public static void operation(String name,long nanos,long count){var c=CURRENT.get();if(c!=null)synchronized(c){var value=c.work.computeIfAbsent(name,k->new long[2]);value[0]+=count;value[1]+=Math.max(0,nanos);}}
     static void waitTime(long nanos){BuildTrace.work("network.wait",nanos,1);var c=CURRENT.get();if(c!=null)synchronized(c){c.waitNanos+=Math.max(0,nanos);}}
     static void backoffTime(long nanos){BuildTrace.work("network.backoff",nanos,1);var c=CURRENT.get();if(c!=null)synchronized(c){c.backoffNanos+=Math.max(0,nanos);}}
     static void resourceAttempt(boolean image,String url,int status,long nanos,boolean retry,boolean redirect) {
@@ -54,5 +57,6 @@ public final class RetrievalTelemetry {
         private long waitNanos,backoffNanos,fetchNanos;
         private final java.util.List<Request> events=new java.util.ArrayList<>();
         private boolean eventsTruncated;
+        private final java.util.Map<String,long[]> work=new java.util.HashMap<>();
     }
 }

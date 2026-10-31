@@ -363,11 +363,15 @@ public class VectorStore {
     public static List<SearchResult> searchScoped(List<DatabaseBuilder> dbs,float[] query,int topK,String profile,String modId,Set<String> urls) {
         if (topK <= 0) return List.of();
         var all=new ArrayList<SearchResult>();
-        for(var db:dbs) {
-            verifyProfile(db,profile,false);
-            all.addAll(searchInDb(db,query,topK,modId,urls));
+        var canonical=new HashSet<String>();
+        if(!dbs.isEmpty())try(var c=dbs.getFirst().getConnection();var tables=c.getMetaData().getTables(null,null,"rag_qa_page_state",null)) {
+            if(tables.next())try(var p=c.prepareStatement("SELECT DISTINCT d.location FROM rag_qa_page_state s JOIN rag_document d ON d.location=s.url JOIN rag_content_chunk k ON k.document_id=d.id JOIN rag_vectors v ON v.chunk_id=k.id WHERE (? IS NULL OR v.mod_id=?)")){p.setString(1,modId);p.setString(2,modId);try(var r=p.executeQuery()){while(r.next())canonical.add(r.getString(1));}}
+        }catch(SQLException e){throw new IllegalStateException("公共正文来源读取失败",e);}
+        for(int i=0;i<dbs.size();i++) {
+            var db=dbs.get(i);verifyProfile(db,profile,false);
+            all.addAll(searchInDb(db,query,topK,modId,urls,i==0?Set.of():canonical));
         }
-        return all.stream().sorted(Comparator.comparingDouble(SearchResult::score).reversed()).limit(topK).toList();
+        return all.stream().distinct().sorted(Comparator.comparingDouble(SearchResult::score).reversed()).limit(topK).toList();
     }
 
     /** 保留每个数据库的最高分结果，限制正文对象的保留数量。 */
@@ -375,17 +379,20 @@ public class VectorStore {
         return searchInDb(db,queryVec,topK,null,Set.of());
     }
 
-    private static List<SearchResult> searchInDb(DatabaseBuilder db,float[] queryVec,int topK,String modId,Set<String> urls) {
+    private static List<SearchResult> searchInDb(DatabaseBuilder db,float[] queryVec,int topK,String modId,Set<String> urls) {return searchInDb(db,queryVec,topK,modId,urls,Set.of());}
+    private static List<SearchResult> searchInDb(DatabaseBuilder db,float[] queryVec,int topK,String modId,Set<String> urls,Set<String> superseded) {
         var results = new java.util.PriorityQueue<SearchResult>(Comparator.comparingDouble(SearchResult::score));
         String sql = "SELECT chunk_id, chunk_text, embedding, mod_id, mod_name, chunk_type, source_path FROM rag_vectors WHERE chunk_type <> 'entity_alias' AND "+RuntimeKnowledgeStore.vectorPredicate(db);
         if(modId!=null) sql+=" AND mod_id=?";
         if(!urls.isEmpty()) sql+=" AND source_path IN ("+String.join(",",Collections.nCopies(urls.size(),"?"))+")";
 
+        if(!superseded.isEmpty())sql+=" AND (source_path IS NULL OR source_path NOT IN ("+String.join(",",Collections.nCopies(superseded.size(),"?"))+"))";
         try (Connection conn = db.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             int parameter=1;
             if(modId!=null) ps.setString(parameter++,modId);
             for(String url:urls) ps.setString(parameter++,url);
+            for(String url:superseded)ps.setString(parameter++,url);
             try(ResultSet rs=ps.executeQuery()) {
             while (rs.next()) {
                 byte[] blob = rs.getBytes("embedding");

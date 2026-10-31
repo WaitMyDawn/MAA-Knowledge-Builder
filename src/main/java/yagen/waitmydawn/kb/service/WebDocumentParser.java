@@ -23,7 +23,8 @@ final class WebDocumentParser {
         boolean mcmod = isMcmod(url);
         Element title = doc.selectFirst(mcmod ? ".class-title h3, .postname h1, .postname, .itemname .name h5" : "article h1, main h1, h1");
         String name = title == null ? doc.title() : title.text().strip();
-        Element main = doc.selectFirst(mcmod
+        Element main = !mcmod?doc.selectFirst(".mw-parser-output"):null;
+        if(main==null)main = doc.selectFirst(mcmod
                 ? ".post-content .text, .post-content.common-text, .item-content.common-text, .class-text .common-text, .class-text.common-text"
                 : "article, main, [role=main], #mw-content-text, .mw-parser-output");
         if (main == null && !mcmod) main = doc.body();

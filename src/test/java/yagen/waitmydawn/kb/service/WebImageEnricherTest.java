@@ -15,7 +15,7 @@ class WebImageEnricherTest {
     final AtomicInteger ocrCalls=new AtomicInteger(),fetches=new AtomicInteger();
     @AfterEach void cleanup(){System.clearProperty("maa.web.maxOcrImages");LogSetup.shutdown();}
     private byte[] png()throws Exception {
-        var image=new java.awt.image.BufferedImage(240,100,2);var g=image.createGraphics();g.setColor(java.awt.Color.WHITE);g.fillRect(0,0,240,100);g.setColor(java.awt.Color.BLACK);g.drawString("UPGRADE SLOT",12,42);g.dispose();var bytes=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",bytes);return bytes.toByteArray();
+        var image=new java.awt.image.BufferedImage(240,192,2);var g=image.createGraphics();g.setColor(java.awt.Color.WHITE);g.fillRect(0,0,240,192);g.setColor(java.awt.Color.BLACK);g.drawString("UPGRADE SLOT",12,42);g.dispose();var bytes=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",bytes);return bytes.toByteArray();
     }
     private WikiScraperService web()throws Exception {
         byte[] image=png();return new WikiScraperService(){@Override public Resource fetchBuildResource(String url,String referer,boolean picture) {

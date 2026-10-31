@@ -149,7 +149,7 @@ class UrlBuildProcessorTest {
         assertTrue(WebDocumentParser.parse(resource.document(), resource.url()).blocks().getFirst().text().contains("中文教程正文"));
     }
 
-    @Test void webpAssetsSurvivePublicationAndAllImagesAreAttempted() throws Exception {
+    @Test void smallWebpIsExcludedAndMissingImagesRemainFailures() throws Exception {
         var config = AppConfig.forIsolatedRun(false); config.setDataDir(temp.resolve("data"));
         var db = db("base"); var web = new FakeWeb(); web.setResourceDatabase(db);
         String url = "https://example.com/guide";
@@ -161,9 +161,9 @@ class UrlBuildProcessorTest {
             var source = BuildRequest.Source.of(BuildRequest.Kind.URL, url);
             var request = new BuildRequest(List.of(source));
             var result = new KnowledgeBuilder(config, db, embedder, List.of(new UrlBuildProcessor(web))).build(RuntimeBuildFixtures.withSnapshot(request,config.getDataDir()), null);
-            assertEquals(1, result.webImages); assertEquals(1, result.deferredWebImages);
-            assertEquals(2, count(db, "SELECT COUNT(*) FROM rag_image_asset WHERE media_type='image/png' AND relative_path LIKE '%.png'"));
-            assertTrue(count(db, "SELECT COUNT(*) FROM rag_chunk_image l JOIN rag_vectors v ON l.chunk_id=v.chunk_id") > 0);
+            assertEquals(0, result.webImages); assertEquals(1, result.excludedSmallWebImages); assertEquals(1, result.deferredWebImages);
+            assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_image_asset WHERE media_type='image/png' AND relative_path LIKE '%.png'"));
+            assertEquals(0,count(db, "SELECT COUNT(*) FROM rag_chunk_image l JOIN rag_vectors v ON l.chunk_id=v.chunk_id"));
             assertEquals(1, count(db, "SELECT COUNT(*) FROM rag_web_image_reference WHERE status='FAILED'"));
             assertTrue(web.requests.contains("https://example.com/missing.png"));
             new ImageAssetStore(config.getDataDir()).validate(new KnowledgeContentStore(db), db);

@@ -227,7 +227,7 @@ public class QaPipeline {
         boolean localText=imported!=null&&!imported.hits().isEmpty()&&imported.bestLexical()>=0.6
                 || !fetchResult.subQueryResults().isEmpty()&&fetchResult.subQueryResults().stream().allMatch(sub->sub.chunks().stream().anyMatch(hit->hit.score()>0.3&&KnowledgeSearchText.overlap(sub.subQuery(),hit.chunkText())>=0.6));
         boolean enumerateOnly=plan!=null&&plan.enumerate()&&!plan.needsDetails()&&entityResolution.wikiTopics().isEmpty();
-        if(!localText&&!enumerateOnly || localDecision.explicitWeb()) {
+        if(!localText&&!enumerateOnly && (localRecipeProbe.isEmpty()||localDecision.externalKnowledge()) || localDecision.explicitWeb()) {
             fetchResult=fetchForReason(entityResolution.aliasHits(),entityResolution.wikiTopics(),entityResolution.subQueries(),localDecision.explicitWeb()?"EXPLICIT_WEB_REQUEST":"ENTITY_DETAILS_GAP");
             m.addTrace("NetworkPolicy",0,"已检索本地正文；候选资料需补充或用户明确请求网页");
         } else m.addTrace("NetworkPolicy",0,"复用本地正文或目录，未获取候选网页");
@@ -491,7 +491,8 @@ public class QaPipeline {
         // === Totals ===
         m.totalTimeMs = (System.nanoTime() - t0) / 1_000_000;
         var io=RetrievalTelemetry.current();
-        m.resourceAccess=RetrievalTelemetry.resources();
+        m.resourceAccess=RetrievalTelemetry.resources();m.workAudit=RetrievalTelemetry.work();
+        m.workAudit.forEach((name,work)->m.addTrace(name,work.millis(),"数量="+work.count()));
         m.httpRequestCount=io.httpRequests; m.httpErrorCount=io.httpErrors; m.httpResponseBytes=io.responseBytes;
         m.memoryPageCacheHits=io.memoryPageHits; m.persistentPageCacheHits=io.persistentPageHits;
         m.documentEmbeddingCount=io.documentEmbeddings; m.queryEmbeddingCount=io.queryEmbeddings;
@@ -547,6 +548,7 @@ public class QaPipeline {
                 AnswerMedia.attachRecipes(result,result.recipeRenderBatch,mediaDirectory);
             }else result.recipeRenderBatch=new RendererService.RenderBatch(Map.of(),List.of(),List.of());
             entityMedia.prepare(result,question);
+            new LootCardService(baseDb,mediaDirectory).attach(result,question);
         }catch(java.io.IOException failure){result.mediaWarnings.add("配方图片归档失败："+failure.getClass().getSimpleName());}
         finally{result.answer=saved;}
         result.mediaPreparationMs=(System.nanoTime()-started)/1_000_000;
@@ -616,7 +618,8 @@ public class QaPipeline {
             var usage=llm.usageTrace(); m.llmCallCount=usage.calls; m.tokenEstimateInput=usage.inputTokens;
             m.tokenEstimateOutput=usage.outputTokens; m.tokenTotalCount=usage.inputTokens+usage.outputTokens; m.unknownUsageCalls=usage.unknownUsageCalls;
         }
-        var io=RetrievalTelemetry.current();m.resourceAccess=RetrievalTelemetry.resources(); m.queryEmbeddingCount=io.queryEmbeddings; m.documentEmbeddingCount=io.documentEmbeddings;
+        var io=RetrievalTelemetry.current();m.resourceAccess=RetrievalTelemetry.resources();m.workAudit=RetrievalTelemetry.work();
+        m.workAudit.forEach((name,work)->m.addTrace(name,work.millis(),"数量="+work.count())); m.queryEmbeddingCount=io.queryEmbeddings; m.documentEmbeddingCount=io.documentEmbeddings;
         m.httpRequestCount=io.httpRequests;m.httpErrorCount=io.httpErrors;m.httpResponseBytes=io.responseBytes;
         m.memoryPageCacheHits=io.memoryPageHits;m.persistentPageCacheHits=io.persistentPageHits;
         m.embeddingTimeMs=io.embeddingNanos/1_000_000; m.addTrace("KnowledgeRetrieval", m.totalTimeMs-m.answerGenTimeMs, result.sourceScope);

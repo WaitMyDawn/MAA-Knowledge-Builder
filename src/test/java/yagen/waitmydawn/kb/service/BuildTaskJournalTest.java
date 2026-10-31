@@ -42,7 +42,7 @@ class BuildTaskJournalTest {
         var web=new WikiScraperService(){@Override public Resource fetchResource(String location,String referer,boolean image,Map<String,String> headers){
             counts.computeIfAbsent(location,key->new AtomicInteger()).incrementAndGet();
             boolean picture=!location.equals(url);
-            try{return new Resource(200,picture?FullWebMediaTest.image(location.hashCode(),8,8):html.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),picture?"image/png":"text/html",location,null,null);}catch(Exception failure){throw new IllegalStateException(failure);}
+            try{return new Resource(200,picture?FullWebMediaTest.image(location.hashCode(),192,192):html.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),picture?"image/png":"text/html",location,null,null);}catch(Exception failure){throw new IllegalStateException(failure);}
         }};
         try(var embedding=new EmbeddingService(null)) {
             new VectorStore(db,384).storeBatch(List.of(new TextChunker.TextChunk("sentinel","保留原库","minecraft","Minecraft","web","fixture")),embedding);

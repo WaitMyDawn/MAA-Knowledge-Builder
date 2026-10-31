@@ -1,10 +1,10 @@
-﻿$ErrorActionPreference='Stop'
+$ErrorActionPreference='Stop'
 $projectRoot=Split-Path $PSScriptRoot -Parent
 Push-Location $projectRoot
 try {
 . ./scripts/test-set-tools.ps1
 $root=Join-Path (Get-Location) ('target/modenv1-workflow-check-'+[guid]::NewGuid().ToString('N'))
-$run=Join-Path $root 'sessions/run-fixture'
+$run=Join-Path $root 'runs/run-fixture'
 New-Item -ItemType Directory -Path $run -Force|Out-Null
 Copy-Item test-set/golden-set-modEnv1.json (Join-Path $run 'golden-set.json')
 $records=@(@{turnId='Crafting-01';question='fixture only';sessionId='fixture-session';error=$false;elapsedMs=123;rule=@{passed=$true};metrics=@{httpRequestCount=0;llmCallCount=2;tokenIn=100;tokenOut=20};observation=@{resourceAccess=@{retries=0;redirects=0;waitMs=1;backoffMs=0}}},@{turnId='Entity-01';question='fixture only';sessionId='fixture-session';error=$false;elapsedMs=456;rule=@{passed=$false};metrics=@{httpRequestCount=1;llmCallCount=1;tokenIn=50;tokenOut=10}})

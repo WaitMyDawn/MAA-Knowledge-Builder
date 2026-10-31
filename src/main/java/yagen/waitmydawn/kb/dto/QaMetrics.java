@@ -15,6 +15,7 @@ import java.util.*;
 public class QaMetrics {
     public yagen.waitmydawn.kb.service.KnowledgeRetrievalService.Diagnostics knowledgeRetrieval;
     public String answerGeneration;
+    public Map<String,yagen.waitmydawn.kb.service.RetrievalTelemetry.Work> workAudit=Map.of();
     public yagen.waitmydawn.kb.service.MediaAudit.Report mediaAudit;
     public yagen.waitmydawn.kb.service.MediaAudit.Performance mediaPerformance;
     /** 表示实际传入的证据块与引用身份，不表示模型正确使用了这些证据。 */
@@ -250,6 +251,10 @@ public class QaMetrics {
         // Cost
         sb.append("┌── Cost ──────────────────────────────────────────┐\n");
         sb.append(String.format("│ HTTP: %d 次 / 错误 %d / 正文 %d bytes\n",httpRequestCount,httpErrorCount,httpResponseBytes));
+        for(var entry:new TreeMap<>(workAudit==null?Map.<String,yagen.waitmydawn.kb.service.RetrievalTelemetry.Work>of():workAudit).entrySet()){
+            String label=switch(entry.getKey()){case "page.index.reused"->"复用网页索引";case "page.index.imported"->"同步网页索引";case "images.candidates"->"相关图片候选";case "images.selected"->"选定图片";case "images.cache.hit"->"图片缓存命中";case "images.excluded.small"->"排除小图";case "images.fetch_or_reuse"->"图片获取及复用耗时";case "images.bind"->"图片关联耗时";case "render.recipe.total"->"配方渲染及缓存读取耗时";case "render.loot.total"->"战利品渲染及缓存读取耗时";case "render.recipe.hit"->"配方图缓存命中";case "render.recipe.miss"->"配方图缓存未命中";case "render.loot.hit"->"战利品图缓存命中";case "render.loot.miss"->"战利品图缓存未命中";default->entry.getKey();};
+            sb.append("│ ").append(label).append("：").append(entry.getValue().count()).append(" · ").append(entry.getValue().millis()).append("ms\n");
+        }
         if(resourceAccess!=null){sb.append("│ 资源请求：网页 ").append(resourceAccess.documents()).append(" / 图片 ").append(resourceAccess.images()).append(" / 未分类 ").append(resourceAccess.unknown()).append(" / 重试 ").append(resourceAccess.retries()).append(" / 重定向 ").append(resourceAccess.redirects()).append('\n');sb.append("│ 资源耗时：限流等待 ").append(resourceAccess.waitMs()).append("ms / 退避 ").append(resourceAccess.backoffMs()).append("ms / HTTP ").append(resourceAccess.fetchMs()).append("ms\n");for(var event:resourceAccess.events().stream().limit(12).toList())sb.append("│ ").append(event.kind()).append(' ').append(event.host()).append(event.path()).append(" → ").append(event.status()).append(" · ").append(event.cause()).append('\n');}
         if(runtimeEvidence!=null)sb.append("│ 当前证据环境：Minecraft ").append(runtimeEvidence.minecraftVersion()).append(" · ").append(runtimeEvidence.loader()).append(" · ").append(runtimeEvidence.profile()).append('\n');
         if(guideIllustrations!=null&&!guideIllustrations.requested().isEmpty())sb.append("│ 步骤插图：已覆盖 ").append(guideIllustrations.covered()).append(" / 未选到 ").append(guideIllustrations.missing()).append('\n');

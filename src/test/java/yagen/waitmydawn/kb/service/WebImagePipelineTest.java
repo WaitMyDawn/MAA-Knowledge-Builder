@@ -23,7 +23,7 @@ class WebImagePipelineTest {
     @Test void fetchOverlapsProcessingWithBoundedQueueAndKeepsEveryOccurrence()throws Exception {
         var db=DatabaseBuilder.atPath(temp.resolve("pipeline"));db.initDatabase();
         var processing=new CountDownLatch(1);var release=new CountDownLatch(1);var fetched=new AtomicInteger();var once=new AtomicBoolean();
-        byte[] png=FullWebMediaTest.image(11,8,8);String url="https://example.com/guide";
+        byte[] png=FullWebMediaTest.image(11,192,192);String url="https://example.com/guide";
         var web=new WikiScraperService(){@Override public Resource fetchResource(String location,String referer,boolean image,Map<String,String> headers){
             RetrievalTelemetry.httpAttempt();if(location.equals(url))return new Resource(200,html(40,true).getBytes(java.nio.charset.StandardCharsets.UTF_8),"text/html",location,null,null);
             int n=fetched.incrementAndGet();if(n==2)try{assertTrue(processing.await(5,TimeUnit.SECONDS));}catch(InterruptedException interrupted){throw new CancellationException();}
@@ -64,7 +64,7 @@ class WebImagePipelineTest {
     }
 
     @Test void aFailedBatchDoesNotPublishPartialImageBindings()throws Exception {
-        var db=DatabaseBuilder.atPath(temp.resolve("batch"));db.initDatabase();byte[] png=FullWebMediaTest.image(2,8,8);String url="https://example.com/batch";
+        var db=DatabaseBuilder.atPath(temp.resolve("batch"));db.initDatabase();byte[] png=FullWebMediaTest.image(2,192,192);String url="https://example.com/batch";
         try(var c=db.getConnection();var s=c.createStatement()){s.execute("ALTER TABLE rag_web_image_reference ADD CONSTRAINT reject_image CHECK(NOT(status='AVAILABLE' AND id LIKE '%/image/5'))");}
         var web=new WikiScraperService(){@Override public Resource fetchResource(String location,String referer,boolean image,Map<String,String> headers){return new Resource(200,location.equals(url)?html(16,false).getBytes(java.nio.charset.StandardCharsets.UTF_8):png,location.equals(url)?"text/html":"image/png",location,null,null);}};web.setResourceDatabase(db);
         try(var embedding=new EmbeddingService(null)) {

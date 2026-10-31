@@ -12,6 +12,8 @@ public final class WebImageCompletion {
         int ordinal(){try{return Integer.parseInt(id.substring(id.lastIndexOf("/image/")+7));}catch(NumberFormatException failure){return block;}}
     }
     private record Download(List<Image> references,ImageAsset asset,byte[] bytes,String failure,boolean reused){}
+    private static final java.util.concurrent.locks.ReentrantLock[] URL_LOCKS=new java.util.concurrent.locks.ReentrantLock[256];
+    static {for(int i=0;i<URL_LOCKS.length;i++)URL_LOCKS[i]=new java.util.concurrent.locks.ReentrantLock();}
     private final WikiScraperService scraper;
     private final WebImageEnricher enricher;
     public WebImageCompletion(WikiScraperService scraper,WebImageEnricher enricher){this.scraper=scraper;this.enricher=enricher;}
@@ -22,12 +24,15 @@ public final class WebImageCompletion {
         }
         complete(documents,context);
     }
-    public void complete(Collection<String> documents,BuildSourceProcessor.Context context)throws Exception {
+    public void complete(Collection<String> documents,BuildSourceProcessor.Context context)throws Exception {completeSelected(documents,context,null);}
+    public void completeSelected(Collection<String> documents,BuildSourceProcessor.Context context,Set<String> selected)throws Exception {
         try(var timingScope=BuildTrace.phase("images.pipeline",documents.size()+" documents")) {
 
         var groups=new LinkedHashMap<String,List<Image>>();int total=0;
         try(var c=context.database().getConnection();var p=c.prepareStatement("SELECT r.*,d.location,o.image_id,a.relative_path,a.media_type,a.width,a.height,g.step_text AS bound_step FROM rag_web_image_reference r JOIN rag_document d ON d.id=r.document_id LEFT JOIN rag_image_occurrence o ON o.id=r.id LEFT JOIN rag_image_asset a ON a.id=o.image_id LEFT JOIN rag_image_grounding g ON g.id=r.id AND g.analysis_version=? WHERE r.document_id=? ORDER BY r.block_ordinal,r.id")) {
             for(String document:new LinkedHashSet<>(documents)){p.setString(1,GuideImageSemantics.VERSION);p.setString(2,document);try(var rows=p.executeQuery()){while(rows.next()) {
+                if(selected!=null&&!selected.contains(rows.getString("id")))continue;
+                if(!scraper.buildRefreshing()&&"EXCLUDED_SMALL".equals(rows.getString("status")))continue;
                 String url=rows.getString("url"),key;try{key=WebUrlPolicy.normalize(url);}catch(IllegalArgumentException invalid){key=url;}
                 groups.computeIfAbsent(key,ignored->new ArrayList<>()).add(new Image(rows.getString("id"),document,url,rows.getString("caption"),rows.getInt("block_ordinal"),rows.getString("location"),rows.getString("image_id"),rows.getString("relative_path"),rows.getString("media_type"),rows.getInt("width"),rows.getInt("height"),rows.getString("status"),rows.getString("step_text"),rows.getString("bound_step")));total++;
             }}}
@@ -36,25 +41,35 @@ public final class WebImageCompletion {
         var cache=new WebImageDownloadCache(scraper.resourceDatabase()==null?context.database():scraper.resourceDatabase(),context.images());
         var queue=new ArrayBlockingQueue<Download>(1);var attempts=new AtomicInteger();var peak=new AtomicInteger();var stop=new java.util.concurrent.atomic.AtomicBoolean();long[] fetchNanos={0};
         var executor=Executors.newSingleThreadExecutor(r->{var thread=new Thread(r,"mkb-web-image-download-"+UUID.randomUUID());thread.setDaemon(true);return thread;});
+        var decoded=new java.util.concurrent.ConcurrentHashMap<String,ImageAsset>();
         var producer=executor.submit(BuildTrace.carry(BuildTaskJournal.carry(RetrievalTelemetry.carry(BuildCancellation.carry(stop::get,()-> {
             var checked=new HashMap<String,Boolean>();var blockedSites=new HashMap<String,String>();
             var task=BuildTaskJournal.current();
             for(var entry:groups.entrySet()) {
                 context.checkCancelled();var references=entry.getValue();var first=references.getFirst();ImageAsset asset=null;byte[] bytes=null;String failure=null;boolean reused=false;
                 long started=System.nanoTime();
+                var lock=URL_LOCKS[Math.floorMod((context.images().directory()+entry.getKey()).hashCode(),URL_LOCKS.length)];
+                try{while(!lock.tryLock(200,TimeUnit.MILLISECONDS))context.checkCancelled();}
+                catch(InterruptedException cancelled){Thread.currentThread().interrupt();throw new CancellationException("Image URL lock cancelled");}
                 try {
                     WebUrlPolicy.normalize(entry.getKey());
                     if(!scraper.buildRefreshing())for(var image:references)if(image.asset()!=null&&checked.computeIfAbsent(image.asset()+"/"+image.path(),key->context.images().available(image.asset(),image.path()))) {
                         asset=new ImageAsset(image.asset(),image.path(),image.type(),image.width(),image.height(),null,null);break;
                     }
                     if(asset==null&&!scraper.buildRefreshing())asset=cache.find(entry.getKey(),scraper.buildCacheOnly());
-                    if(asset!=null)reused=true;
+                    if(asset!=null){reused=true;RetrievalTelemetry.operation("images.cache.hit",0,1);}
                     else {
                         String site=HostRequestGate.site(entry.getKey());failure=blockedSites.get(site);
+                        if(!scraper.buildRefreshing()&&cache.rejected(entry.getKey()))failure="SMALL: 已确认的小图";
                         if(failure==null&&task!=null)failure=task.imageFailure(context.images().directory()+"\n"+entry.getKey());
                         if(failure==null) {
                             attempts.incrementAndGet();var response=scraper.fetchBuildResource(entry.getKey(),first.location(),true);
-                            if(response.status()==200&&response.bytes()!=null)bytes=response.bytes();
+                            if(response.status()==200&&response.bytes()!=null){
+                                bytes=response.bytes();WebImagePolicy.check(bytes);
+                                String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+                                synchronized(decoded){asset=decoded.get(hash);if(asset==null){asset=context.images().put(bytes);decoded.put(hash,asset);context.result().webImageDecodes++;}}
+                                cache.save(entry.getKey(),asset);bytes=null;
+                            }
                             else {
                                 int status=response.status();failure=(status==403||status==429?"SITE_COOLDOWN":status==404||status==410?"PERMANENT":"TEMPORARY")+": HTTP "+status;
                                 if(status==403||status==429)blockedSites.put(site,failure);
@@ -62,13 +77,14 @@ public final class WebImageCompletion {
                             }
                         }
                     }
-                }catch(IllegalArgumentException invalid){failure="PERMANENT: 无效图片地址";}
+                }catch(java.io.IOException|java.security.NoSuchAlgorithmException|IllegalArgumentException invalid){failure="PERMANENT: "+Objects.toString(invalid.getMessage(),"无效图片");if(failure.contains("SMALL:"))cache.reject(entry.getKey());}
+                finally{lock.unlock();}
                 fetchNanos[0]+=System.nanoTime()-started;
                 try{var value=new Download(references,asset,bytes,failure,reused);while(!queue.offer(value,200,TimeUnit.MILLISECONDS))context.checkCancelled();peak.accumulateAndGet(queue.size(),Math::max);}
                 catch(InterruptedException cancelled){Thread.currentThread().interrupt();throw new CancellationException("Image download cancelled");}
             }
         })))));
-        var bindings=new WebImageBindings(context);var batch=new ArrayList<WebImageBindings.Ready>();var decoded=new HashMap<String,ImageAsset>();
+        var bindings=new WebImageBindings(context);var batch=new ArrayList<WebImageBindings.Ready>();
         int completed=0;long lastProgress=0;long processNanos=0,storeNanos=0;
         try {
             progress(context,0,total,attempts.get(),"开始正文图片流水线");
@@ -82,14 +98,18 @@ public final class WebImageCompletion {
                 received++;long started=System.nanoTime();ImageAsset asset=download.asset();String failure=download.failure();
                 if(failure==null&&asset==null)try {
                     String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(download.bytes()));
-                    asset=decoded.get(hash);if(asset==null){asset=context.images().put(download.bytes());decoded.put(hash,asset);context.result().webImageDecodes++;}
+                    asset=decoded.get(hash);if(asset==null){WebImagePolicy.check(download.bytes());asset=context.images().put(download.bytes());decoded.put(hash,asset);context.result().webImageDecodes++;}
                     cache.save(download.references().getFirst().url(),asset);
-                }catch(java.io.IOException|IllegalArgumentException invalid){failure="PERMANENT: "+Objects.toString(invalid.getMessage(),"图片格式无效");}
+                }catch(java.io.IOException|java.security.NoSuchAlgorithmException|IllegalArgumentException invalid){failure="PERMANENT: "+Objects.toString(invalid.getMessage(),"图片格式无效");}
+                if(asset!=null&&!WebImagePolicy.allowed(asset.width(),asset.height())){asset=null;failure="SMALL: 图片宽高须分别大于160";}
+                if(failure!=null&&failure.contains("SMALL:"))cache.reject(download.references().getFirst().url());
                 if(failure!=null&&BuildTaskJournal.current()!=null)BuildTaskJournal.current().imageFailure(context.images().directory()+"\n"+download.references().getFirst().url(),failure);
                 processNanos+=System.nanoTime()-started;
                 for(var image:download.references()) {
                     context.checkCancelled();
-                    if(failure!=null) {
+                    if(failure!=null&&failure.contains("SMALL:")) {
+                        context.result().excludedSmallWebImages++;RetrievalTelemetry.operation("images.excluded.small",0,1);
+                    }else if(failure!=null) {
                         context.result().deferredWebImages++;
                         if(failure.startsWith("PERMANENT"))context.result().permanentImageFailures++;else if(failure.startsWith("SITE_COOLDOWN"))context.result().cooldownImageFailures++;else context.result().temporaryImageFailures++;
                     }else {
@@ -129,6 +149,8 @@ public final class WebImageCompletion {
                 if(interrupted)Thread.currentThread().interrupt();
             }
         }
+        RetrievalTelemetry.operation("images.fetch_or_reuse",fetchNanos[0],attempts.get());
+        RetrievalTelemetry.operation("images.bind",storeNanos,completed);
         progress(context,completed,total,attempts.get(),"正文图片处理完成");
         }
     }

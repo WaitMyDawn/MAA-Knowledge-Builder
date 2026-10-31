@@ -12,6 +12,8 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
     private final DocumentDirectoryProcessor documents;
     private final WebImageEnricher imageEnricher;
     private int prewarmPages;
+    private boolean downloadImages=true;
+    UrlBuildProcessor withoutImageDownloads(){downloadImages=false;return this;}
     UrlBuildProcessor withPrewarmPages(int count){prewarmPages=Math.max(0,Math.min(30,count));return this;}
     public UrlBuildProcessor(WikiScraperService scraper) { this(scraper, null); }
     void useResourceDatabase(yagen.waitmydawn.kb.model.DatabaseBuilder database){scraper.setResourceDatabase(database);}
@@ -153,7 +155,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
             } else {
             context.result().reusedDocuments++;
             context.content().linkDocumentSource(documentId, source.id());
-            if(!context.refresh())new WebImageCompletion(scraper,imageEnricher).complete(List.of(documentId),context);
+            if(!context.refresh())if(downloadImages)new WebImageCompletion(scraper,imageEnricher).complete(List.of(documentId),context);
             return;
             }
         }
@@ -192,7 +194,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
             context.content().saveImageReference(occurrence,documentId,image.url(),image.caption(),parsed.blocks().get(ordinal).headingPath(),ordinal,"DEFERRED","等待缓存正文图片");
             context.content().setImageStep(occurrence,image.stepText());
         }
-        new WebImageCompletion(scraper,imageEnricher).complete(List.of(documentId),context);
+        if(downloadImages)new WebImageCompletion(scraper,imageEnricher).complete(List.of(documentId),context);
         // 同一网页从 JAR 和网址进入时，用带图文定位的新块替换暂存库中的旧文本块。
         // 保持向量 chunk_id 与图文内容块一致，后续才能从命中块追溯图片。
         context.vectors().storeBatch(vectors, context.embedder());

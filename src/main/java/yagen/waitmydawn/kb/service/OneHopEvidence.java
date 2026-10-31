@@ -14,6 +14,8 @@ final class OneHopEvidence {
         boolean crafting = question.matches("(?s).*(合成|制作|酿造|做出|怎么做).*" );
         if (llm == null || !(playing || crafting || question.matches("(?s).*(获取|获得).*")))
             return new Selection(List.of(), List.of());
+        boolean materials=question.matches("(?s).*(材料.*(?:获取|获得|哪里|制作)|(?:获取|获得|哪里).*材料|酿造|酿药|前置|多步骤|流程|组装|升级|召唤).*" );
+        if(crafting&&!playing&&!materials&&!recipes.isEmpty())return new Selection(List.of(),List.of());
         StringBuilder context = new StringBuilder();
         evidence.stream().limit(24).forEach(c -> context.append(c.chunkText()).append('\n'));
         recipes.stream().limit(4).forEach(r -> context.append(r.recipeJson()).append('\n'));

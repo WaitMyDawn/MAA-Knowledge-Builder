@@ -113,8 +113,14 @@ public class IncrementalKnowledgeService {
     }
 
     public Map<String,float[]> pageEmbeddings(List<VectorStore.SearchResult> chunks, String profile) {
-        if(currentDb==null) throw new IllegalStateException("No incremental database for page evidence");
-        return currentDb.getVectorStore().loadEmbeddings(chunks,profile);
+        var vectors=new java.util.HashMap<String,float[]>();var databases=new ArrayList<DatabaseBuilder>();databases.add(baseDb);if(currentDb!=null)databases.add(currentDb.getDb());
+        for(var database:databases){var present=new HashSet<String>();
+            try(var c=database.getConnection()){try(var tables=c.getMetaData().getTables(null,null,"rag_vectors",null)){if(!tables.next())continue;}for(int start=0;start<chunks.size();start+=100){var batch=chunks.subList(start,Math.min(start+100,chunks.size()));try(var p=c.prepareStatement("SELECT chunk_id FROM rag_vectors WHERE chunk_id IN ("+String.join(",",Collections.nCopies(batch.size(),"?"))+")")){for(int i=0;i<batch.size();i++)p.setString(i+1,batch.get(i).chunkId());try(var r=p.executeQuery()){while(r.next())present.add(r.getString(1));}}}}
+            catch(java.sql.SQLException e){throw new IllegalStateException("页面向量身份读取失败",e);}
+            var selected=chunks.stream().filter(chunk->present.contains(chunk.chunkId())&&!vectors.containsKey(chunk.chunkId())).toList();
+            if(!selected.isEmpty())new VectorStore(database,384).loadEmbeddings(selected,profile).forEach(vectors::putIfAbsent);
+        }
+        if(chunks.stream().anyMatch(chunk->!vectors.containsKey(chunk.chunkId())))throw new IllegalStateException("Stored page embeddings missing");return vectors;
     }
 
     /**

@@ -34,11 +34,14 @@ public class RendererService {
     public RendererService(AppConfig config,DatabaseBuilder db) {this(config,db,config.getDataDir());}
     public RendererService(AppConfig config,DatabaseBuilder db,Path assetDirectory) {this.config=config;this.db=db;this.assetDirectory=assetDirectory;}
     public Map<String,String> renderRecipes(List<QaPipeline.RecipeMatch> matches) {return renderDetailed(matches).images();}
-    public RenderBatch renderDetailed(List<QaPipeline.RecipeMatch> matches) {
+    public RenderBatch cachedDetailed(List<QaPipeline.RecipeMatch> matches) {return renderDetailed(matches,true);}
+    public RenderBatch renderDetailed(List<QaPipeline.RecipeMatch> matches) {return renderDetailed(matches,false);}
+    private RenderBatch renderDetailed(List<QaPipeline.RecipeMatch> matches,boolean cacheOnly) {
         var images=new LinkedHashMap<String,String>();var cards=new ArrayList<RenderedRecipe>();var diagnostics=new ArrayList<String>();
         if(matches==null||matches.isEmpty())return new RenderBatch(images,cards,diagnostics);
         var icons=new ItemIconService(db,assetDirectory).snapshot();
         for(var match:matches) {
+            long renderStarted=System.nanoTime();
             if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("Recipe rendering cancelled");
             try {
                 if("SEED".equals(match.sourceType()))throw new IllegalArgumentException("内置示例配方未核对版本，请先导入真实 JAR 配方");
@@ -79,22 +82,24 @@ public class RendererService {
                 String outputKey=plan.output().dynamic()?"minecraft:smithing_trim":plan.output().itemId();
                 String key=outputKey+"#"+fingerprint.substring(0,24);
                 String family=switch(plan.kind()){case SHAPED,SHAPELESS->"crafting";case SMITHING_TRANSFORM,SMITHING_TRIM->"smithing";case STONECUTTING->"stonecutting";default->"furnace";};
-                Path directory=config.getGeneratedDir().resolve(family);Files.createDirectories(directory);
+                Path directory=config.getGeneratedDir().resolve(family);if(!cacheOnly)Files.createDirectories(directory);
                 String safe=outputKey.replaceAll("[^a-zA-Z0-9_-]","_");if(safe.length()>80)safe=safe.substring(0,80);
                 Path file=directory.resolve(safe+"_"+fingerprint.substring(0,24)+".png");Path sidecar=directory.resolve(file.getFileName()+".json");
                 String pngHash=cachedHash(file,sidecar,fingerprint);
+                RetrievalTelemetry.operation(pngHash==null?"render.recipe.miss":"render.recipe.hit",0,1);
                 if(pngHash==null) {
+                    if(cacheOnly)continue;
                     var image=RecipeCardRenderer.render(new RecipeCardRenderer.Card(plan,inputs,visual(output),metadata,List.copyOf(notes)));
                     Path temp=Files.createTempFile(directory,"recipe-",".png");
                     try {ImageIO.write(image,"PNG",temp.toFile());pngHash=ArtifactFingerprint.sha256(temp);move(temp,file);}finally{Files.deleteIfExists(temp);}
                 }
                 var rendered=new RenderedRecipe(key,file.toAbsolutePath().toString(),fingerprint,meta.id(),match.recipeJson(),match.sourceMod(),sourceType,profile==null?null:profile.id(),plan,evidence,proof(output),metadata,List.copyOf(notes),pngHash);
-                byte[] report=JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(rendered);if(report.length>16*1024*1024)throw new IllegalArgumentException("配方说明超过归档预算");
-                Path temp=Files.createTempFile(directory,"recipe-",".json");try{Files.write(temp,report);move(temp,sidecar);}finally{Files.deleteIfExists(temp);}
+                if(!cacheOnly){byte[] report=JSON.writerWithDefaultPrettyPrinter().writeValueAsBytes(rendered);if(report.length>16*1024*1024)throw new IllegalArgumentException("配方说明超过归档预算");
+                Path temp=Files.createTempFile(directory,"recipe-",".json");try{Files.write(temp,report);move(temp,sidecar);}finally{Files.deleteIfExists(temp);}}
                 images.put(key,rendered.path());cards.add(rendered);
             } catch(Exception e) {
                 String message=Objects.toString(match.outputItem(),"未知产物")+"："+e.getMessage();diagnostics.add(message);LOG.warn("Recipe rendering skipped: {}",message);
-            }
+            }finally{RetrievalTelemetry.operation("render.recipe.total",System.nanoTime()-renderStarted,1);}
         }
         return new RenderBatch(images,cards,diagnostics);
     }

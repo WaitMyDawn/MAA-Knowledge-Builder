@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 function Write-TestText([string]$Path,[string]$Text) {
     [IO.File]::WriteAllText($Path,$Text,(New-Object Text.UTF8Encoding($false)))
 }
@@ -27,7 +27,7 @@ function New-TestReview([string]$SetDirectory,[string]$RunDirectory) {
         $failures=@(Get-TestValue $record.rule 'outcomes' @() | Where-Object {$null -ne $_ -and -not $_.passed} | ForEach-Object {$_.kind+': '+$_.detail})
         $failureText=if($failures.Count){$failures -join '；'}else{'无已记录的失败细项；仍需人工评审'}
         $session=Get-TestValue $record 'sessionId' (Get-TestValue $record.metrics 'sessionId' '')
-        $lines+=@(('## '+$record.turnId),'',('问题：'+$record.question),'',('规则结果（仅供参考）：'+$pass),('失败细项：'+$failureText),('会话：sessions/'+$runId+'/sessions/'+$session+'.json'),'','人工评级：','','<!-- human-comment:begin -->','','<!-- human-comment:end -->','')
+        $lines+=@(('## '+$record.turnId),'',('问题：'+$record.question),'',('规则结果（仅供参考）：'+$pass),('失败细项：'+$failureText),('会话：runs/'+$runId+'/sessions/'+$session+'.json'),'','人工评级：','','<!-- human-comment:begin -->','','<!-- human-comment:end -->','')
     }
     Write-TestText (Join-Path $SetDirectory 'eval.md') ($lines -join "`n")
     Write-TestText (Join-Path $SetDirectory 'active-run.json') (@{runId=$runId;runDirectory=$RunDirectory;turnRecordsSha256=(Get-FileHash -LiteralPath (Join-Path $RunDirectory 'turns.jsonl') -Algorithm SHA256).Hash.ToLowerInvariant();questionSetSha256=(Get-FileHash -LiteralPath (Join-Path $RunDirectory 'golden-set.json') -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json)
@@ -37,7 +37,7 @@ function Complete-TestReview([string]$SetDirectory,[switch]$ConfirmReviewComplet
     $active=Read-TestJson (Join-Path $SetDirectory 'active-run.json')
     if($active.runId -notmatch '^[A-Za-z0-9._-]+$' -or $active.runId -in @('.','..')){throw 'Invalid active run id.'}
     $runDirectory=[IO.Path]::GetFullPath($active.runDirectory)
-    $expected=[IO.Path]::GetFullPath((Join-Path (Join-Path $SetDirectory 'sessions') $active.runId))
+    $expected=[IO.Path]::GetFullPath((Join-Path (Join-Path $SetDirectory 'runs') $active.runId))
     if($runDirectory -ne $expected){throw 'Run directory does not match active run.'}
     $specPath=Join-Path $runDirectory 'golden-set.json'
     if((Get-FileHash -LiteralPath $specPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $active.questionSetSha256){throw 'Run question snapshot changed.'}
@@ -87,8 +87,8 @@ function Complete-TestReview([string]$SetDirectory,[switch]$ConfirmReviewComplet
         if($null -ne $resource){$resourceRows++;$retry+=[long]$resource.retries;$redirect+=[long]$resource.redirects;$wait+=[long]$resource.waitMs;$backoff+=[long]$resource.backoffMs}
     }
     $usable=[Math]::Round(100.0*($gradeCounts.S+$gradeCounts.A)/$records.Count,2)
-    $lines=@('# modEnv1 测试结果','',('run_id: '+$active.runId),('人工提交时间：'+[DateTimeOffset]::Now.ToString('o')),'','## 本轮身份与可比条件','',('题集 SHA-256：`'+$active.questionSetSha256+'`'),('原始归档：`sessions/'+$active.runId+'`'),('执行状态：'+$manifest.status),'模型裁判：关闭。人工评级与自动规则独立统计。','', '执行 manifest：','', '```json',($manifest|ConvertTo-Json -Depth 12),'```','','## 执行情况','',('计划 '+$planned.Count+' 轮，已记录 '+$records.Count+'，错误 '+$errors+'，未记录 '+$missing.Count+'。'),('未记录题号：'+($missing.id -join '、')),'未记录与前置条件缺失不计为通过；不能因脚本退出正常就宣称题集通过。','','## 规则裁判','',('PASS '+$rulePass+' / '+$records.Count+'；FAIL '+($records.Count-$rulePass)+'。'),'规则通过仅证明已实现的检查项，不证明所有获取途径、属性、战术或图片像素语义正确。','','## 人工裁判','',('| S | A | B | C | D |'),('| ---: | ---: | ---: | ---: | ---: |'),('| '+$gradeCounts.S+' | '+$gradeCounts.A+' | '+$gradeCounts.B+' | '+$gradeCounts.C+' | '+$gradeCounts.D+' |'),('已执行题评审覆盖率：100%；相对计划题评审覆盖率：'+[Math]::Round(100.0*$records.Count/$planned.Count,2)+'%。'),('人工可用比例（S+A／已评审）：'+$usable+'%。'),'','## 逐题对照表','','| 题号 | 规则 | 人工 | 问答毫秒 | 证据 |','| --- | --- | --- | ---: | --- |')
-    foreach($record in $records){$pass=if($record.rule.passed){'PASS'}else{'FAIL'};$lines+='| '+$record.turnId+' | '+$pass+' | '+$reviews[$record.turnId].grade+' | '+$record.elapsedMs+' | `sessions/'+$active.runId+'/turns.jsonl` |'}
+    $lines=@('# modEnv1 测试结果','',('run_id: '+$active.runId),('人工提交时间：'+[DateTimeOffset]::Now.ToString('o')),'','## 本轮身份与可比条件','',('题集 SHA-256：`'+$active.questionSetSha256+'`'),('原始归档：`runs/'+$active.runId+'`'),('执行状态：'+$manifest.status),'模型裁判：关闭。人工评级与自动规则独立统计。','', '执行 manifest：','', '```json',($manifest|ConvertTo-Json -Depth 12),'```','','## 执行情况','',('计划 '+$planned.Count+' 轮，已记录 '+$records.Count+'，错误 '+$errors+'，未记录 '+$missing.Count+'。'),('未记录题号：'+($missing.id -join '、')),'未记录与前置条件缺失不计为通过；不能因脚本退出正常就宣称题集通过。','','## 规则裁判','',('PASS '+$rulePass+' / '+$records.Count+'；FAIL '+($records.Count-$rulePass)+'。'),'规则通过仅证明已实现的检查项，不证明所有获取途径、属性、战术或图片像素语义正确。','','## 人工裁判','',('| S | A | B | C | D |'),('| ---: | ---: | ---: | ---: | ---: |'),('| '+$gradeCounts.S+' | '+$gradeCounts.A+' | '+$gradeCounts.B+' | '+$gradeCounts.C+' | '+$gradeCounts.D+' |'),('已执行题评审覆盖率：100%；相对计划题评审覆盖率：'+[Math]::Round(100.0*$records.Count/$planned.Count,2)+'%。'),('人工可用比例（S+A／已评审）：'+$usable+'%。'),'','## 逐题对照表','','| 题号 | 规则 | 人工 | 问答毫秒 | 证据 |','| --- | --- | --- | ---: | --- |')
+    foreach($record in $records){$pass=if($record.rule.passed){'PASS'}else{'FAIL'};$lines+='| '+$record.turnId+' | '+$pass+' | '+$reviews[$record.turnId].grade+' | '+$record.elapsedMs+' | `runs/'+$active.runId+'/turns.jsonl` |'}
     $lines+=@('','## 人工评语原文','')
     $general=[regex]::Match($text,'(?s)<!-- general-comment:begin -->(.*?)<!-- general-comment:end -->')
     if($general.Success){$lines+=@('### 总体意见','',$general.Groups[1].Value.Trim(),'')}

@@ -135,10 +135,12 @@ public class UrlAgent {
         this.matcher = m;
     }
 
+    private yagen.waitmydawn.kb.service.WebPageMediaService pageMedia;
     public void setMediaDirectory(java.nio.file.Path directory){
         scraper.setResourceDatabase(db);
         var media=new yagen.waitmydawn.kb.service.WebPageMediaService(db,embedder,directory,scraper);
-        scraper.setPageMediaHandler(media::acquire);
+        pageMedia=media;
+        scraper.setPageMediaHandler(null);
     }
 
     /**
@@ -219,9 +221,8 @@ public class UrlAgent {
             log.info("UrlAgent: alias '{}' -> {} registries {}", hit.label(),
                     fetched.registries().size(), fetched.registries());
             String modName = resolveModName(hit.modId());
-            List<TextChunker.TextChunk> stored = incremental.acquireFetchedPage(
-                    hit.label(), hit.url(), fetched.page().content(), "mcmod",
-                    hit.modId(), modName, embedder);
+            List<TextChunker.TextChunk> stored = pageMedia==null?incremental.acquireFetchedPage(
+                    hit.label(), hit.url(), fetched.page().content(), "mcmod",hit.modId(), modName, embedder):pageMedia.acquirePage(fetched.page().url(),hit.modId(),modName,fetched.page().content());
             visitedUrls.add(hit.url());
             fetchedPageCache.put(hit.url(), new CachedPage(hit.label(), hit.subQuery(),
                     toSearchResults(stored), fetched.registries()));
@@ -257,9 +258,8 @@ public class UrlAgent {
             }
             log.info("UrlAgent: wiki topic '{}' -> {} registries {}", topic,
                     fetched.registries().size(), fetched.registries());
-            List<TextChunker.TextChunk> stored = incremental.acquireFetchedPage(
-                    topic, fetched.page().url(), fetched.page().content(), "mcwiki",
-                    "minecraft", "Minecraft", embedder);
+            List<TextChunker.TextChunk> stored = pageMedia==null?incremental.acquireFetchedPage(
+                    topic, fetched.page().url(), fetched.page().content(), "mcwiki","minecraft", "Minecraft", embedder):pageMedia.acquirePage(fetched.page().url(),"minecraft","Minecraft",fetched.page().content());
             visitedWikiTopics.add(topic);
             fetchedPageCache.put(cacheKey, new CachedPage(topic, topic,
                     toSearchResults(stored), fetched.registries()));

@@ -159,7 +159,7 @@ final class RuntimeEntityMedia {
     }
     String evidence(QaPipeline.QaResult result,String previous){
         var text=new StringBuilder(Objects.toString(previous,""));text.append("\n[Allowed runtime media: metadata only, not visual inspection or gameplay evidence]\n");
-        for(var p:result.artifacts.pictures())if(Set.of("ENTITY","ITEM","RECIPE").contains(p.role()))text.append("[[image:").append(p.id()).append("]] ").append(p.caption()).append("；").append(p.context(),0,Math.min(1800,p.context().length())).append('\n');
+        for(var p:result.artifacts.pictures())if(Set.of("ENTITY","ITEM","RECIPE","LOOT").contains(p.role()))text.append("[[image:").append(p.id()).append("]] ").append(p.caption()).append("；").append(p.context(),0,Math.min(1800,p.context().length())).append('\n');
         for(String warning:result.mediaWarnings)text.append("Media limitation: ").append(warning).append('\n');
         text.append("Insert each image only next to its matching object/state/recipe. For comparisons keep every state distinct, even when images share pixels. Never claim an unavailable state exists. Images are independently scaled; do not infer actual size, stats, recipes or drops from appearance.\n");return text.toString();
     }
@@ -167,10 +167,10 @@ final class RuntimeEntityMedia {
         String answer=Objects.toString(result.answer,"");var used=new HashSet<String>();var matcher=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(AnswerMedia.referenceText(answer));while(matcher.find())used.add(matcher.group(1));
         var kept=new ArrayList<AnswerArtifacts.Picture>();var additions=new ArrayList<String>();boolean visual=question.matches("(?is).*(展示|外观|图片|配图|长什么样|比较|对比|区别|分别|show|look).*" );
         for(var picture:result.artifacts.pictures()){
-            if(!Set.of("ENTITY","ITEM","RECIPE").contains(picture.role())){kept.add(picture);continue;}
+            if(!Set.of("ENTITY","ITEM","RECIPE","LOOT").contains(picture.role())){kept.add(picture);continue;}
             var request=result.mediaPlan==null?null:result.mediaPlan.requests().stream().filter(r->picture.context().contains(r.subject().registry())).findFirst().orElse(null);
             boolean discussed=request!=null&&(answer.contains(request.subject().registry())||request.subject().names().stream().filter(n->n.length()>1||question.contains(n)).anyMatch(answer::contains));
-            boolean show=visual||discussed||picture.role().equals("RECIPE");String marker="!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")";
+            boolean show=picture.role().equals("LOOT")?used.contains(picture.id()):visual||discussed||picture.role().equals("RECIPE");String marker="!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")";
             if(used.contains(picture.id())&&request!=null&&!associated(answer,picture,request,result.runtimeMediaStates.get(picture.id()))){
                 answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");used.remove(picture.id());
             }

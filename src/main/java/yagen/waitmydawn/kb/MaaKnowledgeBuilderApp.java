@@ -247,9 +247,14 @@ public class MaaKnowledgeBuilderApp extends Application {
         seedPage = buildSeedPage(stage);
         metricsPage = buildMetricsPage();
         settingsPage = buildSettingsPage(stage);
-        var catalogTab=new Tab("分类目录",new yagen.waitmydawn.kb.ui.KnowledgeBrowser(db,worker));catalogTab.setClosable(false);
+        var catalogTab=new Tab("网页目录",new yagen.waitmydawn.kb.ui.KnowledgeBrowser(db,worker));catalogTab.setClosable(false);
         var sourcesTab=new Tab("来源管理",new yagen.waitmydawn.kb.ui.SourceManagerPane(config,db,embedder,this::runSourceMaintenance,this::reloadAfterSourceMaintenance));sourcesTab.setClosable(false);
-        var knowledgeTabs=new TabPane(catalogTab,sourcesTab);VBox.setVgrow(knowledgeTabs,Priority.ALWAYS);knowledgePage=new VBox(knowledgeTabs);
+        var knowledgeTabs=new TabPane(catalogTab);
+        String[] runtimeTitles={"配方目录","实体目录","物品目录","语言目录","战利品目录"};int runtimeIndex=0;
+        for(var kind:yagen.waitmydawn.kb.service.RuntimeCatalog.Kind.values()){
+            var tab=new Tab(runtimeTitles[runtimeIndex],new yagen.waitmydawn.kb.ui.RuntimeBrowser(db,config,worker,kind,runtimeTitles[runtimeIndex++]));tab.setClosable(false);knowledgeTabs.getTabs().add(tab);
+        }
+        knowledgeTabs.getTabs().add(sourcesTab);VBox.setVgrow(knowledgeTabs,Priority.ALWAYS);knowledgePage=new VBox(knowledgeTabs);
         evaluationPage = new yagen.waitmydawn.kb.ui.EvaluationBrowser(config.getDataDir());
 
         contentArea = new StackPane(builderPage); // default page
@@ -704,7 +709,7 @@ public class MaaKnowledgeBuilderApp extends Application {
         logText("新增文档："+result.documents+"，复用文档："+result.reusedDocuments+"，跳过网址："+result.reusedSources);
         logText("图标包："+result.nativeIconPacks+"，新增图标："+result.nativeIcons+"，失败记录："+result.failedNativeIcons+"，复用图标包："+result.reusedIconPacks);
         logText("新增向量："+result.addedEmbeddings+"，总向量："+result.embeddings+"，本次导入配方："+result.recipes);
-        logText("教程："+result.tutorials+"，网页图片："+result.webImages+"，未缓存图片："+result.deferredWebImages);
+        logText("教程："+result.tutorials+"，网页图片："+result.webImages+"，未缓存图片："+result.deferredWebImages+"，尺寸不足已排除："+result.excludedSmallWebImages);
         logText("本地图片："+result.localImages+"，OCR："+result.ocrImages+"，视觉描述："+result.visionImages);
         logText("网页图片正文关联："+result.enrichedWebImages+"；网页自动 OCR 已关闭，按标题、图注、相邻段落和步骤检索配图。");
         logText("图片流水线：获取尝试 "+result.webImageAttempts+"，复用 "+result.reusedWebImages+"，批量关联 "+result.webImageBindings+"；永久失败 "+result.permanentImageFailures+"，临时失败 "+result.temporaryImageFailures+"，站点冷却 "+result.cooldownImageFailures);

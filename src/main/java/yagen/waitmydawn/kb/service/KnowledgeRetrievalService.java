@@ -288,14 +288,15 @@ public final class KnowledgeRetrievalService {
 
     public Retrieval hydrate(Retrieval retrieval,String question) {
         if(!imageFetching || pageMedia==null || retrieval.hits().isEmpty()) return retrieval;
-        if(pageMedia!=null)pageMedia.complete(retrieval.artifacts().sources().stream().map(AnswerArtifacts.Source::documentId).distinct().toList());
+        var references=WebImagePolicy.select(db,retrieval.artifacts(),question);
+        pageMedia.completeSelected(retrieval.artifacts().sources().stream().map(AnswerArtifacts.Source::documentId).distinct().toList(),references);
         String imageQuery=imageQuery(retrieval,question);
         var present=new ArrayList<>(retrieval.artifacts().pictures());
         var completedImages=imageSearch.search(imageQuery,retrieval.artifacts(),retrieval.diagnostics());
         completedImages.pictures().stream().filter(p -> present.stream().noneMatch(i -> i.id().equals(p.id()))).forEach(present::add);
         completedImages.repairs().stream().filter(p -> present.stream().noneMatch(i -> i.id().equals(p.id()))).forEach(present::add);
         var completion=pageMedia.lastResult();
-        var hydration=new KnowledgeImageHydrator.Audit(completion.webImageAttempts,completion.webImageAttempts,completion.webImages,completion.deferredWebImages,completion.deferredWebImages>0?"PAGE_CACHE_INCOMPLETE":"PAGE_CACHE_COMPLETE",completion.webOcrAttempts,0);
+        var hydration=new KnowledgeImageHydrator.Audit(completion.webImageAttempts,completion.webImageAttempts,completion.webImages,completion.deferredWebImages,completion.deferredWebImages>0?"SELECTED_CACHE_INCOMPLETE":"SELECTED_CACHE_COMPLETE",completion.webOcrAttempts,0);
         var pictures=GuideIllustrationCoverage.select(question,present.stream().filter(p->imageAssets.available(p.assetId(),p.relativePath())).toList(),4);
         var artifacts=retrieval.artifacts();
         var expanded=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),pictures);

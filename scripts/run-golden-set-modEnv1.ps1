@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$DataDirectory='D:\Minecraft\MKB-Database',
     [switch]$UseSavedKey,
     [switch]$SkipCompile,
@@ -46,7 +46,7 @@ try {
     }
     if(-not(Test-Path -LiteralPath target/classes/yagen/waitmydawn/kb/HeadlessRunner.class)){throw 'Compile the current sources before using -SkipCompile.'}
     $runId='run-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'-modEnv1'
-    $outputRoot=Join-Path $setDirectory 'sessions'
+    $outputRoot=Join-Path $setDirectory 'runs'
     New-Item -ItemType Directory -Path $outputRoot -Force|Out-Null
     $runDirectory=Join-Path $outputRoot $runId
     $started=[DateTimeOffset]::Now
