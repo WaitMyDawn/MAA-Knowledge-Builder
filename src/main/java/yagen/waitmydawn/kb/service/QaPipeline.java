@@ -605,7 +605,62 @@ public class QaPipeline {
         m.addTrace("InstallationGuard",0,"按快照校正 "+conflicts.size()+" 处安装结论："+detail);
         log.warn("Answer installation claim corrected against snapshot: {}",detail);
     }
-    private void prepareMedia(QaResult result,String question){
+    /** 在任意嵌套里找带 pattern 数组的配方节点，避免依赖外层包装结构。 */
+    /** 从任意层级找 recipeId（退而求其次找 id），用于图注与缓存键。 */
+    /** 找带 result/results 的配方节点（通用卡用）。 */
+    private static com.fasterxml.jackson.databind.JsonNode findResultNode(com.fasterxml.jackson.databind.JsonNode node){
+        if(node==null)return null;
+        if(node.isObject()){
+            if(node.has("result")||node.has("results")||node.has("output")||node.has("outputs"))return node;
+            for(var it=node.elements();it.hasNext();){var found=findResultNode(it.next());if(found!=null)return found;}
+        }else if(node.isArray()){
+            for(var child:node){var found=findResultNode(child);if(found!=null)return found;}
+        }
+        return null;
+    }    private static String recipeId(com.fasterxml.jackson.databind.JsonNode node){
+        if(node==null)return "recipe";
+        if(node.isObject()){
+            if(node.path("recipeId").isTextual())return node.path("recipeId").asText();
+            if(node.path("id").isTextual())return node.path("id").asText();
+            for(var it=node.elements();it.hasNext();){String found=recipeId(it.next());if(!"recipe".equals(found))return found;}
+        }else if(node.isArray()){
+            for(var child:node){String found=recipeId(child);if(!"recipe".equals(found))return found;}
+        }
+        return "recipe";
+    }    private static com.fasterxml.jackson.databind.JsonNode findPatternNode(com.fasterxml.jackson.databind.JsonNode node){
+        if(node==null)return null;
+        if(node.isObject()){
+            if(node.has("pattern")&&node.path("pattern").isArray())return node;
+            for(var it=node.elements();it.hasNext();){var found=findPatternNode(it.next());if(found!=null)return found;}
+        }else if(node.isArray()){
+            for(var child:node){var found=findPatternNode(child);if(found!=null)return found;}
+        }
+        return null;
+    }    /** 未适配的机械合成配方按 pattern 实际尺寸出卡。 */
+    private void attachMechanicalCrafting(QaResult result){
+        if(result.recipesToRender.isEmpty()&&result.toolRecipes.isEmpty())return;
+        String profile=RuntimeKnowledgeStore.active(baseDb);if(profile==null)return;
+        var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
+        for(var match:result.recipesToRender){
+            try{
+                var json=mapper.readTree(match.recipeJson());
+                var render=findPatternNode(json);if(render==null){var genericNode=findResultNode(json);if(genericNode==null)continue;String genericId=recipeId(json);String genericKey="g"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(profile+genericId).substring(0,20);if(result.artifacts.pictures().stream().anyMatch(p->p.id().equals(genericKey)))continue;var genericImage=yagen.waitmydawn.kb.service.GenericRecipeCard.draw(genericNode,genericId,new yagen.waitmydawn.kb.service.ItemIconService(baseDb,mediaDirectory).snapshot());var genericFolder=mediaDirectory.resolve("generated/recipes");java.nio.file.Files.createDirectories(genericFolder);var genericFile=genericFolder.resolve(genericKey+".png");javax.imageio.ImageIO.write(genericImage,"PNG",genericFile.toFile());var genericAsset=new yagen.waitmydawn.kb.service.ImageAssetStore(mediaDirectory).put(java.nio.file.Files.readAllBytes(genericFile));String genericSource="s"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint("generic:"+profile+genericId).substring(0,20);var genericSources=new ArrayList<>(result.artifacts.sources());var genericPictures=new ArrayList<>(result.artifacts.pictures());genericSources.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Source(genericSource,"mkb-runtime:"+profile+"/recipes/"+genericId,genericId,genericId,"实机配方",null,"RUNTIME_SNAPSHOT",genericId));genericPictures.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Picture(genericKey,genericAsset.id(),genericAsset.relativePath(),"通用配方："+genericId,genericSource,"RECIPE",java.util.List.of(),genericId,null,null,null));result.artifacts=new yagen.waitmydawn.kb.model.AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),genericSources,genericPictures,result.artifacts.citedSourceIds());continue;}
+                if(!MechanicalCraftingCard.supports(render))continue;
+                String id=recipeId(json);
+                String key="m"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(profile+id).substring(0,20);
+                if(result.artifacts.pictures().stream().anyMatch(p->p.id().equals(key)))continue;
+                var image=MechanicalCraftingCard.draw(render,new yagen.waitmydawn.kb.service.ItemIconService(baseDb,mediaDirectory).snapshot());
+                var folder=mediaDirectory.resolve("generated/mechanical");java.nio.file.Files.createDirectories(folder);
+                var file=folder.resolve(key+".png");javax.imageio.ImageIO.write(image,"PNG",file.toFile());
+                var asset=new yagen.waitmydawn.kb.service.ImageAssetStore(mediaDirectory).put(java.nio.file.Files.readAllBytes(file));
+                String source="s"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint("mechanical:"+profile+id).substring(0,20);
+                var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<>(result.artifacts.pictures());
+                sources.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Source(source,"mkb-runtime:"+profile+"/recipes/"+id,id,id,"实机配方",null,"RUNTIME_SNAPSHOT",id));
+                pictures.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),"动力合成："+id,source,"RECIPE",java.util.List.of(),id,null,null,null));
+                result.artifacts=new yagen.waitmydawn.kb.model.AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
+            }catch(Exception failure){result.mediaWarnings.add("机械合成图 · "+failure.getMessage());}
+        }
+    }    private void prepareMedia(QaResult result,String question){
         long started=System.nanoTime();String saved=result.answer;result.answer="";
         try{
             boolean crafting=question.matches("(?is).*(合成|配方|制作|烧炼|锻造|加工|怎么做|如何做|如何获得|怎么获得|craft|recipe).*" );
@@ -614,11 +669,13 @@ public class QaPipeline {
                 result.recipeRenderBatch=new RendererService(config,baseDb).renderDetailed(result.recipesToRender);
                 AnswerMedia.attachRecipes(result,result.recipeRenderBatch,mediaDirectory);
             }else result.recipeRenderBatch=new RendererService.RenderBatch(Map.of(),List.of(),List.of());
+            attachMechanicalCrafting(result);
             entityMedia.prepare(result,question.replaceAll("https?://[^\\s<>]+"," "));
             new LootCardService(baseDb,mediaDirectory).attach(result,question);
             new RuleCardService(baseDb,mediaDirectory).attach(result,question);
+            int tradeCards=0;for(String tradeId:result.tradeIds){if(tradeCards++>=2)break;try{new RuleCardService(baseDb,mediaDirectory).attachTrade(result,tradeId);}catch(Exception failure){result.mediaWarnings.add("交易图："+tradeId+" · "+failure.getMessage());}}
             new LayoutCardService(baseDb,mediaDirectory).attach(result,question);
-            if(result.multiblockId!=null&&result.artifacts.pictures().stream().noneMatch(p->p.role().equals("RUNTIME_RULE")))try{new LayoutCardService(baseDb,mediaDirectory).attachOne(result,result.multiblockId);}catch(Exception failure){result.mediaWarnings.add("布局图："+failure.getMessage());}
+            String layoutKey="i"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint("layout:"+result.multiblockId).substring(0,20);if(result.multiblockId!=null&&result.artifacts.pictures().stream().noneMatch(p->p.id().equals(layoutKey)))try{new LayoutCardService(baseDb,mediaDirectory).attachOne(result,result.multiblockId);}catch(Exception failure){result.mediaWarnings.add("布局图："+failure.getMessage());}
         }catch(java.io.IOException failure){result.mediaWarnings.add("配方图片归档失败："+failure.getClass().getSimpleName());}
         finally{result.answer=saved;}
         result.mediaPreparationMs=(System.nanoTime()-started)/1_000_000;
@@ -1187,12 +1244,17 @@ public class QaPipeline {
     public static class QaResult {
         public AgentToolLoop.Outcome toolTrace;
         String mediaQuestion;
-        /** 明确要求的状态键；只用于单对象选图，命中不了就报缺图，不回退到代表图。 */
+        /** 明确要求的状态键；只用于单对象选图，命中不了就报缺图，不回退到代表图。 */
+
         public String mediaStateKey;
         /** 用户问题里显式点名的状态轴（成长阶段/性别/变体）；快照里没有组合时不配图。 */
         public Map<String,String> mediaAxes = Map.of();
         /** 本轮结构化查询命中的多方块 id，用它在最终组织前渲染分层图卡。 */
         public String multiblockId;
+        /** 本轮结构化查询命中的交易记录 id，用于在最终组织前渲染交易卡。 */
+        public final Set<String> tradeIds = new LinkedHashSet<>();
+        /** 工具查询读到的配方原文，供未适配类型的图卡使用。 */
+        public final List<String> toolRecipes = new ArrayList<>();
         final Set<String> mediaTargets=new LinkedHashSet<>();
         final Set<String> conversationTargets=new LinkedHashSet<>();
         public MediaAudit.Performance mediaPerformance;

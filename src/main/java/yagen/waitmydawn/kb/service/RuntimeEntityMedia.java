@@ -201,13 +201,45 @@ final class RuntimeEntityMedia {
         }
         var illustrations=new ArrayList<String>();
         for(var picture:result.artifacts.pictures())if(!Set.of("ENTITY","ITEM","RECIPE","LOOT","RUNTIME_RULE").contains(picture.role())&&!used.contains(picture.id()))illustrations.add("!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")");
-        if(!additions.isEmpty())answer+="\n\n"+(result.mediaPlan!=null&&result.mediaPlan.comparison()?"外观对照：":"参考配图：")+"\n\n"+String.join("\n\n",additions);
+        var leftovers=new ArrayList<String>();
+        for(String marker:additions){
+            final String current=marker;var picture=result.artifacts.pictures().stream().filter(p->current.contains("kb-image:"+p.id()+")")).findFirst().orElse(null);
+
+            String placed=picture==null?null:insertAfterParagraph(answer,marker,keys(picture));
+            if(placed!=null)answer=placed;else leftovers.add(marker);
+        }
+        if(!leftovers.isEmpty())answer+="\n\n"+(result.mediaPlan!=null&&result.mediaPlan.comparison()?"外观对照：":"参考配图：")+"\n\n"+String.join("\n\n",leftovers);
         if(!illustrations.isEmpty())answer+="\n\n相关插图：\n\n"+String.join("\n\n",illustrations);
         if(result.mediaPlan!=null&&result.mediaPlan.comparison()&&kept.stream().filter(p->p.role().equals("ENTITY")).count()>1)answer+="\n\n各图独立缩放，画面占比不代表实际体型比例；外观相同的状态可能共用图像。";
         if(!result.mediaWarnings.isEmpty())answer+="\n\n配图说明：\n"+result.mediaWarnings.stream().distinct().map(w->"- "+w).collect(java.util.stream.Collectors.joining("\n"));
         result.answer=answer;result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),result.artifacts.sources(),kept,result.artifacts.citedSourceIds());
     }
-    private static boolean associated(String answer,AnswerArtifacts.Picture picture,MediaRequestPlanner.Request request,JsonNode state){
+    /** 图片插到提到该对象/状态的段落之后；找不到合适段落时留给末尾的参考配图。 */
+    static String insertAfterParagraph(String answer,String marker,List<String> keys){
+        if(answer==null||marker==null||keys.isEmpty())return null;
+        var blocks=new ArrayList<String>(java.util.Arrays.asList(answer.split("\n\\s*\n",-1)));
+        int best=-1,bestScore=0;boolean inCode=false;
+        for(int i=0;i<blocks.size();i++){
+            String block=blocks.get(i);String trimmed=block.strip();
+            if(trimmed.startsWith("```")){inCode=!inCode;continue;}
+            if(inCode||trimmed.isEmpty()||trimmed.startsWith("#")||trimmed.contains("|"))continue;
+            int score=0;for(String key:keys)if(!key.isBlank()&&trimmed.contains(key))score+=key.contains(":")?3:2;
+            if(score>bestScore){bestScore=score;best=i;}
+        }
+        if(best<0||bestScore<2)return null;
+        blocks.set(best,blocks.get(best)+"\n\n"+marker);
+        return String.join("\n\n",blocks);
+    }
+    /** 用于定位段落的键：注册名、名称与图注里的状态词。 */
+    static List<String> keys(AnswerArtifacts.Picture picture){
+        var keys=new ArrayList<String>();
+        if(picture.runtimeIdentity()!=null&&picture.runtimeIdentity().registry()!=null)keys.add(picture.runtimeIdentity().registry());
+        String caption=picture.caption();
+        int paren=caption.indexOf('（');String title=paren>0?caption.substring(0,paren):caption;
+        if(title.length()>=2)keys.add(title);
+        if(caption.contains("成长阶段：")){var matcher=java.util.regex.Pattern.compile("成长阶段：(\\d+)").matcher(caption);if(matcher.find())keys.add(matcher.group(1)+"阶");}
+        return keys;
+    }    private static boolean associated(String answer,AnswerArtifacts.Picture picture,MediaRequestPlanner.Request request,JsonNode state){
         var paragraphs=answer.split("\\n\\s*\\n");String text="";
         for(int i=0;i<paragraphs.length;i++)if(paragraphs[i].contains("kb-image:"+picture.id()+")")){
             text=paragraphs[i].replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:[^)]+\\)","");

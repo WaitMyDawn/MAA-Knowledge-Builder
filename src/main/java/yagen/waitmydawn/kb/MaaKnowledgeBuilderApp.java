@@ -71,6 +71,8 @@ public class MaaKnowledgeBuilderApp extends Application {
     private ListView<ModEntry> modListView;
     private Label scanCount,bindCount,buildCount;
     private VBox chatHistory;
+    private ScrollPane chatScroll;
+    private Label qaSessionTitle;
     private TextArea questionField;
     private Button cancelButton;
     private volatile Thread activeWorker;
@@ -836,7 +838,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
         chatHistory = new VBox(8);
         chatHistory.setPadding(new Insets(8));
-        ScrollPane chatScroll = new ScrollPane(chatHistory);
+        chatScroll = new ScrollPane(chatHistory);
         chatHistory.setMinWidth(0);chatScroll.setMinWidth(0);
         chatScroll.setFitToWidth(true);
         chatScroll.setPrefHeight(440);
@@ -892,7 +894,8 @@ public class MaaKnowledgeBuilderApp extends Application {
         var detailSection = new TitledPane("检索与性能详情",qaLog); detailSection.setExpanded(false);
         VBox qaLayout = new VBox(12,chatSection,detailSection); VBox.setVgrow(chatSection,Priority.ALWAYS);
 
-        chatArea.getChildren().add(pageTitle("知识问答"));
+        qaSessionTitle = new Label("新对话");qaSessionTitle.getStyleClass().add("muted");
+        HBox qaTitleRow=new HBox(10,pageTitle("知识问答"),qaSessionTitle);qaTitleRow.setAlignment(Pos.CENTER_LEFT);chatArea.getChildren().add(qaTitleRow);
         String migration=RuntimeBuildContract.migrationWarning(db);
         if(migration!=null){var warning=new Label(migration);warning.setWrapText(true);chatArea.getChildren().add(warning);}
         chatArea.getChildren().add(qaLayout);
@@ -955,7 +958,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     private void loadSession(ChatHistoryService.ChatSession sess) {
         if (busy()) return;
-        currentSession = sess;
+        currentSession = sess;if(qaSessionTitle!=null)qaSessionTitle.setText(sess.title==null?"会话":sess.title);
         // Switch incremental DB for this session
         dbManager.setCurrentSessionId(sess.sessionId);
         IncrementalDB incDb = dbManager.getCurrentIncDB();
@@ -963,7 +966,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             incDb = dbManager.createIncrementalDB(sess.sessionId, embedder.getDimension());
         }
         qaPipeline.setIncrementalDB(incDb);
-        qaPipeline.restoreHistory(sess.messages);
+        qaPipeline.restoreHistory(sess.messages);if(chatScroll!=null)javafx.application.Platform.runLater(()->chatScroll.setVvalue(0));
         refreshKnowledgeScopes();
         if (knowledgeScopeChoice != null) {
             knowledgeScopeChoice.getSelectionModel().selectFirst();
@@ -1106,7 +1109,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             b.getChildren().add(header);
             b.getChildren().add(yagen.waitmydawn.kb.ui.AnswerRenderer.render(msg, artifacts, config.getDataDir()));
         }
-        chatHistory.getChildren().add(b);
+        chatHistory.getChildren().add(b);if(chatScroll!=null)javafx.application.Platform.runLater(()->chatScroll.setVvalue(1.0));
     }
 
     // =================== Seed Page ===================

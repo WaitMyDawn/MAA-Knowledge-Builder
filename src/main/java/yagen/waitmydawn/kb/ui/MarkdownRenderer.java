@@ -35,6 +35,7 @@ public class MarkdownRenderer {
         VBox container = new VBox(4);
         String[] lines = markdown.split("\n");
         List<String> buffer = new ArrayList<>();
+        String lastContext = "";
 
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
@@ -48,6 +49,7 @@ public class MarkdownRenderer {
                 value.getStyleClass().add("markdown-code");flow.getChildren().add(value);flow.setMaxWidth(780);container.getChildren().add(flow);
                 continue;
             }
+            if (!line.trim().isEmpty() && !line.stripLeading().matches("([-*+]\\s+|\\d+[.)]\\s+).*")) lastContext = line;
             if (line.trim().isEmpty()) {
                 flushBuffer(container, buffer, imageRoots);
                 continue;
@@ -69,6 +71,23 @@ public class MarkdownRenderer {
                 continue;
             }
 
+            // 引用块：> 开头的连续行用浅色显示，与正文区分
+            if (line.stripLeading().startsWith(">")) {
+                flushBuffer(container, buffer, imageRoots);
+                var quote = new StringBuilder(); int j = i;
+                while (j < lines.length && lines[j].stripLeading().startsWith(">")) {
+                    quote.append(lines[j].stripLeading().replaceFirst("^>\\s?", "")).append('\n'); j++;
+                }
+                var flow = new TextFlow();
+                var text = new Text(quote.toString().strip());
+                text.getStyleClass().add("markdown-quote");
+                flow.getChildren().add(text);
+                flow.setPadding(new javafx.geometry.Insets(4, 0, 4, 10));
+                flow.getStyleClass().add("markdown-quote-block");
+                container.getChildren().add(flow);
+                i = j - 1;
+                continue;
+            }
             // 表格块：连续包含 | 的行作为一个候选块，只有解析成功才按表格渲染
             if (line.contains("|")) {
                 List<String> tableLines = new ArrayList<>();
@@ -87,6 +106,28 @@ public class MarkdownRenderer {
                 }
             }
 
+            // 列表：只有结构化枚举（战利品箱、交易条目、获取来源等）超过 5 条时才默认折叠
+            if (line.stripLeading().matches("([-*+]\\s+|\\d+[.)]\\s+).*")) {
+                flushBuffer(container, buffer, imageRoots);
+                int j = i; var items = new ArrayList<String>();
+                while (j < lines.length) { String candidate=lines[j].strip(); if (candidate.matches("([-*+]\\s+|\\d+[.)]\\s+).*")) { items.add(candidate); j++; continue; } if (candidate.isEmpty() && j+1 < lines.length && lines[j+1].strip().matches("([-*+]\\s+|\\d+[.)]\\s+).*")) { j++; continue; } break; }
+                boolean explanation = lastContext.matches("(?s).*(对比|区别|注意|说明|特点|外观差异).*");
+                if (items.size() > 5 && !explanation) {
+                    var body = new VBox(2);
+                    for (String item : items) body.getChildren().add(bullet(item));
+                    body.setVisible(false); body.setManaged(false);
+                    var more = new javafx.scene.control.Hyperlink("展开全部 " + items.size() + " 条");
+                    more.getStyleClass().add("markdown-muted-link");
+                    more.setOnAction(event -> { boolean show = !body.isVisible(); body.setVisible(show); body.setManaged(show); more.setText(show ? "收起" : "展开全部 " + items.size() + " 条"); });
+                    container.getChildren().addAll(more, body);
+                } else {
+                    var list = new VBox(2);
+                    for (String item : items) list.getChildren().add(bullet(item));
+                    container.getChildren().add(list);
+                }
+                i = j - 1;
+                continue;
+            }
             buffer.add(line);
         }
         flushBuffer(container, buffer, imageRoots);
@@ -95,6 +136,11 @@ public class MarkdownRenderer {
     }
 
     /** 解析一个 Markdown 表格块，非法时返回 null。 */
+    private static Node bullet(String line) {
+        var flow = new TextFlow();
+        appendStyled(flow, line.replaceFirst("^[-*+]\\s+", "• ").replaceFirst("^(\\d+)[.)]\\s+", "$1. "));
+        return flow;
+    }
     private static Node buildTable(List<String> tableLines) {
         if (tableLines.size() < 2) return null;
 

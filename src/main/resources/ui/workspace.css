@@ -74,6 +74,9 @@
 .markdown-text { -fx-fill: -app-text; }
 .markdown-code { -fx-fill: -app-code; }
 .markdown-muted { -fx-fill: -app-muted; }
+.markdown-quote { -fx-fill: -app-muted; }
+.markdown-quote-block { -fx-border-color: -app-border; -fx-border-width: 0 0 0 3; }
+.markdown-muted-link { -fx-text-fill: -app-muted; -fx-underline: true; }
 .markdown-heading .markdown-text { -fx-font-size: 16px; }
 .markdown-cell { -fx-padding: 6 10; -fx-border-color: -app-border; -fx-border-width: 0.5; }
 .markdown-header { -fx-background-color: -app-hover; }

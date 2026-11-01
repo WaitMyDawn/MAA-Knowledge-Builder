@@ -224,6 +224,8 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         if(section.isBlank()&&row.key().category().equals("entity_icons"))return iconView(query,row);
         if(section.isBlank()&&row.key().category().equals("loot_tables"))return lootView(query,row);
         if(row.key().category().equals("multiblocks")){result.multiblockId=row.key().id();if(section.isBlank())return multiblockView(query,row);}
+        if(row.key().category().equals("trades"))result.tradeIds.add(row.key().id());
+        if(row.key().category().equals("recipes"))result.toolRecipes.add(row.data().toString());
         var node=section.isBlank()?row.data():row.data().at(normalizePointer(section));var view=JSON.createObjectNode().put("id",row.key().id()).put("category",row.key().category()).put("section",section);view.set("environment",query.environment());
         if(node.isMissingNode())return view.put("status","SECTION_NOT_FOUND");
         if(row.key().category().equals("trades")&&section.isBlank()){node=compactTrade(node,"");view.put("view","RULES_WITH_CANDIDATE_COUNTS");}
@@ -305,6 +307,7 @@ String coverageContext(){var base=coverageContextBody();return pages>0?base:base
     private boolean narrativeQuestion(){return question.matches("(?s).*(介绍|是什么|有什么|怎么|如何|为什么|机制|特点|用处|用途|玩法|教程|攻略|生成|掉落).*");}
     @Override public String readinessGap(){
         if(clarification!=null||localOnly())return null;
+        if(result.tradeIds.isEmpty()&&question.matches("(?s).*(交易|购买|出售|商人|职业等级|图书管理员|村民).*")&&!question.matches("(?s).*(灾变|利维坦|网页|教程).*"))return "该问题涉及交易：先用 query_trades 读取该实体的实际交易记录（职业等级、价格、附魔），网页只能作补充；只有网页不足以回答交易条件。";
         if(!missingFacts().isEmpty()){var gap=coverageContext();if(pages<=1){var pending=unfetchedCandidates();if(!pending.isEmpty())gap+=" 本轮只抓取了 "+pages+" 页，仍缺 "+missingFacts()+"；请从候选页再补一页，不要直接下结论。";}return gap;}
         if(discoveryNudges==0&&pages==0&&narrativeQuestion()){var pending=unfetchedCandidates();if(!pending.isEmpty()){discoveryNudges++;return "Candidate pages were discovered or offered but not fetched: "+pending+". If the answer still needs unconfirmed facts (spawn, drops, behaviour, usage or steps), fetch one with supplement_web first; if the local evidence already answers everything, state plainly which parts remain unconfirmed.";}}
         return null;
@@ -320,6 +323,7 @@ String coverageContext(){var base=coverageContextBody();return pages>0?base:base
     }
     void prepareFinalMedia(){
         String axisSource=rawQuestion!=null&&rawQuestion.matches("(?s).*(改成|换成|改为|只看|只要|仅看).*")?rawQuestion:question;result.mediaAxes=EntityAppearanceState.requestedAxes(axisSource);
+        if(!result.tradeIds.isEmpty()||result.multiblockId!=null)imagesRequested=true;
         boolean visual=question.matches("(?s).*(图片|展示|外观|配图|长什么样|介绍|比较|对比|区别|分别).*");
         boolean followUp=question.matches("(?s).*(只看|改成|换成|再展示|再看|其他条件不变|它的|它们的|继续|同样).*");
         if(!result.resolvedEntities.isEmpty()&&(visual||(inheritImages&&followUp)))imagesRequested=true;
