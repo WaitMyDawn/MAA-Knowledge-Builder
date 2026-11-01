@@ -194,6 +194,9 @@ public class AnswerAgent {
     }
 
     /** Compose a final answer from all retrieval results. */
+    private final ThreadLocal<Boolean> singlePass=ThreadLocal.withInitial(()->false);
+    public String composeSinglePass(AnswerContext context){boolean previous=singlePass.get();singlePass.set(true);try{return compose(context);}finally{singlePass.set(previous);}}
+
     public String compose(AnswerContext ctx) {
         lastUsage = null;
         lastGenerationMode="OFFLINE";
@@ -274,11 +277,11 @@ public class AnswerAgent {
                 if (sub.chunks() != null && !sub.chunks().isEmpty()) {
                     int included = 0;
                     for (var sr : sub.chunks()) {
-                        if(importedEvidenceAlreadyProvided(ctx,sr)) continue;
+                        if(!sr.type().startsWith("runtime_")&&importedEvidenceAlreadyProvided(ctx,sr)) continue;
                         if (sr.score() <= 0.1 || included >= 10) continue;
                         if(!includedEvidence.add(sr.sourcePath()+"\n"+sr.chunkId())) continue;
                         String snippet = sr.chunkText();
-                        int budget=sr.type().equals("category_catalog")?16000:1800;
+                        int budget=sr.type().startsWith("runtime_")?16000:sr.type().equals("category_catalog")?16000:1800;
                         if (snippet.length() > budget) snippet = snippet.substring(0, budget);
                         context.append(String.format("[%s/%s score=%.3f source=%s]\n%s\n\n",
                                 sr.modName(), sr.type(), sr.score(), sr.sourcePath(), snippet));
@@ -290,10 +293,10 @@ public class AnswerAgent {
             context.append("=== [Knowledge Base Context] ===\n");
             int included = 0;
             for (var sr : ctx.vectorResults()) {
-                if(importedEvidenceAlreadyProvided(ctx,sr)) continue;
+                if(!sr.type().startsWith("runtime_")&&importedEvidenceAlreadyProvided(ctx,sr)) continue;
                 if (sr.score() > 0.1 && included < 8) {
                     String snippet = sr.chunkText();
-                    if (snippet.length() > 1500) snippet = snippet.substring(0, 1500);
+                    if (!sr.type().startsWith("runtime_")&&snippet.length() > 1500) snippet = snippet.substring(0, 1500);
                     context.append(String.format("[%s/%s score=%.3f source=%s]\n%s\n\n",
                             sr.modName(), sr.type(), sr.score(), sr.sourcePath(), snippet));
                     included++;
@@ -322,7 +325,7 @@ public class AnswerAgent {
                         tokenOf(lastUsage, true), tokenOf(lastUsage, false),
                         answer == null ? 0 : answer.length());
                 if (answer != null && !answer.isBlank()) {
-                    if (hasRelevantVectors && ctx.question().matches("(?s).*(怎么打|如何打|打法|攻略|怎么玩|如何玩).*")) {
+                    if (!singlePass.get() && hasRelevantVectors && ctx.question().matches("(?s).*(怎么打|如何打|打法|攻略|怎么玩|如何玩).*")) {
                         var review = llm.askWithUsage("AnswerCoverage", """
                                 核验并完善下面的宽泛攻略回答。仅返回最终 Markdown，不输出审阅过程。
                                 检查实际可执行的准备、各阶段输出方式、替代方案及危险应对是否覆盖至少四个独立维度；

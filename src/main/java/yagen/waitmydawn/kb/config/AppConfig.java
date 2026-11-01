@@ -29,7 +29,7 @@ public class AppConfig {
     private String defaultMcVersion = "1.21.1";
     private String defaultLoader = "neoforge";
     private yagen.waitmydawn.kb.ui.ThemeMode themeMode = yagen.waitmydawn.kb.ui.ThemeMode.SYSTEM;
-    private int prewarmPages = 6;
+    private int prewarmPages = 0;
     private final Properties modFieldColors=new Properties();
     public String getModFieldColor(boolean dark,String role){
         String fallback=switch(role){case "modid"->dark?"#67e8f9":"#075985";case "slug"->dark?"#fcd34d":"#92400e";case "url"->dark?"#86efac":"#166534";default->throw new IllegalArgumentException("未知字段角色");};
@@ -152,6 +152,14 @@ public class AppConfig {
 
     public yagen.waitmydawn.kb.ui.ThemeMode getThemeMode() { return themeMode; }
     public void setThemeMode(yagen.waitmydawn.kb.ui.ThemeMode mode) { themeMode = java.util.Objects.requireNonNull(mode); save(); }
+    /** 旧版没有区分默认值与用户选择；仅迁移未标记的旧默认 6，其他有效值保留。 */
+    static int readPrewarmPages(Properties properties) {
+        try {
+            int value = Math.max(0, Math.min(30, Integer.parseInt(properties.getProperty("prewarmPages", "0"))));
+            return !"2".equals(properties.getProperty("prewarmPolicyVersion")) && value == 6 ? 0 : value;
+        } catch (NumberFormatException ignored) { return 0; }
+    }
+
     public int getPrewarmPages() { return prewarmPages; }
     public void setPrewarmPages(int pages) { prewarmPages = Math.max(0, Math.min(30, pages)); save(); }
 
@@ -205,8 +213,7 @@ public class AppConfig {
             }
             themeMode = yagen.waitmydawn.kb.ui.ThemeMode.parse(props.getProperty("themeMode"));
             for(String theme:java.util.List.of("dark","light"))for(String role:java.util.List.of("modid","slug","url","progressscan","progressbind","progressbuild")){String key=theme+"."+role,value=props.getProperty("modField."+key);if(value!=null&&value.matches("#[0-9a-fA-F]{6}"))modFieldColors.setProperty(key,value);}
-            try { prewarmPages = Math.max(0, Math.min(30, Integer.parseInt(props.getProperty("prewarmPages", "6")))); }
-            catch (NumberFormatException ignored) { prewarmPages = 6; }
+            prewarmPages = readPrewarmPages(props);
             this.apiKey = props.getProperty("apiKey", "");
             visionEnabled = Boolean.parseBoolean(props.getProperty("visionEnabled", "false"));
             visionEndpoint = props.getProperty("visionEndpoint", "");
@@ -245,6 +252,7 @@ public class AppConfig {
         props.setProperty("themeMode", themeMode.name());
         modFieldColors.forEach((key,value)->props.setProperty("modField."+key,value.toString()));
         props.setProperty("prewarmPages", Integer.toString(prewarmPages));
+        props.setProperty("prewarmPolicyVersion", "2");
         props.setProperty("visionEnabled", Boolean.toString(visionEnabled));
         props.setProperty("visionEndpoint", visionEndpoint);
         props.setProperty("visionModel", visionModel);

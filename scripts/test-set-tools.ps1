@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 function Write-TestText([string]$Path,[string]$Text) {
     [IO.File]::WriteAllText($Path,$Text,(New-Object Text.UTF8Encoding($false)))
 }
@@ -86,9 +86,15 @@ function Complete-TestReview([string]$SetDirectory,[switch]$ConfirmReviewComplet
         $resource=Get-TestValue $record.observation 'resourceAccess'
         if($null -ne $resource){$resourceRows++;$retry+=[long]$resource.retries;$redirect+=[long]$resource.redirects;$wait+=[long]$resource.waitMs;$backoff+=[long]$resource.backoffMs}
     }
+    $decisions=@(foreach($record in $records){
+        $grade=$reviews[$record.turnId].grade
+        $reviewed=[bool]$record.rule.passed -and $grade -ne 'D'
+        @{turnId=$record.turnId;originalPassed=[bool]$record.rule.passed;humanGrade=$grade;reviewedPassed=$reviewed;reason=$(if($grade -eq 'D'){'HUMAN_D_VETO'}else{'ORIGINAL_RULE_RETAINED'})}
+    })
+    $reviewedPass=@($decisions|Where-Object {$_.reviewedPassed}).Count
     $usable=[Math]::Round(100.0*($gradeCounts.S+$gradeCounts.A)/$records.Count,2)
-    $lines=@('# modEnv1 测试结果','',('run_id: '+$active.runId),('人工提交时间：'+[DateTimeOffset]::Now.ToString('o')),'','## 本轮身份与可比条件','',('题集 SHA-256：`'+$active.questionSetSha256+'`'),('原始归档：`runs/'+$active.runId+'`'),('执行状态：'+$manifest.status),'模型裁判：关闭。人工评级与自动规则独立统计。','', '执行 manifest：','', '```json',($manifest|ConvertTo-Json -Depth 12),'```','','## 执行情况','',('计划 '+$planned.Count+' 轮，已记录 '+$records.Count+'，错误 '+$errors+'，未记录 '+$missing.Count+'。'),('未记录题号：'+($missing.id -join '、')),'未记录与前置条件缺失不计为通过；不能因脚本退出正常就宣称题集通过。','','## 规则裁判','',('PASS '+$rulePass+' / '+$records.Count+'；FAIL '+($records.Count-$rulePass)+'。'),'规则通过仅证明已实现的检查项，不证明所有获取途径、属性、战术或图片像素语义正确。','','## 人工裁判','',('| S | A | B | C | D |'),('| ---: | ---: | ---: | ---: | ---: |'),('| '+$gradeCounts.S+' | '+$gradeCounts.A+' | '+$gradeCounts.B+' | '+$gradeCounts.C+' | '+$gradeCounts.D+' |'),('已执行题评审覆盖率：100%；相对计划题评审覆盖率：'+[Math]::Round(100.0*$records.Count/$planned.Count,2)+'%。'),('人工可用比例（S+A／已评审）：'+$usable+'%。'),'','## 逐题对照表','','| 题号 | 规则 | 人工 | 问答毫秒 | 证据 |','| --- | --- | --- | ---: | --- |')
-    foreach($record in $records){$pass=if($record.rule.passed){'PASS'}else{'FAIL'};$lines+='| '+$record.turnId+' | '+$pass+' | '+$reviews[$record.turnId].grade+' | '+$record.elapsedMs+' | `runs/'+$active.runId+'/turns.jsonl` |'}
+    $lines=@('# modEnv1 测试结果','',('run_id: '+$active.runId),('人工提交时间：'+[DateTimeOffset]::Now.ToString('o')),'','## 本轮身份与可比条件','',('题集 SHA-256：`'+$active.questionSetSha256+'`'),('原始归档：`runs/'+$active.runId+'`'),('执行状态：'+$manifest.status),'模型裁判：关闭。人工评级与自动规则独立统计。','', '执行 manifest：','', '```json',($manifest|ConvertTo-Json -Depth 12),'```','','## 执行情况','',('计划 '+$planned.Count+' 轮，已记录 '+$records.Count+'，错误 '+$errors+'，未记录 '+$missing.Count+'。'),('未记录题号：'+($missing.id -join '、')),'未记录与前置条件缺失不计为通过；不能因脚本退出正常就宣称题集通过。','','## 规则裁判','',('原始规则 PASS '+$rulePass+' / '+$records.Count+'；FAIL '+($records.Count-$rulePass)+'。'),('人工D否决后的复核规则 PASS '+$reviewedPass+'；FAIL '+($records.Count-$reviewedPass)+'。'),'复核不改原始自动判分，不代表自动裁判已修复；复核PASS不等于人工S/A。','规则通过仅证明已实现的检查项，不证明所有获取途径、属性、战术或图片像素语义正确。','','## 人工裁判','',('| S | A | B | C | D |'),('| ---: | ---: | ---: | ---: | ---: |'),('| '+$gradeCounts.S+' | '+$gradeCounts.A+' | '+$gradeCounts.B+' | '+$gradeCounts.C+' | '+$gradeCounts.D+' |'),('已执行题评审覆盖率：100%；相对计划题评审覆盖率：'+[Math]::Round(100.0*$records.Count/$planned.Count,2)+'%。'),('人工可用比例（S+A／已评审）：'+$usable+'%。'),'','## 逐题对照表','','| 题号 | 原始规则 | 复核规则 | 人工 | 问答毫秒 | 证据 |','| --- | --- | --- | --- | ---: | --- |')
+    foreach($record in $records){$pass=if($record.rule.passed){'PASS'}else{'FAIL'};$reviewed=if($record.rule.passed -and $reviews[$record.turnId].grade -ne 'D'){'PASS'}else{'FAIL'};$lines+='| '+$record.turnId+' | '+$pass+' | '+$reviewed+' | '+$reviews[$record.turnId].grade+' | '+$record.elapsedMs+' | `runs/'+$active.runId+'/turns.jsonl` |'}
     $lines+=@('','## 人工评语原文','')
     $general=[regex]::Match($text,'(?s)<!-- general-comment:begin -->(.*?)<!-- general-comment:end -->')
     if($general.Success){$lines+=@('### 总体意见','',$general.Groups[1].Value.Trim(),'')}
@@ -105,5 +111,6 @@ function Complete-TestReview([string]$SetDirectory,[switch]$ConfirmReviewComplet
     Write-TestText (Join-Path $history 'result.md') $result
     Write-TestText (Join-Path $SetDirectory 'result.md') $result
     Write-TestText (Join-Path $history 'human-review.json') ($reviews|ConvertTo-Json -Depth 8)
+    Write-TestText (Join-Path $history 'reviewed-rule-decisions.json') (@{runId=$active.runId;method='POST_REVIEW_D_VETO';originalPass=$rulePass;reviewedPass=$reviewedPass;decisions=$decisions}|ConvertTo-Json -Depth 8)
     Write-Output ('Result: '+(Join-Path $SetDirectory 'result.md'))
 }

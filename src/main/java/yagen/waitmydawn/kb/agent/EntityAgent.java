@@ -216,6 +216,14 @@ public class EntityAgent {
         RetrievalPlan plan = analysis.plan()==null ? RetrievalPlan.lookup(question,targetModId)
                 : new RetrievalPlan(question,targetModId,analysis.plan().enumerate(),analysis.plan().objectType(),
                     analysis.plan().filters(),analysis.plan().requestedCount(),analysis.plan().exhaustive(),analysis.plan().intent());
+        if(!plan.enumerate())try {
+            String profile=yagen.waitmydawn.kb.service.RuntimeKnowledgeStore.active(db);
+            if(profile!=null){var names=new yagen.waitmydawn.kb.service.RuntimeNameIndex(db,profile);var matches=new ArrayList<ResolvedEntity>();var ambiguous=new ArrayList<String>();
+                for(String subject:subjects){var found=names.resolve(subject,targetModId,plan.objectType());if(found.status().equals("UNIQUE")){var candidate=found.candidates().getFirst();matches.add(new ResolvedEntity(candidate.registry(),candidate.registry().split(":")[0],1,"snapshot-name-index"));}else if(found.status().equals("AMBIGUOUS"))ambiguous.add(subject+"："+found.candidates());}
+                if(!ambiguous.isEmpty())return new EntityResolutionResult(List.of(),List.of(),List.of(),subjects,plan,"名称存在歧义，必须让用户确认，不能自行选择："+ambiguous);
+                if(matches.size()==subjects.size())return new EntityResolutionResult(List.of(),List.of(),matches,subjects,plan,null);
+            }
+        }catch(Exception failure){throw new IllegalStateException("Snapshot name resolution failed",failure);}
         if (plan.enumerate()) {
             if("minecraft".equals(plan.modId())) {
                 var topics=new ArrayList<>(subjects);

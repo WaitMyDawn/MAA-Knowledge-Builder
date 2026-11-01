@@ -65,7 +65,7 @@ public final class KnowledgeRetrievalService {
 
     public List<Scope> scopes() {
         var scopes = new LinkedHashMap<String, Scope>();
-        String sql = "SELECT s.id,s.scope_id,s.display_name,s.scope_kind,s.location FROM rag_knowledge_source s WHERE EXISTS(SELECT 1 FROM rag_document d WHERE d.source_id=s.id) OR EXISTS(SELECT 1 FROM rag_document_source l WHERE l.source_id=s.id) ORDER BY s.display_name,s.id";
+        String sql = "SELECT s.id,s.scope_id,s.display_name,s.scope_kind,s.location FROM rag_knowledge_source s WHERE EXISTS(SELECT 1 FROM rag_document d WHERE d.source_id=s.id) OR EXISTS(SELECT 1 FROM rag_document_source l WHERE l.source_id=s.id) OR EXISTS(SELECT 1 FROM rag_runtime_snapshot r WHERE r.source_id=s.id) ORDER BY s.display_name,s.id";
         try (var c = db.getConnection(); var s = c.createStatement(); var r = s.executeQuery(sql)) {
             while (r.next()) {
                 String key = r.getString(2) == null ? r.getString(1) : r.getString(2);
@@ -89,7 +89,8 @@ public final class KnowledgeRetrievalService {
             String name = KnowledgeSearchText.normalize(s.label());
             String cue="MOD".equals(s.kind())?"模组":"MODPACK".equals(s.kind())?"整合包":null;
             boolean explicitShortName=name.length()==2&&cue!=null&&java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(name)+"(?:这个|这款|该)?"+cue).matcher(normalized).find();
-            return (name.length() >= 3 || explicitShortName) && normalized.contains(name);
+            boolean possessiveShortName=name.length()==2&&cue!=null&&java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(name)+"的").matcher(normalized).find();
+            return (name.length() >= 3 || explicitShortName || possessiveShortName) && normalized.contains(name);
         }).sorted(Comparator.comparingInt((Scope s) -> KnowledgeSearchText.normalize(s.label()).length()).reversed()).toList();
         if (!matches.isEmpty()) {
             int length = KnowledgeSearchText.normalize(matches.getFirst().label()).length();
@@ -106,7 +107,7 @@ public final class KnowledgeRetrievalService {
         } catch (SQLException e) { throw new IllegalStateException("资料名称解析失败", e); }
         if (documents.size() > 1) return new Resolution(null, null, "问题匹配到多个文件，请指定文件或资料范围。", true);
         if (documents.size() == 1) return new Resolution(null, documents.iterator().next(), null, true);
-        if (previousScope != null && question.matches("(?s).*(它|这个|那个|上面|刚才|继续|还有|第[0-9]+页).*")) {
+        if (previousScope != null && (DialogueFocus.followup(question)||question.matches("(?s).*(它|这个|那个|上面|刚才|继续|还有|第[0-9]+页).*"))) {
             if (previousScope.startsWith("document:")) {
                 String id = previousScope.substring(9);
                 try (var c=db.getConnection();var p=c.prepareStatement("SELECT 1 FROM rag_document WHERE id=?")) {
@@ -189,6 +190,7 @@ public final class KnowledgeRetrievalService {
                 """;
         sql+=" AND (v.chunk_type IS NULL OR "+RuntimeKnowledgeStore.vectorPredicate(db)+")";
         var params = new ArrayList<String>();
+        if(scope==null && resolution.documentId()==null)sql+=" AND NOT EXISTS(SELECT 1 FROM rag_knowledge_source ks WHERE ks.id=d.source_id AND ks.scope_kind='MODPACK')";
         if (scope != null) {
             String marks = String.join(",", Collections.nCopies(scope.sourceIds().size(), "?"));
             sql += " AND (d.source_id IN (" + marks + ") OR EXISTS(SELECT 1 FROM rag_document_source l WHERE l.document_id=d.id AND l.source_id IN (" + marks + ")))";
@@ -288,8 +290,9 @@ public final class KnowledgeRetrievalService {
 
     public Retrieval hydrate(Retrieval retrieval,String question) {
         if(!imageFetching || pageMedia==null || retrieval.hits().isEmpty()) return retrieval;
+        retrieval=overviewImageContext(retrieval,question);
         var references=WebImagePolicy.select(db,retrieval.artifacts(),question);
-        pageMedia.completeSelected(retrieval.artifacts().sources().stream().map(AnswerArtifacts.Source::documentId).distinct().toList(),references);
+        pageMedia.completeSelected(retrieval.artifacts().sources().stream().map(AnswerArtifacts.Source::documentId).filter(java.util.Objects::nonNull).map(id->id.startsWith("vector:")?id.substring("vector:".length()):id).distinct().toList(),references);
         String imageQuery=imageQuery(retrieval,question);
         var present=new ArrayList<>(retrieval.artifacts().pictures());
         var completedImages=imageSearch.search(imageQuery,retrieval.artifacts(),retrieval.diagnostics());
@@ -298,13 +301,56 @@ public final class KnowledgeRetrievalService {
         var completion=pageMedia.lastResult();
         var hydration=new KnowledgeImageHydrator.Audit(completion.webImageAttempts,completion.webImageAttempts,completion.webImages,completion.deferredWebImages,completion.deferredWebImages>0?"SELECTED_CACHE_INCOMPLETE":"SELECTED_CACHE_COMPLETE",completion.webOcrAttempts,0);
         var pictures=GuideIllustrationCoverage.select(question,present.stream().filter(p->imageAssets.available(p.assetId(),p.relativePath())).toList(),4);
+        // 已按“图片所属段落已出现在本轮证据里”选过的引用，不再被第二次文本相关性打分丢掉。
+        if(pictures.isEmpty()&&!references.isEmpty())pictures=selectedWebPictures(references,retrieval.artifacts().sources());
         var artifacts=retrieval.artifacts();
         var expanded=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),pictures);
         var d=retrieval.diagnostics();
-        var imageAudit=d==null?null:d.images();
+        var imageAudit=completedImages.audit();
         if(imageAudit!=null) imageAudit=new KnowledgeImageSearch.Audit(imageAudit.inspected(),Math.max(0,imageAudit.pending()-hydration.resolved()),pictures.size(),pictures.isEmpty()?imageAudit.status():"SELECTED_AFTER_CACHE",imageAudit.truncated(),imageAudit.candidates(),hydration);
         if(d!=null) d=new Diagnostics(d.query(),d.embeddingProfile(),d.scanned(),d.selected(),d.decisions(),d.candidates(),d.truncated(),d.strategy(),d.aliases(),d.queryTerms(),d.rankingTimeMs(),d.context(),KnowledgeCoverage.restrict(d.coverage(),expanded),imageAudit);
         return new Retrieval(retrieval.hits(),expanded,evidence(expanded,d),retrieval.bestLexical(),d);
+    }
+
+    /** 把已选中的网页图片引用直接转成插图；只接受已下载且校验可用的资产。 */
+    private List<AnswerArtifacts.Picture> selectedWebPictures(Set<String> references,List<AnswerArtifacts.Source> sources) {
+        if(references==null||references.isEmpty()||sources.isEmpty())return List.of();
+        var byDocument=new LinkedHashMap<String,AnswerArtifacts.Source>();
+        for(var source:sources){String id=source.documentId();if(id==null)continue;if(id.startsWith("vector:"))id=id.substring("vector:".length());byDocument.putIfAbsent(id,source);}
+        var placeholders=String.join(",",java.util.Collections.nCopies(references.size(),"?"));
+        var pictures=new ArrayList<AnswerArtifacts.Picture>();
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT r.id,r.document_id,r.caption,o.image_id,a.relative_path FROM rag_web_image_reference r JOIN rag_image_occurrence o ON o.id=r.id JOIN rag_image_asset a ON a.id=o.image_id WHERE r.id IN ("+placeholders+") AND r.status='AVAILABLE'")){
+            int index=1;for(String reference:references)p.setString(index++,reference);
+            try(var rows=p.executeQuery()){while(rows.next()&&pictures.size()<4){
+                var source=byDocument.get(rows.getString(2));if(source==null)continue;
+                String asset=rows.getString(4),path=rows.getString(5);if(asset==null||path==null||!imageAssets.available(asset,path))continue;
+                String caption=Objects.toString(rows.getString(3),"");if(caption.isBlank())caption=source.title()==null?"网页插图":source.title();
+                pictures.add(new AnswerArtifacts.Picture("w"+BuildRequest.fingerprint(rows.getString(1)).substring(0,20),asset,path,caption,source.id(),"ILLUSTRATION",List.of(),source.evidence(),null,null,null));
+            }}
+        }catch(java.sql.SQLException failure){throw new IllegalStateException("已选网页图片读取失败",failure);}
+        return List.copyOf(pictures);
+    }
+    private Retrieval overviewImageContext(Retrieval retrieval,String question) {        var sources=new ArrayList<>(retrieval.artifacts().sources());var d=retrieval.diagnostics();var old=d==null?null:d.context();
+        var blocks=new LinkedHashMap<String,String>(old==null?Map.of():old.blockSources());var chunks=old==null?Map.<String,String>of():old.chunkSources();
+        int characters=old==null?0:old.characters(),budget=old==null?12000:old.budget(),added=0;var seen=new HashSet<String>();
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT DISTINCT b.* FROM rag_web_image_reference r JOIN rag_content_block b ON b.document_id=r.document_id AND b.ordinal=r.block_ordinal WHERE r.document_id=? AND r.status<>'EXCLUDED_SMALL' ORDER BY b.ordinal")) {
+            for(var source:retrieval.artifacts().sources()) {
+                if(WebImagePolicy.topic(question,source).equals(question)||!seen.add(source.documentId()))continue;
+                p.setString(1,source.documentId());try(var rows=p.executeQuery()){while(rows.next()&&added<2) {
+                    String body=rows.getString("content"),block=rows.getString("id");
+                    if(blocks.containsKey(block)||body==null||body.length()>1000||!body.matches("(?is).*(横幅|封面|概览|总览|banner|cover).*"))continue;
+                    String text="网页标题："+source.title()+"\n"+body;if(characters+text.length()>budget)continue;
+                    String id="s"+BuildRequest.fingerprint(source.documentId()+":image-context:"+block).substring(0,20);
+                    sources.add(new AnswerArtifacts.Source(id,source.documentId(),source.title(),source.location(),"总览插图 · "+rows.getString("heading_path"),(Integer)rows.getObject("page_number"),rows.getString("extraction_method"),text));
+                    blocks.put(block,id);characters+=text.length();added++;
+                }}
+            }
+        }catch(SQLException failure){throw new IllegalStateException("Overview image context unavailable",failure);}
+        if(added==0)return retrieval;
+        var context=new ContextDiagnostics(old==null?"image-context-v1":old.layoutVersion(),List.copyOf(blocks.keySet()),Map.copyOf(blocks),chunks,characters,budget,old!=null&&old.truncated());
+        if(d!=null)d=new Diagnostics(d.query(),d.embeddingProfile(),d.scanned(),d.selected(),d.decisions(),d.candidates(),d.truncated(),d.strategy(),d.aliases(),d.queryTerms(),d.rankingTimeMs(),context,d.coverage(),d.images());
+        var a=retrieval.artifacts();var artifacts=new AnswerArtifacts(a.scopeId(),a.scopeLabel(),sources,a.pictures(),a.citedSourceIds());
+        return new Retrieval(retrieval.hits(),artifacts,evidence(artifacts,d),retrieval.bestLexical(),d);
     }
 
     private Retrieval withImages(Retrieval retrieval,String question) {
@@ -316,6 +362,8 @@ public final class KnowledgeRetrievalService {
     }
 
     private static String imageQuery(Retrieval retrieval,String fallback) {
+        for(var source:retrieval.artifacts().sources())if(source.heading()!=null&&source.heading().startsWith("总览插图")&&!WebImagePolicy.topic(fallback,source).equals(fallback))return source.title()+" "+source.evidence();
+        for(var source:retrieval.artifacts().sources()){String topic=WebImagePolicy.topic(fallback,source);if(!topic.equals(fallback))return topic;}
         var d=retrieval.diagnostics();
         String query=d==null?fallback:d.query()+" "+d.aliases().stream().map(AliasExpansion::equivalent).distinct().limit(8).collect(java.util.stream.Collectors.joining(" "));
         // 文件名与展示指令不是图像主题，不能稀释短图注或 OCR 中的有效关键词。

@@ -38,11 +38,12 @@ public final class KnowledgeImageSearch {
             }
             String sql="""
                     SELECT o.*,i.relative_path,LEFT(i.ocr_text,1800) AS ocr_text,LEFT(i.description,1000) AS description,
-                           c.id AS chunk_id,c.heading,b.lineage,b.ordinal AS raw_ordinal,r.block_ordinal AS image_ordinal,r.url AS web_url
+                           c.id AS chunk_id,c.heading,b.heading_path AS block_heading,b.lineage,b.ordinal AS raw_ordinal,r.block_ordinal AS image_ordinal,r.url AS web_url
                     FROM rag_image_occurrence o JOIN rag_image_asset i ON i.id=o.image_id
-                    JOIN rag_chunk_image l ON l.occurrence_id=o.id JOIN rag_content_chunk c ON c.id=l.chunk_id
-                    LEFT JOIN rag_chunk_block cb ON cb.chunk_id=c.id LEFT JOIN rag_content_block b ON b.id=cb.block_id
+                    LEFT JOIN rag_chunk_image l ON l.occurrence_id=o.id LEFT JOIN rag_content_chunk c ON c.id=l.chunk_id
+                    LEFT JOIN rag_chunk_block cb ON cb.chunk_id=c.id
                     LEFT JOIN rag_web_image_reference r ON r.id=o.id
+                    LEFT JOIN rag_content_block b ON b.id=cb.block_id OR (cb.block_id IS NULL AND b.document_id=o.document_id AND b.ordinal=r.block_ordinal)
                     WHERE o.document_id=? ORDER BY o.id,c.id LIMIT 2001
                     """;
             for(String doc:artifacts.sources().stream().map(AnswerArtifacts.Source::documentId).distinct().toList()) {
@@ -51,6 +52,7 @@ public final class KnowledgeImageSearch {
                         int rows=0;while(r.next()) {
                             if(++rows>2000) {truncated=true;break;} inspected++;
                             String occurrence=r.getString("id"),chunk=r.getString("chunk_id"),heading=r.getString("heading"),lineage=r.getString("lineage");
+                            if(chunk==null){chunk="image-block:"+doc+":"+r.getInt("image_ordinal");heading=r.getString("block_heading");}
                             String caption=Objects.toString(r.getString("caption"),""),ocr=Objects.toString(r.getString("ocr_text"),""),description=Objects.toString(r.getString("description"),"");
                             var grounding=groundingCache.get(occurrence);
                             if(grounding==null) {
@@ -65,9 +67,10 @@ public final class KnowledgeImageSearch {
                             Integer page=(Integer)r.getObject("page_number");
                             String direct=context==null?"s"+BuildRequest.fingerprint(chunk).substring(0,20):context.chunkSources().get(chunk);
                             String anchorSource=context==null||grounding.blockId()==null?null:context.blockSources().get(grounding.blockId());
+                            String sourceHeading=heading;
                             var source=artifacts.sources().stream().filter(s -> s.documentId().equals(doc) && Objects.equals(s.pageNumber(),page)
-                                    && (s.id().equals(direct) || lineage!=null && lineages.getOrDefault(s.id(),Set.of()).contains(lineage)
-                                    || lineage==null && Objects.equals(s.heading(),heading)))
+                                    && (s.id().equals(anchorSource) || s.id().equals(direct) || lineage!=null && lineages.getOrDefault(s.id(),Set.of()).contains(lineage)
+                                    || lineage==null && Objects.equals(s.heading(),sourceHeading)))
                                     .sorted(Comparator.comparingInt(s -> s.id().equals(anchorSource)?0:s.id().equals(direct)?1:2)).findFirst().orElse(null);
                             if(source==null) {decisions.putIfAbsent(occurrence,new Decision(occurrence,null,"NONE",0,0,"EXCLUDED","OUTSIDE_PROVIDED_SECTION"));continue;}
                             String role=Objects.toString(r.getString("role"),"ILLUSTRATION");
@@ -81,7 +84,7 @@ public final class KnowledgeImageSearch {
                             double captionScore=generated?0:KnowledgeSearchText.overlap(query,caption),ocrScore=KnowledgeSearchText.overlap(query,ocr);
                             double contextScore=KnowledgeSearchText.overlap(query,source.heading()+"\n"+source.evidence());
                             String topic=Objects.toString(source.heading(),"");
-                            if(topic.isBlank() || topic.equals("正文")) topic=source.title();
+                            if(topic.isBlank() || topic.equals("正文") || topic.startsWith("总览插图")) topic=source.title();
                             boolean topicMatch=KnowledgeSearchText.overlap(query,topic)>0;
                             boolean genericHeading=Set.of("","正文","网页资料","内容","介绍","概述","步骤","相关内容","主页","模组介绍").contains(Objects.toString(source.heading(),""));
                             boolean directContext=genericHeading&&(source.id().equals(direct)||source.id().equals(anchorSource));
@@ -91,7 +94,7 @@ public final class KnowledgeImageSearch {
                             if(Math.max(captionScore,ocrScore)<MIN_IMAGE_TEXT_RELEVANCE&&!grounding.stepText().isBlank()&&KnowledgeSearchText.overlap(query,grounding.stepText())<0.25) {
                                 decisions.put(occurrence,new Decision(occurrence,source.id(),grounding.relation(),captionScore,ocrScore,"EXCLUDED","WEAK_STEP_MATCH").grounded(grounding));continue;
                             }
-                            String relation=grounding.relation().equals("INLINE_STEP")&&source.id().equals(anchorSource)?"STEP":source.id().equals(direct)?"PARAGRAPH":"SECTION";
+                            String relation=grounding.relation().equals("INLINE_STEP")&&source.id().equals(anchorSource)?"STEP":source.id().equals(direct)||source.id().equals(anchorSource)?"PARAGRAPH":"SECTION";
                             double score=Math.max(captionScore,ocrScore)+0.35*KnowledgeSearchText.overlap(query,description);
                             if(score==0 && (generated || caption.isBlank() || caption.matches("(?s).*(示意|插图|步骤).*")) && (relation.equals("PARAGRAPH")||relation.equals("STEP"))) score=0.15*Math.max(contextScore,KnowledgeSearchText.overlap(query,grounding.stepText()));
                             if(score<=0) {decisions.putIfAbsent(occurrence,new Decision(occurrence,source.id(),relation,captionScore,ocrScore,"EXCLUDED","NO_IMAGE_TEXT_MATCH"));continue;}

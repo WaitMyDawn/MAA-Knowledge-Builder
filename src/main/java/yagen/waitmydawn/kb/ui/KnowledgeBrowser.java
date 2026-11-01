@@ -12,6 +12,7 @@ import java.util.concurrent.Executor;
 
 /** 分类目录浏览只读本地索引与公共快照，选择成员不会触发网站请求。 */
 public final class KnowledgeBrowser extends VBox {
+    private final DatabaseBuilder db;private final Executor worker;private volatile long request;
     private record Item(String modId, WebCatalogStore.Entry entry) {}
     private final List<Item> items=new ArrayList<>();
     private final TreeView<String> tree=new TreeView<>();
@@ -23,7 +24,7 @@ public final class KnowledgeBrowser extends VBox {
     private final Label summary=new Label("尚未加载目录");
     private final Map<TreeItem<String>,Item> members=new IdentityHashMap<>();
     public KnowledgeBrowser(DatabaseBuilder db,Executor worker) {
-        super(16); setPadding(new Insets(24)); getStyleClass().add("workspace-page");
+        super(16);this.db=db;this.worker=worker; setPadding(new Insets(24)); getStyleClass().add("workspace-page");
         var heading=new Label("网页目录"); heading.getStyleClass().add("page-title");
         var help=new Label("按模组与网站原有分类浏览。目录证明名称和归属，具体机制由正文证据确认。"); help.getStyleClass().add("muted");
         search.setPromptText("搜索中文名、英文名或分类路径");
@@ -68,19 +69,18 @@ public final class KnowledgeBrowser extends VBox {
         var searchDelay=new javafx.animation.PauseTransition(javafx.util.Duration.millis(180));
         searchDelay.setOnFinished(event->render());
         search.textProperty().addListener((o,b,a)->searchDelay.playFromStart());
-        refresh.setOnAction(e->{
-            refresh.setDisable(true); summary.setText("正在加载目录…");
-            worker.execute(()->{
-                var loaded=new ArrayList<Item>(); String error=null;
-                try { for(var mod:db.findAllModEntries()) for(var category:yagen.waitmydawn.kb.service.WikiScraperService.McmodCategory.values())
-                    for(var entry:new WebCatalogStore(db).entries(mod.getModId(),category.getId())) loaded.add(new Item(mod.getModId(),entry)); }
-                catch(Exception ex) { error=ex.getMessage(); }
-                String failure=error;
-                Platform.runLater(()->{ items.clear(); items.addAll(loaded); render(); refresh.setDisable(false); if(failure!=null) summary.setText("目录加载失败："+failure); });
-            });
-        });
+        refresh.setOnAction(e->refresh());
         getChildren().addAll(heading,help,row,summary,split);
-        refresh.fire();
+        refresh();
+    }
+    public void refresh(){
+        long token=++request;items.clear();render();metadata.getChildren().clear();detail.clear();snapshotStatus.setText("");summary.setText("正在加载目录…");
+        worker.execute(()->{
+            if(token!=request)return;var loaded=new ArrayList<Item>();String error=null;
+            try{for(var mod:db.findAllModEntries())for(var category:yagen.waitmydawn.kb.service.WikiScraperService.McmodCategory.values())for(var entry:new WebCatalogStore(db).entries(mod.getModId(),category.getId()))loaded.add(new Item(mod.getModId(),entry));}
+            catch(Exception failure){error=failure.getMessage();}String failure=error;
+            Platform.runLater(()->{if(token!=request)return;items.clear();items.addAll(loaded);render();if(failure!=null)summary.setText("目录加载失败："+failure);});
+        });
     }
     private static HBox sourceRow(String label,String url) {
         var link=SourceLinks.create(url,url); link.setWrapText(true); link.setMaxWidth(Double.MAX_VALUE);

@@ -62,6 +62,37 @@ public final class BuildTrace {
         private Scope(BuildTrace trace,Span span,Context previous){this.trace=trace;this.span=span;this.previous=previous;}
         @Override public void close(){if(closed)return;closed=true;if(trace==null)return;try{trace.end(span);}finally{restore(trace.finished?trace.previous:previous);}}
     }
+    static Counter counter(String stage,String label,int total,int reused) {
+        var context=CURRENT.get();
+        return new Counter(context,stage,label,total,reused);
+    }
+    /** 计数仅在构建上下文中发布，避免普通问答产生构建日志；每秒至多一次中间更新。 */
+    static final class Counter {
+        private final Context context;
+        private final String stage,label;
+        private final int total,reused;
+        private final long started=System.nanoTime();
+        private long last;
+        private int done;
+        Counter(Context context,String stage,String label,int total,int reused) {
+            this.context=context;this.stage=stage;this.label=label;this.total=total;this.reused=reused;
+            update(reused,true,false);
+        }
+        void update(int done){update(done,false,false);}
+        void complete(){update(total,true,true);}
+        private void update(int completed,boolean force,boolean complete) {
+            done=completed;
+            if(context==null||context.trace.finished)return;
+            long now=System.nanoTime();if(!force&&now-last<1_000_000_000L)return;last=now;
+            double seconds=Math.max(0,(now-started)/1_000_000_000.0);
+            double rate=seconds>0?Math.max(0,done-reused)/seconds:0;
+            String remaining=complete?"0.0s":rate>0?String.format(Locale.ROOT,"%.1fs",Math.max(0,total-done)/rate):"待估算";
+            String message=String.format(Locale.ROOT,"[进度] %s %d/%d · 复用 %d · %.1f 条/s · 耗时 %.1fs · 剩余 %s%s",label,done,total,reused,rate,seconds,remaining,complete?" · 已完成":done==total?" · 等待阶段确认":"");
+            context.trace.event(Map.of("event","PROGRESS","parentId",context.parent,"stage",stage,"completed",done,"total",total,"reused",reused,"rate",rate,"elapsedMs",seconds*1000,"complete",complete));
+            LoggerFactory.getLogger(BuildTrace.class).info("{}",message);
+            if(context.trace.progress!=null)try{context.trace.progress.onProgress("progress:"+label,done,total,message);}catch(RuntimeException failure){LoggerFactory.getLogger(BuildTrace.class).debug("Build progress listener unavailable",failure);}
+        }
+    }
     private static final class Span {
         final long id,parent,start;final String stage,label,thread;final boolean visible;long end;
         Span(long id,long parent,String stage,String label,long start,String thread,boolean visible){this.id=id;this.parent=parent;this.stage=stage;this.label=label;this.start=start;this.thread=thread;this.visible=visible;}

@@ -30,17 +30,26 @@ public final class ExportSnapshotPreflight {
     }
 
     public static Assessment inspect(NativeIconPack.Pack pack,GameEnvironment expected,Collection<yagen.waitmydawn.kb.model.ModEntry> mods)throws IOException {
+        return inspect(pack,expected,mods,Map.of());
+    }
+    static Assessment inspect(NativeIconPack.Pack pack,GameEnvironment expected,Collection<yagen.waitmydawn.kb.model.ModEntry> mods,Map<Path,String> verifiedHashes)throws IOException {
         var base=inspect(pack,expected);var blockers=new ArrayList<>(base.blockers());var warnings=new ArrayList<>(base.warnings());
         var exported=new HashMap<String,JsonNode>();pack.environment().path("mods").forEach(mod->exported.put(mod.path("id").asText(),mod));
-        var hashes=new HashMap<Path,String>();
+        var hashes=new HashMap<Path,String>(verifiedHashes);
         for(var mod:mods) {
             if(mod.getModId().equals("minecraft"))continue;
             var found=exported.get(mod.getModId());
+            // 工具升级不改变待校验的内容模组集合；快照协议及载荷仍由基础校验验证。
+            if(mod.getModId().equals("mkb_export")) {
+                String version=found==null?pack.exporterVersion():found.path("version").asText();
+                if(!Objects.equals(mod.getVersion(),version))warnings.add("导出工具版本不同，不阻止构建：JAR="+mod.getVersion()+"，快照="+version);
+                continue;
+            }
             if(found==null){blockers.add("导出环境缺少模组："+mod.getModId());continue;}
-            if(!Objects.equals(mod.getVersion(),found.path("version").asText()))blockers.add("模组版本不一致："+mod.getModId());
+            if(!Objects.equals(mod.getVersion(),found.path("version").asText()))blockers.add("模组版本不一致："+mod.getModId()+"（JAR="+mod.getVersion()+"，快照="+found.path("version").asText()+"）");
             if(found.hasNonNull("sha256")&&mod.getJarPath()!=null) {
                 Path jar=Path.of(mod.getJarPath()).toAbsolutePath().normalize();String hash=hashes.get(jar);
-                if(hash==null){hash=ArtifactFingerprint.sha256(jar);hashes.put(jar,hash);}
+                if(hash==null){try(var timing=BuildTrace.step("snapshot.jar.compare_hash",mod.getModId())){hash=ArtifactFingerprint.sha256(jar);}hashes.put(jar,hash);}
                 if(!hash.equals(found.path("sha256").asText()))blockers.add("模组文件内容不一致："+mod.getModId());
             } else warnings.add("模组缺少可比较的文件哈希："+mod.getModId());
         }
@@ -87,10 +96,16 @@ public final class ExportSnapshotPreflight {
                 Path payload=ArchivePaths.resolve(pack.root(),file);
                 if(!Files.isRegularFile(payload,LinkOption.NOFOLLOW_LINKS)||Files.size(payload)>64L*1024*1024)throw new IOException("类别文件缺失或超限："+name);
                 bytes+=Files.size(payload);if(bytes>256L*1024*1024)throw new IOException("知识快照文本总量超限");
-                if(!hash.equals(ArtifactFingerprint.sha256(payload)))throw new IOException("类别文件哈希不匹配："+name);
+                BuildCancellation.check();
+                try(var hashTiming=BuildTrace.step("snapshot.payload.hash",name)) {
+                    if(!hash.equals(ArtifactFingerprint.sha256(payload)))throw new IOException("类别文件哈希不匹配："+name);
+                }
                 if(!name.equals("item_icons")) {
-                    var document=read(payload,64*1024*1024);
-                    if(Set.of("mod_metadata","registries","language","recipes","tags","loot_tables","loot_modifiers","entity_icons").contains(name))RuntimeSnapshotData.validate(name,document,value,pack.root());
+                    JsonNode document;
+                    try(var parseTiming=BuildTrace.step("snapshot.payload.parse",name)){document=read(payload,64*1024*1024);}
+                    try(var validationTiming=BuildTrace.phase("snapshot.payload.validate",name)) {
+                    if(Set.of("mod_metadata","registries","language","recipes","tags","loot_tables","loot_modifiers","entity_icons","item_attributes","entity_attributes","entity_state_attributes","loot_entrypoints","trades","brewing","workstation_rules","potions","effects","enchantments","spawn_rules","structures","structure_sets","template_pools","structure_processors","structure_templates","multiblocks").contains(name))RuntimeSnapshotData.validate(name,document,value,pack.root());
+                    }
                 }
                 else verifyIcons(pack,value);
             } else if(value.hasNonNull("file")||value.hasNonNull("sha256")||value.path("total").asInt()!=0)throw new IOException("未完成类别不能声明有效载荷："+name);
@@ -110,7 +125,6 @@ public final class ExportSnapshotPreflight {
         if(category.path("total").asInt()!=pack.icons().size()||category.path("succeeded").asInt()!=ok||category.path("transparent").asInt()!=transparent||category.path("unsupported").asInt()!=unsupported||category.path("failed").asInt()!=failed)throw new IOException("图标统计与清单不一致");
     }
     private static JsonNode read(Path file,int limit)throws IOException {
-        if(!Files.isRegularFile(file,LinkOption.NOFOLLOW_LINKS)||Files.size(file)>limit)throw new IOException("快照文件缺失或超限");
-        try(var input=Files.newInputStream(file)){byte[] bytes=input.readNBytes(limit+1);if(bytes.length>limit)throw new IOException("快照大小超限");var node=JSON.readTree(bytes);if(node==null||!node.isObject())throw new IOException("快照文件必须是 JSON 对象");return node;}
+        return SnapshotReadCache.read(file,limit);
     }
 }

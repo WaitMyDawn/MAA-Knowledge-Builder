@@ -23,7 +23,7 @@ public final class MediaAudit {
   var used=new HashSet<String>();var matcher=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(AnswerMedia.referenceText(answer));while(matcher.find())used.add(matcher.group(1));
   var sources=new HashSet<String>();artifacts.sources().forEach(s->sources.add(s.id()));var checks=new ArrayList<PictureCheck>();
   for(var p:artifacts.pictures()){boolean available;try{AnswerMedia.resolveImage(data,p);available=true;}catch(java.io.IOException|IllegalArgumentException missing){available=false;}
-   String basis="ITEM".equals(p.role())?"ITEM_SNAPSHOT_METADATA":"ENTITY".equals(p.role())?"ENTITY_STATE_METADATA":"RECIPE".equals(p.role())?"RECIPE_METADATA":sources.contains(p.sourceId())?"PROVIDED_DOCUMENT_SOURCE":"UNBOUND";
+   String basis="ITEM".equals(p.role())?"ITEM_SNAPSHOT_METADATA":"ENTITY".equals(p.role())?"ENTITY_STATE_METADATA":"RECIPE".equals(p.role())?"RECIPE_METADATA":"RUNTIME_RULE".equals(p.role())?"RUNTIME_RULE_METADATA":"LOOT".equals(p.role())?"LOOT_RULE_METADATA":sources.contains(p.sourceId())?"PROVIDED_DOCUMENT_SOURCE":"UNBOUND";
    String context=Objects.toString(p.context(),"");checks.add(new PictureCheck(p.id(),p.role(),p.assetId(),p.sourceId(),p.chunkIds(),used.contains(p.id()),available,basis,context.substring(0,Math.min(1200,context.length()))));
   }return new Report(1,entities,List.copyOf(checks),AnswerMedia.assess(answer,artifacts,data),ImageGroundingAssessment.assess(question,answer,artifacts));
  }

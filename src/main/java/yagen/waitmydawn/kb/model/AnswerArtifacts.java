@@ -4,7 +4,17 @@ import java.util.List;
 
 /** 回答携带证据快照与相对资源路径，历史回放不依赖当前基础库的行 ID。 */
 public record AnswerArtifacts(String scopeId, String scopeLabel, List<Source> sources, List<Picture> pictures,
-                              List<String> citedSourceIds) {
+                              List<String> citedSourceIds,
+                              @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) TurnState turnState) {
+    public AnswerArtifacts(String scopeId,String scopeLabel,List<Source> sources,List<Picture> pictures,List<String> citedSourceIds) {
+        this(scopeId,scopeLabel,sources,pictures,citedSourceIds,null);
+    }
+    public record FocusedObject(String registry,String kind,String label,java.util.Map<String,String> selectors) {
+        public FocusedObject {selectors=selectors==null?java.util.Map.of():java.util.Map.copyOf(selectors);}
+    }
+    public record TurnState(String profile,String scopeId,List<FocusedObject> objects) {
+        public TurnState {objects=objects==null?List.of():List.copyOf(objects);}
+    }
     public AnswerArtifacts(String scopeId,String scopeLabel,List<Source> sources,List<Picture> pictures) {
         this(scopeId,scopeLabel,sources,pictures,List.of());
     }

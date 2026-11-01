@@ -63,8 +63,7 @@ class RuntimeBuildContractTest {
     }
     @Test void runtimeDocumentsAreMaintainedOnlyThroughTheirWholeSnapshot()throws Exception {
         var metadata=(ObjectNode)RuntimeBuildFixtures.JSON.readTree(snapshot.resolve("data/mod_metadata.json").toFile());((ObjectNode)metadata.path("records").get(0)).put("description","运行时元数据包含的说明文本，描述基础玩法、对象身份和可追溯来源，用于检查快照派生文档整体维护约束。");writeCategory("mod_metadata",metadata);
-        builder.build(request(BuildRequest.Mode.REBUILD),null);var service=new SourceLifecycleService(config,db,embedding);var items=service.items(source(snapshot).id());assertFalse(items.isEmpty());
-        assertThrows(IllegalArgumentException.class,()->service.preview(source(snapshot).id(),items.getFirst().id(),SourceLifecycleService.Operation.REFRESH,null));
+        builder.build(request(BuildRequest.Mode.REBUILD),null);var service=new SourceLifecycleService(config,db,embedding);var items=service.items(source(snapshot).id());assertTrue(items.isEmpty());assertFalse(new RuntimeStructuredQuery(db,RuntimeKnowledgeStore.active(db)).get("mod_metadata","minecraft").rows().isEmpty());
     }
     @Test void jarContentIsNeverOpenedAsAnArchiveDuringBuildAndStaleScanIsRejected()throws Exception {
         Path folder=Files.createDirectories(temp.resolve("mods")),jar=folder.resolve("sample.jar");Files.writeString(jar,"Deliberately not a ZIP: Build only validates Scan identity hashes.");

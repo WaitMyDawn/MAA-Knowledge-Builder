@@ -10,12 +10,7 @@ public final class ArtifactFingerprint {
     private ArtifactFingerprint() {}
 
     public static String sha256(Path file) throws IOException {
-        MessageDigest digest = digest();
-        try (var input = Files.newInputStream(file)) {
-            byte[] bytes = new byte[65536]; int n;
-            while ((n = input.read(bytes)) >= 0) {BuildCancellation.check();digest.update(bytes, 0, n);}
-        }
-        return HexFormat.of().formatHex(digest.digest());
+        return SnapshotReadCache.hash(file);
     }
 
     public static String sourceTree(Path root) throws IOException {

@@ -933,6 +933,24 @@ public class WikiScraperService {
             }
         return null;
     }
+    public record SearchCandidate(String title,String url,String summary) {}
+    /** 搜索结果只声明候选链接；正文抓取后才可作为机制证据。 */
+    public List<SearchCandidate> discoverPages(String query,boolean vanilla) {
+        if(query==null||query.isBlank()||query.length()>200)throw new IllegalArgumentException("Invalid discovery query");
+        if(vanilla){String url=searchMcWikiUrl(query);return url==null?List.of():List.of(new SearchCandidate(query,url,"MC Wiki search candidate; version unverified"));}
+        String url=MCMOD_SEARCH_BASE+URLEncoder.encode(query,StandardCharsets.UTF_8);
+        FetchOutcome response=executeRaw(url,null,MCMOD_BASE+"/",true,2);
+        if(response.status()!=200||response.body()==null)throw new IllegalStateException("百科搜索失败 HTTP "+response.status());
+        var result=new LinkedHashMap<String,SearchCandidate>();
+        for(var link:Jsoup.parse(response.body(),MCMOD_BASE).select("a[href]")){
+            String target=link.absUrl("href");
+            if(!target.matches("https://(?:www\\.)?mcmod\\.cn/(?:item|post|class)/[1-9][0-9]*\\.html"))continue;
+            String title=link.text();if(title.isBlank())continue;
+            String summary=link.parent()==null?title:link.parent().text();if(summary.length()>500)summary=summary.substring(0,500);
+            result.putIfAbsent(target,new SearchCandidate(title,target,summary));if(result.size()>=8)break;
+        }
+        return List.copyOf(result.values());
+    }
     private String findModClassId(String modId) {
         try {String url=findModCandidateUrl(modId);return url==null?null:yagen.waitmydawn.kb.model.ModUrlBinding.normalize(url).replaceAll("[^0-9]","");}
         catch(java.util.concurrent.CancellationException e){throw e;}

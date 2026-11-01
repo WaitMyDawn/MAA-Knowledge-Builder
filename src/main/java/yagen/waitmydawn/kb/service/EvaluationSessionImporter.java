@@ -32,7 +32,13 @@ public final class EvaluationSessionImporter {
                 if(original.sessionId==null || !original.sessionId.matches("[a-zA-Z0-9_-]+") || !path.getFileName().toString().equals(original.sessionId+".json")
                         || original.title==null || original.title.length()>4000 || original.messages==null || original.messages.isEmpty() || original.messages.size()>1000)throw new IOException("会话身份或消息列表无效："+path.getFileName());
                 var referenced=new LinkedHashMap<String,Path>();
-                for(var message:original.messages) {
+                for(int messageIndex=0;messageIndex<original.messages.size();messageIndex++) {
+                    var message=original.messages.get(messageIndex);
+                    // Older external runners used the API role; persisted desktop answers use maa.
+                    if(message!=null&&"assistant".equals(message.role())) {
+                        message=new ChatHistoryService.ChatMessage("maa",message.content(),message.timestamp(),message.artifacts());
+                        original.messages.set(messageIndex,message);
+                    }
                     if(message==null || message.content()==null || !Set.of("user","maa").contains(message.role()))throw new IOException("会话消息格式无效");
                     if(message.artifacts()==null)continue;
                     if(message.artifacts().pictures().size()>32)throw new IOException("单条消息图片数量超限");

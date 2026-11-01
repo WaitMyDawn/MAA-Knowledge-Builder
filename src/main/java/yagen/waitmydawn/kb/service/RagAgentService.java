@@ -163,6 +163,7 @@ public class RagAgentService {
                             .baseUrl("https://api.deepseek.com/v1")
                             .apiKey(apiKey)
                             .modelName("deepseek-chat")
+                            .maxRetries(0)
                             .timeout(Duration.ofSeconds(90))
                             .maxTokens(1024)
                             .temperature(0.0)
@@ -187,6 +188,14 @@ public class RagAgentService {
         this.config = config;
     }
 
+    static ChatModel withRequestBudget(ChatModel delegate,int maximum){
+        if(maximum<0)throw new IllegalArgumentException("Negative model request budget");if(maximum==0)return delegate;
+        var calls=new java.util.concurrent.atomic.AtomicInteger();
+        return new ChatModel(){@Override public ChatResponse doChat(ChatRequest request){if(calls.incrementAndGet()>maximum)throw new IllegalStateException("Model request budget exhausted");return delegate.chat(request);}};
+    }
+    public boolean toolLoopAvailable(){return config!=null&&getChatModel()!=null;}
+    public ChatResponse toolChat(ChatRequest request){return getChatModel().chat(request);}
+
     private ChatModel getModel() {
         ChatModel model = chatModel;
         if (model == null) {
@@ -203,10 +212,12 @@ public class RagAgentService {
                             .baseUrl("https://api.deepseek.com/v1")
                             .apiKey(apiKey)
                             .modelName("deepseek-chat")
+                            .maxRetries(0)
                             .timeout(Duration.ofSeconds(60))
                             .maxTokens(2048)
                             .temperature(0.3)
                             .build();
+                    model=withRequestBudget(model,Integer.getInteger("maa.eval.maxModelRequests",0));
                     chatModel = model;
                     log.info("RAG Agent has been initialized (DeepSeek)");
                 }

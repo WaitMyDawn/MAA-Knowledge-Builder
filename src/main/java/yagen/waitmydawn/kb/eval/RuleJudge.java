@@ -218,10 +218,19 @@ public final class RuleJudge {
                 ok=obs.media()!=null && obs.media().invalidReferences()==0 && obs.media().unavailable()==0;
                 detail=String.valueOf(obs.media());
             }
-            case "answer_matches_at_least" -> {
+            case "answer_task_complete" -> {
+                var gaps=yagen.waitmydawn.kb.service.TaskEvidence.missing(question,answer);ok=gaps.isEmpty()&&!answer.matches("(?s).*请确认具体对象[：:].*");detail="missing requested facts="+gaps;
+            }
+            case "answer_positive_matches" -> {
+                ok=a.value()!=null&&java.util.regex.Pattern.compile(a.value(),java.util.regex.Pattern.CASE_INSENSITIVE).matcher(yagen.waitmydawn.kb.service.TaskEvidence.positiveText(answer)).find();detail="affirmative relation="+a.value();
+            }
+            case "runtime_mod_absent" -> {
+                var snapshot=obs.runtimeEvidence();ok=snapshot!=null&&Boolean.TRUE.equals(snapshot.membershipComplete())&&values.stream().allMatch(id->!snapshot.mods().containsKey(id));detail="absent in selected snapshot="+values;
+            }
+            case "answer_matches_at_least", "answer_positive_matches_at_least" -> {
                 int need = a.min() == null ? values.size() : a.min();
                 long hits = values.stream().filter(v -> java.util.regex.Pattern.compile(v,
-                        java.util.regex.Pattern.CASE_INSENSITIVE).matcher(answer).find()).count();
+                        java.util.regex.Pattern.CASE_INSENSITIVE).matcher(a.kind().equals("answer_positive_matches_at_least")?yagen.waitmydawn.kb.service.TaskEvidence.positiveText(answer):answer).find()).count();
                 ok = hits >= need; detail = "matchedAspects=" + hits + "/" + need;
             }
             case "answer_matches", "answer_core_matches" -> {

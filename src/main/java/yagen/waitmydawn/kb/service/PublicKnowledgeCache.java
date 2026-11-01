@@ -85,7 +85,7 @@ public final class PublicKnowledgeCache {
                 }
             }
             RetrievalTelemetry.vectorHit(chunks.size()-missing.size());
-            var computed = embedder.embedBatch(missing.stream().map(i -> chunks.get(i).text()).toList());
+            var computed = embedder.embedBatch(missing.stream().map(i -> chunks.get(i).text()).toList(),chunks.size()-missing.size());
             c.setAutoCommit(false);
             try (var insert = c.prepareStatement("MERGE INTO rag_public_embedding (chunk_id,profile,embedding,source_url) KEY(chunk_id,profile) VALUES (?,?,?,?)")) {
                 for (int j=0;j<missing.size();j++) {

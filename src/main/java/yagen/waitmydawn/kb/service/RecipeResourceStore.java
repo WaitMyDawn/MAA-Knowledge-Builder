@@ -128,6 +128,9 @@ public final class RecipeResourceStore {
         return values.size();
     }
     public List<String> findItemIds(String question) {
+        String profile=RuntimeKnowledgeStore.active(db);
+        if(profile!=null)try {var matches=new RuntimeNameIndex(db,profile).mentions(question,"ITEM");if(matches.stream().anyMatch(found->found.status().equals("AMBIGUOUS")))return List.of();var resolved=new LinkedHashSet<String>();matches.forEach(found->found.candidates().forEach(candidate->resolved.add(candidate.registry())));var explicit=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(question);while(explicit.find())resolved.add(explicit.group());return List.copyOf(resolved);}catch(Exception failure){throw new IllegalStateException("Runtime name query failed",failure);}
+
         record Hit(String id,int start,int end) {}
         var hits=new ArrayList<Hit>();
         var ids=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(question);

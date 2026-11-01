@@ -59,6 +59,8 @@ public class MaaKnowledgeBuilderApp extends Application {
     // UI state
     private StackPane contentArea;
     private VBox builderPage, qaPage, seedPage, settingsPage, metricsPage, knowledgePage, evaluationPage;
+    private yagen.waitmydawn.kb.ui.KnowledgeBrowser knowledgeBrowser;
+    private final java.util.List<yagen.waitmydawn.kb.ui.RuntimeBrowser> runtimeBrowsers=new java.util.ArrayList<>();
     private TextField folderField, apiKeyField, dataDirField;
     private TextArea buildUrlsField, buildDocumentsField;
     private TextField buildTargetField;
@@ -247,12 +249,14 @@ public class MaaKnowledgeBuilderApp extends Application {
         seedPage = buildSeedPage(stage);
         metricsPage = buildMetricsPage();
         settingsPage = buildSettingsPage(stage);
-        var catalogTab=new Tab("网页目录",new yagen.waitmydawn.kb.ui.KnowledgeBrowser(db,worker));catalogTab.setClosable(false);
+        knowledgeBrowser=new yagen.waitmydawn.kb.ui.KnowledgeBrowser(db,worker);
+        var catalogTab=new Tab("网页目录",knowledgeBrowser);catalogTab.setClosable(false);
         var sourcesTab=new Tab("来源管理",new yagen.waitmydawn.kb.ui.SourceManagerPane(config,db,embedder,this::runSourceMaintenance,this::reloadAfterSourceMaintenance));sourcesTab.setClosable(false);
         var knowledgeTabs=new TabPane(catalogTab);
-        String[] runtimeTitles={"配方目录","实体目录","物品目录","语言目录","战利品目录"};int runtimeIndex=0;
+        String[] runtimeTitles={"配方目录","实体目录","物品目录","语言目录","战利品目录","掉落入口目录","交易目录","酿造目录","加工规则目录","药水目录","效果目录","附魔目录","生成目录","结构目录","模板目录","多方块目录"};int runtimeIndex=0;
         for(var kind:yagen.waitmydawn.kb.service.RuntimeCatalog.Kind.values()){
-            var tab=new Tab(runtimeTitles[runtimeIndex],new yagen.waitmydawn.kb.ui.RuntimeBrowser(db,config,worker,kind,runtimeTitles[runtimeIndex++]));tab.setClosable(false);knowledgeTabs.getTabs().add(tab);
+            var browser=new yagen.waitmydawn.kb.ui.RuntimeBrowser(db,config,worker,kind,runtimeTitles[runtimeIndex]);runtimeBrowsers.add(browser);
+            var tab=new Tab(runtimeTitles[runtimeIndex++],browser);tab.setClosable(false);knowledgeTabs.getTabs().add(tab);
         }
         knowledgeTabs.getTabs().add(sourcesTab);VBox.setVgrow(knowledgeTabs,Priority.ALWAYS);knowledgePage=new VBox(knowledgeTabs);
         evaluationPage = new yagen.waitmydawn.kb.ui.EvaluationBrowser(config.getDataDir());
@@ -659,7 +663,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                     (phase, cur, total, msg) -> Platform.runLater(() -> {
                         if(phase.equals("publish"))cancelButton.setDisable(true);
                         if (total > 0) progressBar.setProgress((double) cur / total);
-                        if(phase.startsWith("progress:")){String step=phase.substring(9);buildCount.setText("Build "+cur+"/"+total+" · "+step);buildCount.setTooltip(new Tooltip("Build 按当前阶段统计已完成/总计："+step));return;}
+                        if(phase.startsWith("progress:")){String step=phase.substring(9);buildCount.setText("Build "+cur+"/"+total+" · "+step);buildCount.setTooltip(new Tooltip(msg));if(msg.startsWith("[进度]"))logText(msg);return;}
                         if(phase.equals("done"))buildCount.setText("Build "+cur+"/"+total+(msg.contains("没有新增内容")?" · 无变化":" · 已发布"));
                         logText("[" + phase + "] " + msg);
                     }));
@@ -683,6 +687,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             Platform.runLater(() -> {
                 refreshKnowledgeScopes();
                 refreshIconProfiles();
+                refreshKnowledgeDirectories();
                 logBuildResult(r);
                 setStatus("就绪", false);
             });
@@ -702,7 +707,11 @@ public class MaaKnowledgeBuilderApp extends Application {
         entityAgent=new EntityAgent(ragAgent,db,embedder,vectorStore);
         qaPipeline=new QaPipeline(classifyAgent,entityAgent,new UrlAgent(ragAgent,db,embedder),answerAgent,ragAgent,vectorStore,embedder,db,dbManager,config.getDataDir());
         metricsHistoryService=qaPipeline.getMetricsHistory();if(currentSession!=null)qaPipeline.restoreHistory(currentSession.messages);
-        Platform.runLater(()->{refreshKnowledgeScopes();refreshIconProfiles();});
+        Platform.runLater(()->{refreshKnowledgeScopes();refreshIconProfiles();refreshKnowledgeDirectories();});
+    }
+    private void refreshKnowledgeDirectories(){
+        if(knowledgeBrowser!=null)knowledgeBrowser.refresh();
+        runtimeBrowsers.forEach(yagen.waitmydawn.kb.ui.RuntimeBrowser::refresh);
     }
     private void logBuildResult(KnowledgeBuilder.BuildResult result) {
         logText("构建完成；新增模组："+result.parsed+"，跳过JAR："+result.skipped+"，冲突："+result.conflicts);
@@ -907,7 +916,7 @@ public class MaaKnowledgeBuilderApp extends Application {
                 row.setPadding(new Insets(4));
                 row.getStyleClass().add("history-row");
 
-                Label lbl = new Label(sess.title + " (" + sess.messages.size() + " msgs)");
+                Label lbl = new Label(sess.title + " (" + ((sess.messages.size()+1)/2) + " QA)");
                 lbl.setMinWidth(0);lbl.setMaxWidth(Double.MAX_VALUE);HBox.setHgrow(lbl,Priority.ALWAYS);
                 lbl.setTooltip(new Tooltip(sess.title+"\n"+sess.dataDir));
                 lbl.setFont(Font.font(11));
@@ -969,7 +978,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             String bg = msg.role().equals("user") ? "#e8f0fe" : "#f0fdf4";
             addChatBubble(msg.role().equals("user") ? "You" : "MAA", msg.content(), bg, msg.artifacts());
         }
-        qaLog.appendText("Loaded: " + sess.title + " (" + sess.messages.size() + " msgs)\n");
+        qaLog.appendText("Loaded: " + sess.title + " (" + ((sess.messages.size()+1)/2) + " QA)\n");
     }
 
     private void onAsk() {

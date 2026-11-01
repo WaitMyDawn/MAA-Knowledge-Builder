@@ -52,6 +52,22 @@ class KnowledgeImageSearchTest {
         var result=new KnowledgeImageSearch(db,temp).search("核心组装",artifacts(),diagnostics());
         assertTrue(result.pictures().isEmpty());assertEquals("OUTSIDE_PROVIDED_SECTION",result.audit().candidates().getFirst().reason());
     }
+    @Test void overviewCanUseAnchoredImageWithoutATextChunkAndReportsPostHydrationAudit()throws Exception {
+        store.saveBlock(new KnowledgeContent.Block("cover-block","doc","正文","/root/",10,null,"PARAGRAPH",null,"示例模组版本横幅","NATIVE"));
+        var asset=assets.put(FullWebMediaTest.image(1,256,256));store.saveImage(asset);
+        store.saveOccurrence(new KnowledgeContent.ImageOccurrence("cover","doc",asset.id(),"示例模组-第1张图片","https://images.example/cover.png",null,0));
+        store.saveImageReference("cover","doc","https://images.example/cover.png","示例模组-第1张图片","正文",10,"AVAILABLE",null);
+        new GuideImageIndex(db).bind("cover","doc",asset.id(),"示例模组-第1张图片","","NOT_REQUESTED",10);
+        String question="请读取 https://example.com/guide ，说明这个模组是什么，配一张相关的图。";
+        var source=new AnswerArtifacts.Source("s1","doc","示例模组","https://example.com/guide","组装",null,"NATIVE","核心先装配到底座，再放置结构框架并检查部件连接。");
+        var hit=new VectorStore.SearchResult("seed",source.evidence(),null,"示例模组","web",1,source.location());
+        var retrieval=new KnowledgeRetrievalService.Retrieval(List.of(hit),new AnswerArtifacts(null,null,List.of(source),List.of()),"",1,diagnostics());
+        try(var embedding=new EmbeddingService(null)) {
+            var telemetry=RetrievalTelemetry.begin();var hydrated=new KnowledgeRetrievalService(db,embedding,temp).hydrate(retrieval,question);
+            assertEquals(0,telemetry.httpRequests);assertEquals(1,hydrated.artifacts().pictures().size());assertTrue(hydrated.diagnostics().context().blockIds().contains("cover-block"));assertEquals(1,hydrated.diagnostics().images().selected());assertTrue(hydrated.diagnostics().images().candidates().stream().anyMatch(candidate->candidate.reason().equals("SELECTED")));
+            assertTrue(hydrated.artifacts().sources().stream().anyMatch(s->s.evidence().contains("版本横幅")));
+        }finally{RetrievalTelemetry.end();}
+    }
     @Test void pendingDownloadCacheLossAndNoRelevantPictureHaveDifferentStates() throws Exception {
         var search=new KnowledgeImageSearch(db,temp);
         assertEquals("NO_RELEVANT_IMAGE_IN_CONTEXT",search.search("核心",artifacts(),diagnostics()).audit().status());

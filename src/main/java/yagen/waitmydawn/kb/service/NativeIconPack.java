@@ -36,6 +36,7 @@ public final class NativeIconPack {
     }
 
     public static Pack read(Path selected) throws IOException {
+        try(var timing=BuildTrace.phase("snapshot.manifest","物品图标清单、PNG 与哈希校验")) {
         rejectSensitive(selected);
         Path root=selected.toAbsolutePath().normalize();ArchivePaths.resolve(root,"manifest.json");
         if(!Files.isDirectory(root,LinkOption.NOFOLLOW_LINKS)) throw new IOException("导出包必须是普通目录");
@@ -72,6 +73,7 @@ public final class NativeIconPack {
                 || !rendering.path("width").isIntegralNumber() || !rendering.path("height").isIntegralNumber() || !rendering.path("width").canConvertToInt() || !rendering.path("height").canConvertToInt() || width<16 || width>512 || height!=width) throw new IOException("仅支持 16–512 像素的正方形透明 GUI 图标");
         var rows=array(tree,"icons",50000);if(rows.isEmpty())throw new IOException("导出清单没有物品记录");
         var icons=new ArrayList<Icon>();ids.clear();long total=0;
+        var progress=BuildTrace.counter("snapshot.icons.verify","图标校验",rows.size(),0);int checked=0;
         for(var row:rows) {
             cancelled();fields(row,"itemId","variant","status","file","sha256","error","state");
             String item=text(row,"itemId",500);
@@ -89,7 +91,9 @@ public final class NativeIconPack {
                 if(row.has("file") || row.has("sha256"))throw new IOException("失败记录不能携带可用图标映射");
                 icons.add(new Icon(item,status,null,null,text(row,"error",2000),variant,state));
             } else throw new IOException("未知图标状态："+status);
+            progress.update(++checked);
         }
+        progress.complete();
         icons.sort(Comparator.comparing(Icon::itemId).thenComparing(Icon::variant));
         ObjectNode normalized=((ObjectNode)tree).deepCopy();normalized.remove("exportedAt");
         var sortedMods=new ArrayList<JsonNode>();mods.forEach(sortedMods::add);sortedMods.sort(Comparator.comparing(m -> m.path("id").asText()));
@@ -106,6 +110,7 @@ public final class NativeIconPack {
         var pack=new Pack(real,yagen.waitmydawn.kb.model.BuildRequest.fingerprint(canonical+snapshotIdentity),yagen.waitmydawn.kb.model.BuildRequest.fingerprint(environment),origin,exporterVersion,version,loader,normalized.path("environment"),rendering,canonical,List.copyOf(icons));
         ExportSnapshotPreflight.inspect(pack,null);
         return pack;
+        }
     }
 
     static long validate(Path root,Icon icon,int width) throws IOException {

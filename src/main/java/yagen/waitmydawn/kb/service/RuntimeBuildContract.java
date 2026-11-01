@@ -35,10 +35,12 @@ public final class RuntimeBuildContract {
         return prepare(request,db,inMemory,new ScanEnvironmentStore(db));
     }
     static Prepared prepare(BuildRequest request,DatabaseBuilder db,Map<Path,JarScanCache.Snapshot> inMemory,ScanEnvironmentStore environments)throws IOException {
+        try(var readCache=SnapshotReadCache.begin()) {
         if(request.mode()==BuildRequest.Mode.APPEND && migrationWarning(db)!=null)throw new IllegalArgumentException(migrationWarning(db));
         var pack=ExportSnapshotPreflight.requireBuildSnapshot(request,null,List.of());validateComplete(pack);
         var source=request.sources().stream().filter(s->s.kind()==BuildRequest.Kind.DOCUMENT_DIRECTORY&&Path.of(s.location()).toAbsolutePath().normalize().equals(pack.root())).findFirst().orElseThrow();
         var identities=new ArrayList<Identity>();var seen=new HashMap<String,String>();
+        try(var jarTiming=BuildTrace.phase("snapshot.jar.identity","Scan 清单与 JAR 身份复核")) {
         for(var jarSource:request.sources())if(jarSource.kind()==BuildRequest.Kind.JAR_DIRECTORY) {
             Path folder=Path.of(jarSource.location()).toAbsolutePath().normalize();
             var snapshot=inMemory.get(folder);if(snapshot==null)snapshot=new JarScanCache(folder).snapshot();
@@ -51,19 +53,27 @@ public final class RuntimeBuildContract {
                 if(items.putIfAbsent(path,item)!=null)throw new IllegalArgumentException("Scan 记录包含重复文件");
             }
             var jars=new JarScannerService().scan(folder);if(jars.isEmpty()||jars.size()!=items.size())throw new IllegalArgumentException("模组目录清单已变化，请重新 Scan："+folder);
-            var mods=new ArrayList<ModEntry>();
+            var mods=new ArrayList<ModEntry>();var verifiedHashes=new HashMap<Path,String>();
+            var progress=BuildTrace.counter("snapshot.jar.hash","JAR 校验",jars.size(),0);int checked=0;
             for(Path jar:jars) {
-                jar=jar.toAbsolutePath().normalize();var item=items.get(jar);var hashes=JarScanCache.hashes(jar);
+                BuildCancellation.check();jar=jar.toAbsolutePath().normalize();var item=items.get(jar);
+                JarScanCache.Hashes hashes;
+                try(var hashTiming=BuildTrace.step("snapshot.jar.scan_hash",jar.getFileName().toString())){hashes=JarScanCache.hashes(jar);}
+                verifiedHashes.put(jar,hashes.sha256());
+                progress.update(++checked);
                 if(item==null||!hashes.sha512().equals(item.sha512()))throw new IllegalArgumentException("JAR 已变化，请重新 Scan 并重新导出快照："+jar.getFileName());
                 if(item.mod()==null)continue;
                 var mod=JSON.convertValue(item.mod(),ModEntry.class);mod.setJarPath(jar.toString());mod.setJarFileName(jar.getFileName().toString());
                 String previous=seen.putIfAbsent(mod.getModId(),hashes.sha256());if(previous!=null&&!previous.equals(hashes.sha256()))throw new IllegalArgumentException("存在不同内容的同名模组："+mod.getModId());
                 mods.add(mod);identities.add(new Identity(jarSource,mod,hashes.sha256()));
             }
-            ExportSnapshotPreflight.inspect(pack,snapshot.environment(),mods).requireReady();
+            progress.complete();
+            ExportSnapshotPreflight.inspect(pack,snapshot.environment(),mods,verifiedHashes).requireReady();
+        }
         }
         if(request.mode()==BuildRequest.Mode.APPEND)requireCompatibleAppend(db,pack);
         return new Prepared(source,pack,List.copyOf(identities));
+        }
     }
     static void verifyUnchanged(Prepared prepared,BuildRequest request,DatabaseBuilder db,Map<Path,JarScanCache.Snapshot> scans,ScanEnvironmentStore environments)throws IOException {
         var current=prepare(request,db,scans,environments);

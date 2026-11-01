@@ -61,7 +61,7 @@ class RuntimeKnowledgeStoreTest {
             var hits=new VectorStore(db,384).search(embedder.embed("钻石块合成配方"),100);
             assertTrue(hits.stream().filter(hit->hit.type().equals("runtime_language")).allMatch(hit->"mkb_fixture".equals(hit.modId())));
             assertTrue(hits.stream().noneMatch(hit->hit.chunkId().equals("old-recipe")));
-            assertTrue(hits.stream().anyMatch(hit->hit.type().equals("runtime_recipe")));
+            assertTrue(hits.stream().noneMatch(hit->hit.type().startsWith("runtime_")));assertFalse(new RuntimeStructuredQuery(db,RuntimeKnowledgeStore.active(db)).get("recipes","mkb_fixture:changed").rows().isEmpty());
             var selected=RuntimeKnowledgeStore.active(db);new ItemIconStore(db).selectProfile(selected);
             try(var manager=new MultiDBManager(temp.resolve("qa"),db)) {
                 var llm=new RagAgentService(null){@Override public dev.langchain4j.model.chat.ChatModel getChatModel(){return null;}};var vectors=new VectorStore(db,384);
@@ -72,7 +72,7 @@ class RuntimeKnowledgeStoreTest {
                 var cards=new RendererService(config,db).renderDetailed(result.recipesToRender);assertEquals(1,cards.cards().size());assertEquals(2,cards.cards().getFirst().plan().output().count());
             }
             var resolution=new KnowledgeRetrievalService(db,embedder).resolve("示例机器怎么使用",null,null);
-            assertFalse(new KnowledgeRetrievalService(db,embedder).retrieve("示例机器怎么使用",resolution).hits().isEmpty());
+            assertTrue(new KnowledgeRetrievalService(db,embedder).retrieve("示例机器怎么使用",resolution).hits().isEmpty());assertTrue(RuntimeRuleEvidence.read(db,List.of("mkb_fixture:sample_a"),"怎么使用").stream().anyMatch(hit->hit.chunkText().contains("示例机器")));
             new KnowledgeContentStore(db).validate();db.healthCheck();
             var fingerprint=db.contentFingerprint();builder.build(request(root,BuildRequest.Mode.APPEND),null);assertEquals(fingerprint,db.contentFingerprint());
         }finally{db.shutdown();}

@@ -63,8 +63,11 @@ public class QaPipeline {
     private static final String LIKE_WHERE_OR = "output_item LIKE ? ESCAPE '\\' OR recipe_data LIKE ? ESCAPE '\\'";
     private static final String LIKE_WHERE_DATA = "recipe_data LIKE ? ESCAPE '\\'";
     private final List<QAPair> conversationHistory = new ArrayList<>();
+    private yagen.waitmydawn.kb.model.AnswerArtifacts.TurnState dialogueFocus;
     private int conversationTurn = 0;
     private String lastKnowledgeScope;
+    /** 上一轮是否请求过图片，用于“改成绿色/只看…”这类跟进问题继承配图意图。 */
+    private boolean lastTurnImages;
     private final KnowledgeRetrievalService knowledge;
     private final Path mediaDirectory;
     private Path assetDirectory(){return mediaDirectory;}
@@ -108,6 +111,8 @@ public class QaPipeline {
     }
 
     private QaResult processTurn(String question, String selectedScope) {
+        if(llm!=null&&llm.toolLoopAvailable())return processToolTurn(question,selectedScope);
+
         for (var database : dbManager.getActiveDatabases())
             VectorStore.verifyProfile(database, embedder.profile(), false);
         long t0 = System.nanoTime();
@@ -226,6 +231,14 @@ public class QaPipeline {
         UrlAgent.UrlFetchResult fetchResult=fetchForReason(List.of(),List.of(),entityResolution.subQueries(),"LOCAL_KNOWLEDGE_SEARCH");
         boolean localText=imported!=null&&!imported.hits().isEmpty()&&imported.bestLexical()>=0.6
                 || !fetchResult.subQueryResults().isEmpty()&&fetchResult.subQueryResults().stream().allMatch(sub->sub.chunks().stream().anyMatch(hit->hit.score()>0.3&&KnowledgeSearchText.overlap(sub.subQuery(),hit.chunkText())>=0.6));
+        List<VectorStore.SearchResult> runtimeAttributes;
+        Set<String> attributeCovered;
+        long structuredStarted=System.nanoTime();
+        try{var attributes=RuntimeAttributes.queryEvidence(baseDb,resolvedEntities.stream().map(ResolvedEntity::registry).toList(),question);attributeCovered=attributes.coveredIds();var direct=new ArrayList<>(attributes.hits());direct.addAll(RuntimeRuleEvidence.read(baseDb,resolvedEntities.stream().map(ResolvedEntity::registry).toList(),question));direct.addAll(RuntimeStructures.evidence(baseDb,resolvedEntities.stream().map(ResolvedEntity::registry).toList(),question));direct.addAll(RuntimeSpawns.evidence(baseDb,resolvedEntities.stream().map(ResolvedEntity::registry).toList(),question));direct.addAll(RuntimeMagic.evidence(baseDb,resolvedEntities.stream().map(ResolvedEntity::registry).toList(),question));direct.addAll(AcquisitionIndex.evidence(baseDb,resolvedEntities.stream().map(ResolvedEntity::registry).toList(),question));runtimeAttributes=List.copyOf(direct);}catch(Exception invalid){throw new IllegalStateException("实机规则证据读取失败",invalid);}
+        m.addTrace("StructuredQuery",(System.nanoTime()-structuredStarted)/1_000_000,"直接读取当前快照属性与规则证据 "+runtimeAttributes.size()+" 条；属性覆盖 "+attributeCovered.size()+" 个对象");
+        if(RuntimeSpawns.configurationOnly(question)&&RuntimeSpawns.covered(resolvedEntities.stream().map(ResolvedEntity::registry).toList(),runtimeAttributes))localText=true;
+        boolean attributesOnly=RuntimeAttributes.requested(question)&&!question.matches("(?s).*(获取|获得|掉落|交易|打法|怎么打|攻略|合成|制作|生成|用途|作用|驯服|繁殖|来源|哪里|在哪|推荐|机制|恢复|治疗|提升|强化|升级|为什么).*" );
+        if(attributesOnly&&!runtimeAttributes.isEmpty()&&!resolvedEntities.isEmpty()&&resolvedEntities.stream().allMatch(entity->attributeCovered.contains(entity.registry())))localText=true;
         boolean enumerateOnly=plan!=null&&plan.enumerate()&&!plan.needsDetails()&&entityResolution.wikiTopics().isEmpty();
         if(!localText&&!enumerateOnly && (localRecipeProbe.isEmpty()||localDecision.externalKnowledge()) || localDecision.explicitWeb()) {
             fetchResult=fetchForReason(entityResolution.aliasHits(),entityResolution.wikiTopics(),entityResolution.subQueries(),localDecision.explicitWeb()?"EXPLICIT_WEB_REQUEST":"ENTITY_DETAILS_GAP");
@@ -283,6 +296,7 @@ public class QaPipeline {
                 .sorted(Comparator.comparingDouble(VectorStore.SearchResult::score).reversed())
                 .limit(180)
                 .toList();
+        if(!runtimeAttributes.isEmpty()){var combined=new ArrayList<>(runtimeAttributes);combined.addAll(vectorResults);vectorResults=combined.stream().distinct().toList();}
         if (imported != null && (plan == null || plan.modId() == null) && !imported.hits().isEmpty()) {
             var merged = new LinkedHashMap<String,VectorStore.SearchResult>();
             vectorResults.forEach(v -> merged.put(v.chunkId(), v)); imported.hits().forEach(v -> merged.put(v.chunkId(), v));
@@ -396,6 +410,7 @@ public class QaPipeline {
                     .filter(c -> selectedIds.contains(c.sourcePath() + "\n" + c.chunkId())).toList();
             finalSubQueries.add(new UrlAgent.SubQueryResult(sub.subQuery(), selected, sub.registries()));
         }
+        if(!runtimeAttributes.isEmpty())finalSubQueries.add(new UrlAgent.SubQueryResult("当前快照属性与获取规则；默认实例不证明未采样状态，候选来源不保证获得",runtimeAttributes.stream().filter(v->selectedIds.contains(v.sourcePath()+"\n"+v.chunkId())).toList(),List.of()));
         if(result.catalogEvidence!=null) finalSubQueries.add(new UrlAgent.SubQueryResult(question,
                 vectorResults.stream().filter(v -> v.type().startsWith("category_")).toList(),List.of()));
         if (imported != null) {
@@ -440,7 +455,8 @@ public class QaPipeline {
         result.sourceScope=baseDb.findAllModEntries().stream().filter(mod->relevantMods.isEmpty() || relevantMods.contains(mod.getModId())).map(mod -> mod.getModId()+": modVersion="+mod.getVersion()
                 +", Minecraft="+mod.getMcVersion()+", loader="+mod.getLoader()+", "+KnowledgeSourcePolicy.describe(mod)).collect(java.util.stream.Collectors.joining("\n"))
                 +"\nnull 表示 JAR 元数据未提供版本。移植版本默认沿用原模组的百科机制知识；实际配方、注册名、纹理由安装 JAR 优先确定。仅证据指出具体差异时披露该差异，不把缺少移植版独立百科视为知识缺失。";
-        result.sourceScope=runtimeScope(result.sourceScope);
+        result.sourceScope=runtimeScope(result.sourceScope)+"\n属性回答：匹配当前快照与状态的实机属性证据优先于网页；区分基础值和采样有效值，物品修饰器不得称为最终伤害。缺失实机字段时明确披露，网页只能作为标注来源的补充。交易工厂入选率不是具体随机物品的最终概率；PARTIAL与UNSUPPORTED不得解释成没有内容。铁砧基础规则不证明给定输入的最终费用；模板容器关系不证明自然生成。结构注册定义、模板资源、多方块工作示例不等于世界中已生成或已运行的实例。不能从模板文件名猜测结构分布；布局图不是真实世界截图，未指定单元不自动代表空气。METADATA_ONLY与UNSUPPORTED须说明缺口。材料表不是战利品表；具体加工输入与产物须核对关联实机配方。生成配置中的权重不是实际遭遇概率；生成池数量不是每区块保证数量，已加载维度引用不是唯一分布范围。放置谓词未解析，空池或未注册不表示无法生成。自然生成、结构池覆盖、刷怪笼、特殊事件和召唤不可混同，缺少动态入口须披露并使用有来源的补充证据。药水组成、效果参数与附魔规则优先采用匹配环境的实机元数据；基础药水定义不覆盖堆叠自定义效果，随机附魔候选不等于固定输出，能量成本不等于铁砧费用或交易价格；旧版本未提供的数据驱动规则不得推断为不存在。获取索引的 unverified 标记只表示输出预览候选，必须核对原始定义，不能作为动态配方最终结果的保证。";
+        if(question.matches("(?s).*(结构|多方块|布局|搭建|锻炉|生成|刷怪|群系|召唤|交易|酿造|药水|效果|附魔|掉落|战利品|铁砧).*"))result.sourceScope+="\n"+RuntimeRules.capabilities(baseDb);
         var importedContext = imported;
         if (importedContext != null) {
             var ids = vectorResults.stream().map(VectorStore.SearchResult::chunkId).collect(java.util.stream.Collectors.toSet());
@@ -474,6 +490,7 @@ public class QaPipeline {
             // 前提校验结果强制前置：不依赖 LLM 是否愿意改口（反幻觉硬约束）
             result.answer = "> ⚠️ " + premiseWarning + "\n\n" + result.answer;
         }
+        guardInstallationClaims(result, m);
         m.answerGenTimeMs = (System.nanoTime() - t6) / 1_000_000;
         result.answer = AnswerSourceLinks.enrich(result.answer, result.vectorResults);
         result.artifacts=AnswerMedia.snapshotCitations(result.answer,result.artifacts);
@@ -534,9 +551,59 @@ public class QaPipeline {
         return result;
     }
 
+    private QaResult processToolTurn(String question,String selectedScope) {
+        long started=System.nanoTime();conversationTurn++;var m=new QaMetrics();m.timestamp=Instant.now();m.conversationTurn=conversationTurn;m.sessionId=dbManager.getCurrentSessionId();m.questionHash=sha256hex(question);m.runtimeEvidence=RuntimeEvidencePolicy.snapshot(baseDb);
+        var result=new QaResult();result.sourceScope=selectedScope==null?"当前快照与本地资料":selectedScope;
+        urlAgent.reset();urlAgent.resetUsage();urlAgent.setIncrementalDB(dbManager.getCurrentIncDB());
+        String effectiveQuestion=DialogueFocus.expand(question,dialogueFocus,m.runtimeEvidence==null?null:m.runtimeEvidence.profile(),selectedScope);
+        result.mediaQuestion=effectiveQuestion;
+        if(!effectiveQuestion.equals(question)&&question.matches("(?s).*(介绍|展示|改成|只看|外观).*")){
+            var ids=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(effectiveQuestion.substring(0,effectiveQuestion.length()-question.length()));
+            while(ids.find())if(ids.start()==0||effectiveQuestion.charAt(ids.start()-1)!='=')result.conversationTargets.add(ids.group());
+        }
+        var turn=new QaAgentTurn(baseDb,baseVectorStore,knowledge,urlAgent,result,effectiveQuestion,selectedScope,lastKnowledgeScope,()->prepareMedia(result,result.mediaQuestion));
+        turn.inheritImages=lastTurnImages;
+        turn.rawQuestion=question;
+        String toolContext="Selected scope: "+result.sourceScope+RuntimeEvidencePolicy.context(m.runtimeEvidence,turn.documentScope())+"\nCurrent object/state task: "+effectiveQuestion+"\n"+buildConversationContext();
+        var outcome=new AgentToolLoop().run(llm::toolChat,turn,effectiveQuestion,toolContext);result.toolTrace=outcome;m.answerGeneration=outcome.reason().startsWith("MODEL_ERROR")?"MODEL_ERROR":"NO_EVIDENCE";m.fallbackUsed=outcome.reason().startsWith("MODEL_ERROR");
+        for(var decision:outcome.decisions())m.addTrace("ToolModel:"+decision.round(),decision.elapsedMs(),decision.status()+" · 请求工具 "+decision.toolRequests());
+        for(var event:outcome.events())m.addTrace("Tool:"+event.tool(),event.elapsedMs(),event.status()+" · 返回字符 "+event.returnedChars());m.addTrace("ToolLoop",(System.nanoTime()-started)/1_000_000,outcome.reason()+" · 决策轮数 "+outcome.rounds());
+        try{var directory=mediaDirectory.resolve("tool-runs");java.nio.file.Files.createDirectories(directory);new com.fasterxml.jackson.databind.ObjectMapper().writerWithDefaultPrettyPrinter().writeValue(directory.resolve(java.util.UUID.randomUUID()+".json").toFile(),java.util.Map.of("questionHash",m.questionHash,"outcome",outcome,"sources",result.vectorResults.stream().map(hit->BuildTrace.safeLabel(hit.sourcePath())).distinct().toList()));}catch(java.io.IOException failure){result.mediaWarnings.add("工具审计保存失败："+failure.getClass().getSimpleName());}
+        BuildCancellation.check();AnswerMedia.attachVectorSources(result,result.vectorResults);turn.hydrateImages();turn.prepareFinalMedia();
+        if(turn.clarification!=null)result.answer=turn.clarification;
+        else if(result.vectorResults.isEmpty()&&result.recipeResults.isEmpty()&&result.artifacts.pictures().isEmpty()) {
+            if(turn.imagesRequested&&!result.mediaWarnings.isEmpty()){result.answer="本轮没有找到符合指定对象与状态的可用图片，不能用默认外观或其他对象的图替代。";m.answerGeneration="LOCAL_MEDIA_LIMITATION";}
+            else result.answer=outcome.reason().startsWith("MODEL_ERROR")?"工具决策模型未成功返回，本轮尚未完成取证。请检查模型服务或稍后重试。":"本轮没有取得足够证据，无法确认。工具执行状态："+outcome.reason();
+        }
+        else {
+            var context=new AnswerContext(question,QuestionType.GENERAL,result.resolvedEntities,result.recipeResults.stream().map(recipe->new AnswerAgent.RecipeMatch(recipe.recipeJson(),recipe.outputItem(),recipe.sourceMod(),recipe.sourceType())).toList(),result.vectorResults,null,List.of(),null,result.sourceScope,RuntimeEvidencePolicy.context(m.runtimeEvidence,turn.documentScope())+"\nCurrent task: "+effectiveQuestion+"\n"+turn.coverageContext()+"\n名称口径：物品、方块与工作站的中文名必须使用证据里的 name 字段，不要自行改写或换成俗称。"+"\n面向玩家的组织规则：先给结论与可执行做法，再补机制和数值；不写内部字段名、状态键、哈希或 appearanceHash/FULL_CARTESIAN/SAFE_DETACHED_SETUP 这类导出元数据；表格没有来源就去掉来源列，不留空列；没有证据的“材料准备（一跳）”不写；对象没有装备槽位时不必说明；不要整段写“本轮无法确认的部分”，只在确实缺关键事实时用一句话点明。"+"\n属性口径：AttributeMap 中等于 1.0 的法术强度、法术抗性等数值通常是工厂默认值，不代表模组实际战斗数值；若网页或源码给出不同数值（例如 125%、25%），引用来源并说明差异，不要用默认值覆盖来源。"+entityMedia.evidence(result,KnowledgeRetrievalService.evidence(result.artifacts,null)));
+            long answerStarted=System.nanoTime();result.answer=answerAgent.composeSinglePass(context);m.answerGeneration=answerAgent.lastGenerationMode();m.addTrace("ToolAnswer",(System.nanoTime()-answerStarted)/1_000_000,m.answerGeneration);
+            guardInstallationClaims(result,m);
+            result.answer=NameNormalizer.apply(baseDb,m.runtimeEvidence==null?null:m.runtimeEvidence.profile(),result.answer);
+            result.answer=AnswerPostProcess.apply(result.answer,question);
+            if(!outcome.reason().equals("READY"))result.answer+="\n\n本轮取证已停止（"+outcome.reason()+"），以上内容仅覆盖已取得的证据。";
+        }
+        BuildCancellation.check();result.artifacts=AnswerMedia.snapshotCitations(result.answer,result.artifacts);result.answer=AnswerMedia.stripUnresolvedPlaceholders(AnswerMedia.bind(result.answer,result.artifacts));entityMedia.finish(result,Objects.toString(result.mediaQuestion,question));m.guideIllustrations=GuideIllustrationCoverage.finish(result,question);m.mediaPerformance=result.mediaPerformance;m.mediaAudit=MediaAudit.capture(question,result.answer,result.artifacts,assetDirectory(),result.entityImageAudit);
+        var io=RetrievalTelemetry.current();m.resourceAccess=RetrievalTelemetry.resources();m.workAudit=RetrievalTelemetry.work();m.httpRequestCount=io.httpRequests;m.httpErrorCount=io.httpErrors;m.documentEmbeddingCount=io.documentEmbeddings;m.queryEmbeddingCount=io.queryEmbeddings;m.reusedEmbeddingCount=io.reusedEmbeddings;m.embeddingTimeMs=io.embeddingNanos/1_000_000;
+        m.dataTier=!result.recipeResults.isEmpty()?"TIER A":result.vectorResults.isEmpty()?"TIER D":"TIER C";m.contextChunksUsed=result.vectorResults.size();m.knowledgeCitedSourceIds=result.artifacts.citedSourceIds();
+        var usage=llm.usageTrace();m.llmCallCount=usage.calls;m.tokenEstimateInput=usage.inputTokens;m.tokenEstimateOutput=usage.outputTokens;m.tokenTotalCount=usage.inputTokens+usage.outputTokens;m.unknownUsageCalls=usage.unknownUsageCalls;m.recipeResultCount=result.recipeResults.size();m.answerLength=result.answer.length();m.totalTimeMs=(System.nanoTime()-started)/1_000_000;m.computeTtft();m.computeQualityIndicators();m.accumulate();result.metrics=m;
+        try{metricsHistory.save(m);}catch(Exception failure){log.warn("Tool metrics save failed",failure);}if(!outcome.reason().startsWith("MODEL_ERROR")){lastKnowledgeScope=turn.scopeId();dialogueFocus=DialogueFocus.capture(m.runtimeEvidence==null?null:m.runtimeEvidence.profile(),lastKnowledgeScope,result.mediaPlan,turn.focusObjects());}
+        lastTurnImages=turn.imagesRequested||!result.artifacts.pictures().isEmpty();
+        result.artifacts=new yagen.waitmydawn.kb.model.AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),result.artifacts.sources(),result.artifacts.pictures(),result.artifacts.citedSourceIds(),dialogueFocus);conversationHistory.add(new QAPair(question,result.answer));while(conversationHistory.size()>MAX_CONTEXT_PAIRS)conversationHistory.remove(0);return result;
+    }
+
     public List<KnowledgeRetrievalService.Scope> knowledgeScopes() { return knowledge.scopes(); }
     private UrlAgent.UrlFetchResult fetchForReason(List<EntityAgent.AliasHit> aliases,List<String> topics,List<String> queries,String cause) {
         try(var scope=RetrievalTelemetry.resourceCause(cause)){return urlAgent.fetchAndRetrieve(aliases,topics,queries);}
+    }
+        /** 安装结论必须与快照成员一致；网页来源不能证明安装。 */
+    private void guardInstallationClaims(QaResult result,QaMetrics m){
+        var snapshot=m.runtimeEvidence;if(snapshot==null||result.answer==null||result.answer.isBlank())return;
+        var conflicts=InstallationClaims.conflicts(result.answer,snapshot.mods().keySet());if(conflicts.isEmpty())return;
+        result.answer=InstallationClaims.repair(result.answer,conflicts);
+        String detail=conflicts.stream().map(conflict->conflict.token()+"→"+conflict.truth()).distinct().collect(java.util.stream.Collectors.joining("、"));
+        m.addTrace("InstallationGuard",0,"按快照校正 "+conflicts.size()+" 处安装结论："+detail);
+        log.warn("Answer installation claim corrected against snapshot: {}",detail);
     }
     private void prepareMedia(QaResult result,String question){
         long started=System.nanoTime();String saved=result.answer;result.answer="";
@@ -547,8 +614,11 @@ public class QaPipeline {
                 result.recipeRenderBatch=new RendererService(config,baseDb).renderDetailed(result.recipesToRender);
                 AnswerMedia.attachRecipes(result,result.recipeRenderBatch,mediaDirectory);
             }else result.recipeRenderBatch=new RendererService.RenderBatch(Map.of(),List.of(),List.of());
-            entityMedia.prepare(result,question);
+            entityMedia.prepare(result,question.replaceAll("https?://[^\\s<>]+"," "));
             new LootCardService(baseDb,mediaDirectory).attach(result,question);
+            new RuleCardService(baseDb,mediaDirectory).attach(result,question);
+            new LayoutCardService(baseDb,mediaDirectory).attach(result,question);
+            if(result.multiblockId!=null&&result.artifacts.pictures().stream().noneMatch(p->p.role().equals("RUNTIME_RULE")))try{new LayoutCardService(baseDb,mediaDirectory).attachOne(result,result.multiblockId);}catch(Exception failure){result.mediaWarnings.add("布局图："+failure.getMessage());}
         }catch(java.io.IOException failure){result.mediaWarnings.add("配方图片归档失败："+failure.getClass().getSimpleName());}
         finally{result.answer=saved;}
         result.mediaPreparationMs=(System.nanoTime()-started)/1_000_000;
@@ -573,6 +643,17 @@ public class QaPipeline {
         result.artifacts = retrieval == null ? yagen.waitmydawn.kb.model.AnswerArtifacts.empty() : retrieval.artifacts();
         result.vectorResults = retrieval == null ? List.of() : retrieval.hits();
         m.knowledgeRetrieval=retrieval==null?null:retrieval.diagnostics();
+        if(scope.warning()==null&&(scope.scope()==null||scope.scope().id().startsWith("runtime:"))&&RuntimeKnowledgeStore.active(baseDb)!=null)try {
+            var resolved=new RuntimeNameIndex(baseDb,RuntimeKnowledgeStore.active(baseDb)).mentions(lookupQuestion,null);
+            var ambiguous=resolved.stream().filter(found->found.status().equals("AMBIGUOUS")).toList();
+            if(!ambiguous.isEmpty())scope=new KnowledgeRetrievalService.Resolution(scope.scope(),scope.documentId(),"名称存在歧义，请确认具体模组或对象类型："+ambiguous,true);
+            else {
+                var ids=resolved.stream().flatMap(found->found.candidates().stream()).map(RuntimeNameIndex.Candidate::registry).distinct().toList();
+                result.resolvedEntities=ids.stream().map(id->new ResolvedEntity(id,id.split(":")[0],1,"snapshot-name-index")).toList();
+                var evidence=new ArrayList<>(result.vectorResults);evidence.addAll(RuntimeRuleEvidence.read(baseDb,ids,lookupQuestion));evidence.addAll(RuntimeAttributes.evidence(baseDb,ids,lookupQuestion));evidence.addAll(AcquisitionIndex.evidence(baseDb,ids,lookupQuestion));evidence.addAll(RuntimeStructures.evidence(baseDb,ids,lookupQuestion));evidence.addAll(RuntimeMagic.evidence(baseDb,ids,lookupQuestion));evidence.addAll(RuntimeSpawns.evidence(baseDb,ids,lookupQuestion));result.vectorResults=List.copyOf(evidence);
+            }
+        }catch(Exception failure){throw new IllegalStateException("Runtime evidence query failed",failure);}
+
         m.knowledgeContextChunkIds=KnowledgeRetrievalService.contextIds(retrieval,result.artifacts);
         String boundMod=knowledge.boundModId(scope.scope());
         if(scope.warning()==null && RuntimeKnowledgeStore.active(baseDb)!=null && hasCraftingIntent(question) && (scope.scope()==null || scope.scope().id().startsWith("runtime:"))) {
@@ -595,7 +676,7 @@ public class QaPipeline {
         m.computeVectorRelevance(result.vectorResults, 0.2);
         m.dataTier = !result.recipeResults.isEmpty() ? result.vectorResults.isEmpty()?"TIER B":"TIER A"
                 : result.vectorResults.isEmpty() ? "TIER D" : "TIER C";
-        if(scope.warning()==null)prepareMedia(result,lookupQuestion);
+        if(scope.warning()==null){AnswerMedia.attachVectorSources(result,result.vectorResults);prepareMedia(result,lookupQuestion);}
         long answerStart = System.nanoTime();
         m.answerGeneration="NO_EVIDENCE";
         if (scope.warning() != null) result.answer = scope.warning();
@@ -1007,6 +1088,7 @@ public class QaPipeline {
     /** Clear conversation history (e.g., when switching sessions) */
     public synchronized void clearHistory() {
         conversationHistory.clear();
+        dialogueFocus=null;
         lastKnowledgeScope = null;
         conversationTurn = 0;
         classifyAgent.reset();
@@ -1022,6 +1104,7 @@ public class QaPipeline {
             else if ("maa".equals(message.role()) && question != null) {
                 conversationHistory.add(new QAPair(question, message.content()));
                 lastKnowledgeScope = message.artifacts() == null ? null : message.artifacts().scopeId();
+                dialogueFocus=message.artifacts()==null?null:message.artifacts().turnState();
                 conversationTurn++;
                 question = null;
             }
@@ -1102,6 +1185,16 @@ public class QaPipeline {
     private record ScoredRecipe(RecipeMatch match, int score) {}
 
     public static class QaResult {
+        public AgentToolLoop.Outcome toolTrace;
+        String mediaQuestion;
+        /** 明确要求的状态键；只用于单对象选图，命中不了就报缺图，不回退到代表图。 */
+        public String mediaStateKey;
+        /** 用户问题里显式点名的状态轴（成长阶段/性别/变体）；快照里没有组合时不配图。 */
+        public Map<String,String> mediaAxes = Map.of();
+        /** 本轮结构化查询命中的多方块 id，用它在最终组织前渲染分层图卡。 */
+        public String multiblockId;
+        final Set<String> mediaTargets=new LinkedHashSet<>();
+        final Set<String> conversationTargets=new LinkedHashSet<>();
         public MediaAudit.Performance mediaPerformance;
         public MediaAudit.EntityTrace entityImageAudit;
         public boolean runtimeMediaPrepared;

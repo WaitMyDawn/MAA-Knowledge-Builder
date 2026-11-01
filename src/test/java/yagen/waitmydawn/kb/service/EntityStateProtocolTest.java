@@ -104,4 +104,39 @@ class EntityStateProtocolTest {
   for(var r:List.of(a,b)){r.put("file",paths.get(r.path("id").asText()+"|"+r.path("stateKey").asText()));assertFalse(r.path("file").asText().contains("/states/"));RuntimeEntityMedia.validate(r);}
   Path root=fixture(List.of(a,b));RuntimeSnapshotData.read(NativeIconPack.read(root));b.put("file",EntityAppearanceState.flatBase(b)+"_99.png");var payload=json.readTree(root.resolve("data/entity_icons.json").toFile());((ArrayNode)payload.path("records")).set(1,b);var descriptor=json.readTree(root.resolve("snapshot.json").toFile());assertThrows(java.io.IOException.class,()->RuntimeSnapshotData.validate("entity_icons",payload,descriptor.path("categories").path("entity_icons")));
  }
+ @Test void exactStateKeySelectsThatStateAndNeverFallsBackToRepresentative()throws Exception {
+  var declared=dragonRow("green","male",5);var female=dragonRow("blue","female",5);female.withObject("state").put("origin","SPAWN_INITIALIZED");female.put("appearance","SPAWN_INITIALIZED").put("representative",true);female.put("stateKey",BuildRequest.fingerprint(NativeIconPack.canonical(female.path("state")).toString()));
+  var dragonRows=json.createArrayNode().add(declared).add(female);var flatPaths=EntityAppearanceState.flatPaths(dragonRows);for(var dragon:List.of(declared,female))dragon.put("file",flatPaths.get(dragon.path("id").asText()+"|"+dragon.path("stateKey").asText()));
+  Path root=fixture(List.of(declared,female));
+  var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("exact-state"));var db=new DatabaseBuilder(config);db.initDatabase();
+  try(var embedding=new EmbeddingService(null)) {
+   new KnowledgeBuilder(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,root.toString()))),null);var media=new RuntimeEntityMedia(db,config.getDataDir());
+   var exact=new QaPipeline.QaResult();exact.answer="状态键选择";exact.mediaStateKey=declared.path("stateKey").asText();exact.mediaTargets.add("mkb_fixture:creature");
+   media.attach(exact,"mkb_fixture:creature 展示实体图片");assertEquals(1,exact.artifacts.pictures().size());assertEquals(declared.path("sha256").asText(),exact.artifacts.pictures().getFirst().assetId());
+   var absent=new QaPipeline.QaResult();absent.answer="状态键选择";absent.mediaStateKey="0".repeat(64);absent.mediaTargets.add("mkb_fixture:creature");
+   media.attach(absent,"mkb_fixture:creature 展示实体图片");assertTrue(absent.artifacts.pictures().isEmpty());assertTrue(absent.mediaWarnings.stream().anyMatch(warning->warning.contains("未用其他状态代替")));
+   var plain=new QaPipeline.QaResult();plain.answer="状态键选择";media.attach(plain,"mkb_fixture:creature 展示实体图片");assertEquals(female.path("sha256").asText(),plain.artifacts.pictures().getFirst().assetId());
+  }finally{db.shutdown();}
+ }
+ @Test void declaredAxesAnswerChineseAndEnglishStateDescriptions()throws Exception {
+  var row=dragonRow("red","male",5);
+  assertTrue(EntityAppearanceState.matches(row,"红色雄性五阶外观"),"Chinese axes");
+  assertTrue(EntityAppearanceState.matches(row,"red male stage 5"),"English axes");
+  assertTrue(EntityAppearanceState.matches(row,"红色male五阶"),"mixed axes");
+  assertFalse(EntityAppearanceState.matches(row,"绿色雄性五阶外观"),"wrong colour");
+  assertFalse(EntityAppearanceState.matches(row,"红色雌性五阶外观"),"wrong sex");
+  assertFalse(EntityAppearanceState.matches(row,"红色雄性四阶外观"),"wrong stage");
+ }
+ ObjectNode dragonRow(String variant,String sex,int stage)throws Exception {
+  var row=json.createObjectNode().put("id","mkb_fixture:creature").put("appearance","DECLARED_STATE").put("status","OK").put("width",256).put("height",256);
+  var state=row.putObject("state").put("origin","DECLARED_STATE");var traits=state.putObject("traits").put("age","adult").put("growthStage",stage).put("sex",sex);
+  traits.putObject("axes").put("growth_stage",Integer.toString(stage)).put("sex",sex).put("variant",variant);traits.putObject("equipment");
+  var domains=row.putObject("variantCoverage").putObject("axes");
+  domains.putArray("growth_stage").addObject().put("id","5").put("label","第5阶段");
+  var sexes=domains.putArray("sex");sexes.addObject().put("id","male").put("label","雄性");sexes.addObject().put("id","female").put("label","雌性");
+  var variants=domains.putArray("variant");for(String[] option:new String[][]{{"red","红色"},{"green","绿色"},{"blue","蓝色"}})variants.addObject().put("id",option[0]).put("label",option[1]);
+  row.put("stateKey",BuildRequest.fingerprint(NativeIconPack.canonical(state).toString()));row.put("file",EntityAppearanceState.path(row));
+  var image=new java.awt.image.BufferedImage(256,256,2);image.setRGB(128,128,variant.equals("red")?0xffff2222:variant.equals("green")?0xff22ff22:0xff2222ff);var bytes=new java.io.ByteArrayOutputStream();javax.imageio.ImageIO.write(image,"png",bytes);
+  return (ObjectNode)row.put("pngBase64",Base64.getEncoder().encodeToString(bytes.toByteArray())).put("sha256",HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray())));
+ }
 }

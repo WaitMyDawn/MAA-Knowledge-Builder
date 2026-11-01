@@ -69,4 +69,15 @@ class WebImagePolicyTest {
             assertEquals(1,FullWebMediaTest.count(db,"SELECT COUNT(*) FROM rag_web_image_reference WHERE status='EXCLUDED_SMALL'"));
         }finally{db.shutdown();}
     }
+    @Test void urlOverviewUsesRetrievedPageTitleButStillRequiresBoundContext()throws Exception {
+        var db=DatabaseBuilder.atPath(temp.resolve("overview"));db.initDatabase();
+        var web=new WikiScraperService(){@Override public Resource fetchResource(String url,String referer,boolean image,Map<String,String> headers){if(image)throw new AssertionError("Selection must not download");return new Resource(200,"<article><p>模组概览<img src='/overview.png' alt='示例模组-第1张图片'></p></article>".getBytes(java.nio.charset.StandardCharsets.UTF_8),"text/html",url,null,null);}};web.setResourceDatabase(db);
+        try(var embedding=new EmbeddingService(null)) {
+            new WebPageMediaService(db,embedding,temp,web).acquire("https://example.com/mod");String doc,id,body;
+            try(var c=db.getConnection();var s=c.createStatement();var rows=s.executeQuery("SELECT r.document_id,r.id,b.content FROM rag_web_image_reference r JOIN rag_content_block b ON b.document_id=r.document_id AND b.ordinal=r.block_ordinal")){assertTrue(rows.next());doc=rows.getString(1);id=rows.getString(2);body=rows.getString(3);}
+            var source=new AnswerArtifacts.Source("s",doc,"示例模组","https://example.com/mod","正文",null,"WEB",body);var artifacts=new AnswerArtifacts(null,null,List.of(source),List.of());
+            assertEquals(Set.of(id),WebImagePolicy.select(db,artifacts,"请读取 https://example.com/mod ，说明这个模组是什么，配一张相关的图。"));
+            var unbound=new AnswerArtifacts.Source("s",doc,"示例模组","https://example.com/mod","正文",null,"WEB","未提供该段落");assertTrue(WebImagePolicy.select(db,new AnswerArtifacts(null,null,List.of(unbound),List.of()),"请读取 https://example.com/mod ，说明这个模组是什么，配一张相关的图。").isEmpty());
+        }finally{db.shutdown();}
+    }
 }

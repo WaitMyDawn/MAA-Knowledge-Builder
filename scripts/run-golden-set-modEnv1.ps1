@@ -3,6 +3,7 @@ param(
     [switch]$UseSavedKey,
     [switch]$SkipCompile,
     [switch]$ArchivePreviousReview,
+    [ValidateRange(0,2147483647)][int]$MaxModelRequests=0,
     [switch]$ValidateOnly
 )
 $ErrorActionPreference='Stop'
@@ -55,6 +56,7 @@ try {
     try{$sourceHash=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($sourceRows -join "`n"))))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
     $specHash=(Get-FileHash -LiteralPath $setFile -Algorithm SHA256).Hash.ToLowerInvariant()
     $javaArgs=@('-Dfile.encoding=UTF-8','-Dstdout.encoding=UTF-8','-Dstderr.encoding=UTF-8','-Xmx2g',('-Dmaa.eval.outputRoot='+$outputRoot),('-Dmaa.eval.runId='+$runId),'-cp','target/classes;target/lib/*','yagen.waitmydawn.kb.HeadlessRunner','--isolated','--use-saved-key','--data-dir',$DataDirectory,'--eval',$setFile,'--tag','modEnv1','--repeat','1','--no-judge')
+    if($MaxModelRequests -gt 0){$javaArgs=@(('-Dmaa.eval.maxModelRequests='+$MaxModelRequests))+$javaArgs}
     $exitCode=-1
     try {
         $ErrorActionPreference='Continue'

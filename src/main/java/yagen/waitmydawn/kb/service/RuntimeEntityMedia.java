@@ -98,11 +98,19 @@ final class RuntimeEntityMedia {
         var resolved=new LinkedHashSet<String>();result.resolvedEntities.stream().filter(e->e.confidence()>=.8f).forEach(e->resolved.add(e.registry()));
         var imageRows=indexedRows;var byId=indexedEntities;
         var subjects=new ArrayList<>(catalog);var known=subjects.stream().map(MediaRequestPlanner.Subject::registry).collect(java.util.stream.Collectors.toSet());for(String id:byId.keySet())if(!known.contains(id))subjects.add(new MediaRequestPlanner.Subject(id,"ENTITY",List.of(id)));
-        var plan=MediaRequestPlanner.plan(question,subjects,resolved);result.mediaPlan=plan;result.mediaWarnings.addAll(plan.warnings());
+        if(!result.mediaTargets.isEmpty()){subjects.removeIf(subject->!result.mediaTargets.contains(subject.registry()));resolved.retainAll(result.mediaTargets);}
+        var plan=MediaRequestPlanner.plan(question,subjects,resolved);
+        if(result.mediaPlan==null)result.mediaPlan=plan;else{var combined=new LinkedHashMap<String,MediaRequestPlanner.Request>();for(var request:result.mediaPlan.requests())combined.put(request.query(),request);for(var request:plan.requests())combined.put(request.query(),request);result.mediaPlan=new MediaRequestPlanner.Plan(List.copyOf(combined.values()),combined.size()>1,combined.size()>8,plan.warnings());}
+        result.mediaWarnings.addAll(plan.warnings());
         var pictures=new ArrayList<>(result.artifacts.pictures());var sources=new ArrayList<>(result.artifacts.sources());ItemIconService.Snapshot icons=null;
         for(var request:plan.requests()){
             String id=request.subject().registry();trail.request=request.query();trail.requested++;
             if(pictures.size()>=8){missing(result,request,"已达到本轮8张配图上限");continue;}
+            if(request.kind().equals("ENTITY")&&!result.mediaAxes.isEmpty()&&byId.containsKey(id)){
+                boolean exported=false;
+                for(var row:byId.get(id))if(row.path("status").asText().equals("OK")&&EntityAppearanceState.matchesAxes(row,result.mediaAxes)){exported=true;break;}
+                if(!exported){missing(result,request,"快照中没有与问题所述状态一致的导出图片，未用其他状态代替");trail.record(new ObjectMapper().createObjectNode().put("id",id),"EXCLUDED","REQUESTED_STATE_NOT_EXPORTED");continue;}
+            }
             try{
                 if(request.kind().equals("ITEM")){
                     if(pictures.stream().anyMatch(p->p.role().equals("RECIPE")&&p.context().contains(id)))continue;
@@ -119,13 +127,17 @@ final class RuntimeEntityMedia {
                     pictures.add(new AnswerArtifacts.Picture(key,icon.assetId(),relative,icon.name()+"（"+id+"；实机默认物品外观）",sourceId,"ITEM",List.of(),proof,null,null,null,new AnswerArtifacts.RuntimeIdentity(id,"default",Map.of())));continue;
                 }
                 var candidates=new ArrayList<JsonNode>();var equipment=equipment(request.query());
-                for(var row:byId.getOrDefault(id,List.of())){
+                String exactState=(result.mediaTargets.isEmpty()||result.mediaTargets.contains(id))?result.mediaStateKey:null;
+                if(exactState!=null&&!exactState.isBlank()){
+                    for(var row:byId.getOrDefault(id,List.of())){trail.scanned++;if(!row.path("status").asText().equals("OK")){trail.record(row,"EXCLUDED","NOT_VISIBLE");continue;}if(EntityAppearanceState.key(row).equals(exactState)){candidates.add(row);trail.record(row,"ELIGIBLE","EXACT_STATE_KEY");}}
+                    if(candidates.isEmpty()){missing(result,request,"快照中没有该状态键对应的可用图片，未用其他状态代替");var absent=new ObjectMapper().createObjectNode().put("id",id).put("stateKey",exactState);trail.record(absent,"EXCLUDED","EXACT_STATE_NOT_EXPORTED");continue;}
+                }else for(var row:byId.getOrDefault(id,List.of())){
                     trail.scanned++;String reason=row.has("error")?"EXPORT_ERROR":!row.path("status").asText().equals("OK")?"NOT_VISIBLE":!EntityAppearanceState.matches(row,request.query())?"STATE_MISMATCH":!EntityAppearanceState.equipmentMatches(row,equipment)?"EQUIPMENT_MISMATCH":null;
                     trail.record(row,reason==null?"ELIGIBLE":"EXCLUDED",reason==null?"REGISTRY_AND_STATE_MATCH":reason);if(reason==null)candidates.add(row);
                 }
                 if(candidates.isEmpty()){
                     String reason="没有与请求状态匹配的实体图";if(!byId.containsKey(id))try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE profile_id=? AND category='entity_exclusions' AND record_id=?")){p.setString(1,profile);p.setString(2,id);try(var rows=p.executeQuery()){if(rows.next())reason="导出时已排除："+new ObjectMapper().readTree(rows.getString(1)).path("reason").asText();}}
-                    missing(result,request,reason);var absent=new ObjectMapper().createObjectNode().put("id",id);trail.record(absent,"EXCLUDED",byId.containsKey(id)?"NO_MATCHING_STATE":"NO_EXPORTED_ENTITY_RECORD");continue;
+                    missing(result,request,reason);if(byId.containsKey(id))result.mediaWarnings.add(request.label()+"：该对象可选的导出状态有 "+availableStates(byId.get(id))+"；缺图不等于该状态在游戏中不存在。");var absent=new ObjectMapper().createObjectNode().put("id",id);trail.record(absent,"EXCLUDED",byId.containsKey(id)?"NO_MATCHING_STATE":"NO_EXPORTED_ENTITY_RECORD");continue;
                 }
                 candidates.sort(Comparator.comparingInt((JsonNode candidate)->preference(candidate,request.query())).thenComparing(row->row.path("stateKey").asText("default")));var row=candidates.getFirst();
                 for(int i=1;i<candidates.size();i++)trail.record(candidates.get(i),"EXCLUDED","LOWER_STATE_PREFERENCE");
@@ -148,9 +160,19 @@ final class RuntimeEntityMedia {
         return penalty+original*10-row.path("state").path("traits").path("growthStage").asInt();
     }
     private static void addSource(List<AnswerArtifacts.Source> sources,AnswerArtifacts.Source source){if(sources.stream().noneMatch(s->s.id().equals(source.id())))sources.add(source);}
-    private static void missing(QaPipeline.QaResult result,MediaRequestPlanner.Request request,String reason){result.mediaWarnings.add(request.label()+"："+reason+"，未用默认外观代替，也未使用其他对象。");}
+    /** 列出该实体已导出状态的紧凑摘要，避免模型把“本轮没选到”说成“不存在”。 */
+    static String availableStates(List<JsonNode> rows){
+        var seen=new LinkedHashSet<String>();
+        for(var row:rows){if(!row.path("status").asText().equals("OK"))continue;var traits=row.path("state").path("traits");var axes=traits.path("axes");
+            String stage=axes.path("growth_stage").asText(traits.path("growthStage").asText(""));
+            String sex=axes.path("sex").asText(traits.path("sex").asText(""));
+            String variant=axes.path("variant").asText(traits.path("variant").asText(traits.path("color").asText("")));
+            var parts=new ArrayList<String>();if(!stage.isBlank())parts.add(stage+"阶");if(!sex.isBlank())parts.add("female".equals(sex)?"雌性":"male".equals(sex)?"雄性":sex);if(!variant.isBlank())parts.add(variant);
+            if(!parts.isEmpty())seen.add(String.join("/",parts));if(seen.size()>=10)break;}
+        return seen.isEmpty()?"（无状态记录）":String.join("、",seen);
+    }    private static void missing(QaPipeline.QaResult result,MediaRequestPlanner.Request request,String reason){result.mediaWarnings.add(request.label()+"："+reason+"，未用默认外观代替，也未使用其他对象。");}
     private Set<String> equipment(String question)throws Exception {
-        var ids=new HashSet<String>();if(!question.matches("(?s).*(穿戴|穿着|戴着|手持|装备|持有).*"))return ids;
+        var ids=new HashSet<String>();if(!question.matches("(?s).*(穿戴|穿着|戴着|戴|手持|装备|持有).*"))return ids;
         var matcher=java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(question);while(matcher.find())ids.add(matcher.group());
         String text=question.replaceAll("[a-z0-9_.-]+:[a-z0-9_./-]+"," ").toLowerCase(Locale.ROOT);
         record Hit(int start,int end,String id){}var hits=new ArrayList<Hit>();
@@ -159,25 +181,28 @@ final class RuntimeEntityMedia {
     }
     String evidence(QaPipeline.QaResult result,String previous){
         var text=new StringBuilder(Objects.toString(previous,""));text.append("\n[Allowed runtime media: metadata only, not visual inspection or gameplay evidence]\n");
-        for(var p:result.artifacts.pictures())if(Set.of("ENTITY","ITEM","RECIPE","LOOT").contains(p.role()))text.append("[[image:").append(p.id()).append("]] ").append(p.caption()).append("；").append(p.context(),0,Math.min(1800,p.context().length())).append('\n');
+        for(var p:result.artifacts.pictures())if(Set.of("ENTITY","ITEM","RECIPE","LOOT","RUNTIME_RULE").contains(p.role()))text.append("[[image:").append(p.id()).append("]] ").append(p.caption()).append("；").append(p.context(),0,Math.min(1800,p.context().length())).append('\n');
         for(String warning:result.mediaWarnings)text.append("Media limitation: ").append(warning).append('\n');
         text.append("Insert each image only next to its matching object/state/recipe. For comparisons keep every state distinct, even when images share pixels. Never claim an unavailable state exists. Images are independently scaled; do not infer actual size, stats, recipes or drops from appearance.\n");return text.toString();
     }
     void finish(QaPipeline.QaResult result,String question){
         String answer=Objects.toString(result.answer,"");var used=new HashSet<String>();var matcher=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(AnswerMedia.referenceText(answer));while(matcher.find())used.add(matcher.group(1));
-        var kept=new ArrayList<AnswerArtifacts.Picture>();var additions=new ArrayList<String>();boolean visual=question.matches("(?is).*(展示|外观|图片|配图|长什么样|比较|对比|区别|分别|show|look).*" );
+        var kept=new ArrayList<AnswerArtifacts.Picture>();var additions=new ArrayList<String>();boolean visual=question.matches("(?is).*(展示|外观|图片|配图|长什么样|比较|对比|区别|分别|介绍|show|look).*" );
         for(var picture:result.artifacts.pictures()){
-            if(!Set.of("ENTITY","ITEM","RECIPE","LOOT").contains(picture.role())){kept.add(picture);continue;}
+            if(!Set.of("ENTITY","ITEM","RECIPE","LOOT","RUNTIME_RULE").contains(picture.role())){kept.add(picture);continue;}
             var request=result.mediaPlan==null?null:result.mediaPlan.requests().stream().filter(r->picture.context().contains(r.subject().registry())).findFirst().orElse(null);
             boolean discussed=request!=null&&(answer.contains(request.subject().registry())||request.subject().names().stream().filter(n->n.length()>1||question.contains(n)).anyMatch(answer::contains));
-            boolean show=picture.role().equals("LOOT")?used.contains(picture.id()):visual||discussed||picture.role().equals("RECIPE");String marker="!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")";
-            if(used.contains(picture.id())&&request!=null&&!associated(answer,picture,request,result.runtimeMediaStates.get(picture.id()))){
+            boolean show=picture.role().equals("LOOT")?used.contains(picture.id()):visual||discussed||picture.role().equals("RECIPE")||picture.role().equals("RUNTIME_RULE");String marker="!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")";
+            if(used.contains(picture.id())&&!picture.role().equals("RUNTIME_RULE")&&request!=null&&!associated(answer,picture,request,result.runtimeMediaStates.get(picture.id()))){
                 answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");used.remove(picture.id());
             }
             if(!show){answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");continue;}kept.add(picture);
             if(!used.contains(picture.id()))additions.add(marker);
         }
+        var illustrations=new ArrayList<String>();
+        for(var picture:result.artifacts.pictures())if(!Set.of("ENTITY","ITEM","RECIPE","LOOT","RUNTIME_RULE").contains(picture.role())&&!used.contains(picture.id()))illustrations.add("!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")");
         if(!additions.isEmpty())answer+="\n\n"+(result.mediaPlan!=null&&result.mediaPlan.comparison()?"外观对照：":"参考配图：")+"\n\n"+String.join("\n\n",additions);
+        if(!illustrations.isEmpty())answer+="\n\n相关插图：\n\n"+String.join("\n\n",illustrations);
         if(result.mediaPlan!=null&&result.mediaPlan.comparison()&&kept.stream().filter(p->p.role().equals("ENTITY")).count()>1)answer+="\n\n各图独立缩放，画面占比不代表实际体型比例；外观相同的状态可能共用图像。";
         if(!result.mediaWarnings.isEmpty())answer+="\n\n配图说明：\n"+result.mediaWarnings.stream().distinct().map(w->"- "+w).collect(java.util.stream.Collectors.joining("\n"));
         result.answer=answer;result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),result.artifacts.sources(),kept,result.artifacts.citedSourceIds());

@@ -8,7 +8,7 @@ import java.util.List;
 
 /** 与游戏 GUI 资源无关的配方卡片；材料约束和图标来源始终可见。 */
 public final class RecipeCardRenderer {
-    public static final String VERSION = "recipe-card-v3.4";
+    public static final String VERSION = "recipe-card-v3.6";
     public record Visual(String itemId,String name,BufferedImage image,String source,String detail) {}
     public record Input(RecipePlan.Slot slot,Visual visual,String description) {}
     public record Card(RecipePlan plan,List<Input> inputs,Visual output,List<String> metadata,List<String> notes) {}
@@ -51,7 +51,13 @@ public final class RecipeCardRenderer {
                 for(int i=0;i<9;i++)backgroundSlot(g,148+(i%3)*90,112+(i/3)*90,90);
                 for(var input:card.inputs())drawSlot(g,input.visual(),input.slot().ingredient().count(),148+(input.slot().index()%3)*90,112+(input.slot().index()/3)*90,90,choice(input.slot().ingredient()));
             } else if(smithing) {
-                for(var input:card.inputs()) {int x=100+input.slot().index()*116;g.setFont(TEXT);g.setColor(MUTED);g.drawString(input.slot().role(),x,158);backgroundSlot(g,x,184,90);drawSlot(g,input.visual(),input.slot().ingredient().count(),x,184,90,choice(input.slot().ingredient()));}
+                for(var input:card.inputs()) {int x=100+input.slot().index()*90;g.setFont(TEXT);g.setColor(MUTED);g.drawString(input.slot().role(),x,158);backgroundSlot(g,x,184,90);drawSlot(g,input.visual(),input.slot().ingredient().count(),x,184,90,choice(input.slot().ingredient()));}
+            } else if(card.plan().kind()==RecipePlan.Kind.STONECUTTING) {
+                g.setFont(TEXT);g.setColor(MUTED);g.drawString("原料",112,158);backgroundSlot(g,112,184,90);
+                var input=card.inputs().getFirst();drawSlot(g,input.visual(),input.slot().ingredient().count(),112,184,90,choice(input.slot().ingredient()));
+                g.setColor(new Color(139,139,139));g.fillRect(240,142,206,200);g.setColor(new Color(55,55,55));g.drawString("已选切石条目",248,132);
+                backgroundSlot(g,254,156,72);drawSlot(g,card.output(),card.plan().output().count(),254,156,72,false);
+                g.setFont(SMALL);g.setColor(MUTED);g.drawString("不需要燃料",112,312);
             } else {
                 g.setFont(TEXT);g.setColor(MUTED);g.drawString("原料",264,158);backgroundSlot(g,264,184,90);
                 var input=card.inputs().getFirst();drawSlot(g,input.visual(),input.slot().ingredient().count(),264,184,90,choice(input.slot().ingredient()));

@@ -16,6 +16,7 @@ final class LocalQuestionPolicy {
         String q=question==null?"":question;
         String webRequest=q.replaceAll("不(?:需要|要|用|必)?(?:联网|上网)|禁止联网|仅(?:查|用|使用)?本地|不要查百科","");
         String facts=q.replaceAll("(?:标注|注明|显示|给出|附上)(?:图片|图像|配图)?来源","");
-        return new Decision(RECIPE.matcher(q).find(),APPEARANCE.matcher(q).find(),KNOWLEDGE.matcher(facts).find(),WEB.matcher(webRequest).find());
+        boolean factual=KNOWLEDGE.matcher(facts).find()||facts.matches("(?s).*(介绍|有哪些|建造|召唤|驯服|交互|特点).*");
+        return new Decision(RECIPE.matcher(q).find(),APPEARANCE.matcher(q).find(),factual,WEB.matcher(webRequest).find());
     }
 }

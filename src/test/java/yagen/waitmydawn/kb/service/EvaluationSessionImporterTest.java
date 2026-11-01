@@ -42,4 +42,12 @@ class EvaluationSessionImporterTest {
         var modified=history.load(imported.sessions().getFirst().id());history.addMessage(modified,"user","用户添加的追问");history.save(modified);
         assertThrows(java.io.IOException.class,()->importer.importRun(run,target,"验收"));assertEquals(3,history.load(modified.sessionId).messages.size());
     }
+    @Test void apiAssistantRoleIsNormalizedWithoutChangingAnswerOrArtifacts()throws Exception {
+        Path run=temp.resolve("run"),target=temp.resolve("target");Files.createDirectories(target);var session=fixture(run);
+        var answer=session.messages.getLast();session.messages.set(1,new ChatHistoryService.ChatMessage("assistant",answer.content(),answer.timestamp(),answer.artifacts()));
+        new ChatHistoryService(run).save(session);
+        var result=new EvaluationSessionImporter().importRun(run,target,"工具验收");
+        var imported=new ChatHistoryService(target).load(result.sessions().getFirst().id()).messages.getLast();
+        assertEquals("maa",imported.role());assertEquals(answer.content(),imported.content());assertEquals(answer.artifacts(),imported.artifacts());
+    }
 }

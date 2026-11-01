@@ -53,7 +53,7 @@ public class MarkdownRenderer {
                 continue;
             }
             // Header
-            if (line.trim().startsWith("## ") || line.trim().startsWith("### ")) {
+            if (line.stripLeading().matches("#{1,6}\\s+.*")) {
                 flushBuffer(container, buffer, imageRoots);
                 String text = line.replaceAll("^#+\\s*", "");
                 TextFlow h = buildCellFlow(text, true);
@@ -90,6 +90,7 @@ public class MarkdownRenderer {
             buffer.add(line);
         }
         flushBuffer(container, buffer, imageRoots);
+        TextSelection.install(container);
         return container;
     }
 

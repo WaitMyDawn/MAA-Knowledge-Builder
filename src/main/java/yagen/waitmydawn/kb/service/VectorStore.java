@@ -94,7 +94,10 @@ public class VectorStore {
         try (Connection conn = db.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             conn.setAutoCommit(false);
+            var progress=BuildTrace.counter("vector.write","向量写库",chunks.size(),0);
+            try {
             for (int i = 0; i < chunks.size(); i++) {
+                BuildCancellation.check();
                 validate(vectors.get(i));
                 TextChunker.TextChunk chunk = chunks.get(i);
                 ps.setString(1, chunk.id());
@@ -105,10 +108,19 @@ public class VectorStore {
                 ps.setString(6, chunk.type());
                 ps.setString(7, chunk.sourcePath());
                 ps.addBatch();
+                if((i+1)%500==0||i+1==chunks.size()) {
+                    ps.executeBatch();ps.clearBatch();
+                    progress.update(i+1);
+                }
             }
-            ps.executeBatch();
+            BuildCancellation.check();
             conn.commit();
+            progress.complete();
             log.info("Stored {} vectors", chunks.size());
+            } catch(SQLException|RuntimeException failure) {
+                try {conn.rollback();}catch(SQLException rollback){failure.addSuppressed(rollback);}
+                throw failure;
+            }
         } catch (SQLException e) {
             throw new IllegalStateException("Vector batch store failed", e);
         } finally {

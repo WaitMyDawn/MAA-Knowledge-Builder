@@ -33,7 +33,9 @@ final class AnswerImageViewer {
         var surface=new StackPane(view);surface.setAlignment(Pos.CENTER);surface.setPadding(new Insets(16));
         surface.setStyle("-fx-background-color: #303640;");
         var scroll=new ScrollPane(surface);scroll.setPannable(true);scroll.setPrefViewportWidth(850);scroll.setPrefViewportHeight(520);
-        surface.minWidthProperty().bind(scroll.widthProperty().subtract(4));surface.minHeightProperty().bind(scroll.heightProperty().subtract(4));
+        scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.ALWAYS);scroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.ALWAYS);
+        surface.minWidthProperty().bind(scroll.viewportBoundsProperty().map(bounds->Math.max(0,bounds.getWidth())));
+        surface.minHeightProperty().bind(scroll.viewportBoundsProperty().map(bounds->Math.max(0,bounds.getHeight())));
         var caption=new Label();caption.setWrapText(true);caption.setMinHeight(Region.USE_PREF_SIZE);caption.getStyleClass().add("answer-preview-caption");
         var detail=new Label();detail.setWrapText(true);detail.getStyleClass().add("answer-preview-detail");
         var location=new VBox(4);location.setMinHeight(Region.USE_PREF_SIZE);var counter=new Label();var percent=new Label();percent.setMinWidth(55);
@@ -72,7 +74,7 @@ final class AnswerImageViewer {
             try {
                 var image=new Image(AnswerMedia.resolveImage(directory,picture).toUri().toString());
                 if(image.isError()||image.getWidth()<=0)throw new IllegalArgumentException("图片无法解码");
-                view.setImage(image);view.setSmooth(!Set.of("ENTITY","ITEM","RECIPE").contains(Objects.toString(picture.role(),"")));
+                view.setImage(image);view.setSmooth(!Set.of("ENTITY","ITEM","RECIPE","LOOT","RUNTIME_RULE").contains(Objects.toString(picture.role(),"")));
                 detail.setText((int)image.getWidth()+" × "+(int)image.getHeight()+" px"+scale+" · 滚轮缩放，拖动平移");
                 fitting[0]=true;resize.run();scroll.setHvalue(.5);scroll.setVvalue(.5);
             } catch(Exception missing) {

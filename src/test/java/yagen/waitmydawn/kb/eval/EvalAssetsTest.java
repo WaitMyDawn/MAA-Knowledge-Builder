@@ -41,7 +41,7 @@ class EvalAssetsTest {
                 return ChatResponse.builder().aiMessage(AiMessage.from("先固定底座，再安装框架和核心。[[source:"+sid+"]]\n\n[[image:"+iid+"]]"))
                         .tokenUsage(new TokenUsage(100,20)).build();
             }};
-            var llm=new RagAgentService(config){@Override public ChatModel getChatModel(){return model;}};
+            var llm=new RagAgentService(config){@Override public boolean toolLoopAvailable(){return false;}@Override public ChatModel getChatModel(){return model;}};
             Path spec=temp.resolve("questions.json");Files.writeString(spec,"""
                     {"conversations":[{"id":"E1","turns":[{"id":"E1","question":"测试整合包如何组装核心", "assertions":[
                     {"kind":"answer_illustration_valid","required":true},{"kind":"answer_media_refs_valid","required":true}]}]}]}

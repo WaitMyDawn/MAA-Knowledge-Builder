@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 $projectRoot=Split-Path $PSScriptRoot -Parent
 Push-Location $projectRoot
 try {
@@ -35,6 +35,17 @@ foreach($needle in @('保留自由文字 | **建议**','P50 123','P95 456','输�
 $hash=(Get-FileHash (Join-Path $root 'result.md')).Hash
 $rejected=$false;try{Complete-TestReview $root -ConfirmReviewComplete}catch{$rejected=$true}
 if(-not $rejected -or (Get-FileHash (Join-Path $root 'result.md')).Hash -ne $hash){throw 'Submitted review was overwritten'}
+$dRoot=Join-Path $root 'd-veto'
+$dRun=Join-Path $dRoot 'runs/run-fixture'
+New-Item -ItemType Directory -Path (Split-Path $dRun -Parent) -Force|Out-Null
+Copy-Item -LiteralPath $run -Destination $dRun -Recurse
+New-TestReview $dRoot $dRun
+Write-TestText (Join-Path $dRoot 'eval.md') ($graded.Replace("人工评级：`nS",'人工评级：D'))
+Complete-TestReview $dRoot -ConfirmReviewComplete
+$dResult=[IO.File]::ReadAllText((Join-Path $dRoot 'result.md'))
+if(-not $dResult.Contains('| Crafting-01 | PASS | FAIL | D |')){throw 'Human D did not veto raw PASS'}
+$dDecisions=Read-TestJson (Join-Path $dRoot 'history/run-fixture/reviewed-rule-decisions.json')
+if($dDecisions.reviewedPass -ne 0 -or $dDecisions.originalPass -ne 1){throw 'Raw and reviewed verdicts were conflated'}
 'Workflow checks passed: confirmation, blanks, run identity, grades, comments, metrics, missing turns and immutable submission. No API calls.'
 
 } finally {Pop-Location}

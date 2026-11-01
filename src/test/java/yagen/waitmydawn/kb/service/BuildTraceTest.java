@@ -17,6 +17,42 @@ class BuildTraceTest {
     private JsonNode report(Path root)throws Exception{return json.readTree(root.resolve("timing.json").toFile());}
     private JsonNode metric(JsonNode root,String kind){for(var row:root.path("workMetrics"))if(row.path("kind").asText().equals(kind))return row;return json.nullNode();}
     private JsonNode span(JsonNode root,String stage){for(var row:root.path("spans"))if(row.path("stage").asText().equals(stage))return row;return json.nullNode();}
+    @Test void progressIsThrottledAndSeparatesReuseFromInference()throws Exception {
+        var messages=new ArrayList<String>();
+        var trace=BuildTrace.begin(temp,(stage,done,total,message)->messages.add(message));
+        var counter=BuildTrace.counter("fixture","测试",10000,4000);
+        for(int i=4001;i<=10000;i++)counter.update(i);
+        counter.complete();trace.finish("PUBLISHED",null);
+        var events=Files.readAllLines(temp.resolve("events.jsonl")).stream().map(line->{try{return json.readTree(line);}catch(Exception e){throw new RuntimeException(e);}}).filter(row->row.path("event").asText().equals("PROGRESS")).toList();
+        assertTrue(events.size()<20,"Intermediate progress must not flood the UI");
+        assertEquals(4000,events.getFirst().path("completed").asInt());
+        assertEquals(4000,events.getLast().path("reused").asInt());
+        assertEquals(10000,events.getLast().path("completed").asInt());
+        assertTrue(events.getLast().path("complete").asBoolean());
+        assertTrue(messages.stream().anyMatch(message->message.contains("条/s")&&message.contains("耗时")&&message.contains("剩余")));
+    }
+    @Test void batchedWritesRollbackEarlierExecutedBatchesOnFailure()throws Exception {
+        var config=AppConfig.forIsolatedRun(false);config.setDataDir(temp.resolve("base"));var db=new DatabaseBuilder(config);db.initDatabase();
+        var trace=BuildTrace.begin(temp.resolve("trace"),null);
+        try(var embedder=new EmbeddingService(null)) {
+            var store=new VectorStore(db,embedder.getDimension());var chunks=new ArrayList<TextChunker.TextChunk>();var vectors=new ArrayList<float[]>();
+            float[] valid=embedder.embed("test");
+            for(int i=0;i<1201;i++){chunks.add(new TextChunker.TextChunk("batch/"+i,"test","test","Test","test","test"));vectors.add(valid);}
+            vectors.set(700,new float[1]);
+            assertThrows(IllegalArgumentException.class,()->store.storeBatch(chunks,vectors,embedder.profile()));
+            try(var c=db.getConnection();var statement=c.createStatement();var rows=statement.executeQuery("SELECT COUNT(*) FROM rag_vectors")){assertTrue(rows.next());assertEquals(0,rows.getInt(1));}
+            vectors.set(700,valid);store.storeBatch(chunks,vectors,embedder.profile());
+            try(var c=db.getConnection();var statement=c.createStatement();var rows=statement.executeQuery("SELECT COUNT(*) FROM rag_vectors")){assertTrue(rows.next());assertEquals(1201,rows.getInt(1));}
+        }finally{trace.finish("PUBLISHED",null);db.shutdown();}
+    }
+    @Test void cancelledInferenceDoesNotReportCompletion()throws Exception {
+        var trace=BuildTrace.begin(temp,null);
+        try(var embedder=new EmbeddingService(null)) {
+            Thread.currentThread().interrupt();
+            assertThrows(CancellationException.class,()->embedder.embedBatch(List.of("test")));
+        }finally{Thread.interrupted();trace.finish("CANCELLED",null);}
+        for(String line:Files.readAllLines(temp.resolve("events.jsonl"))){var event=json.readTree(line);if(event.path("event").asText().equals("PROGRESS"))assertFalse(event.path("complete").asBoolean());}
+    }
     @Test void nestedSpansSeparateWallTimeFromWorkAndStripUrlCredentials()throws Exception {
         var trace=BuildTrace.begin(temp,null);
         try(var source=BuildTrace.phase("source.url","https://name:password@example.com/page?token=not-a-real-secret#fragment")) {

@@ -51,7 +51,7 @@ final class EntityAppearanceState {
     }
     private static String stateQuestion(String question){return question.replaceAll("[a-z0-9_.-]+:[a-z0-9_./-]+"," ");}
     static boolean specific(String question) {
-        question=stateQuestion(question);return question.matches("(?s).*(雌性|雄性|母龙|公龙|[1-5]阶|第[1-5]阶段|一阶|二阶|三阶|四阶|五阶|成长阶段|充能|闪电苦力怕|带电|驯服|品种|职业|牧师|农民|图书管理员|渔夫|盔甲匠|屠夫|制图师|牧羊人|武器匠|工具匠|皮匠|制箭师|石匠|默认实例|安全准备样本|初始化样本|生成初始化|实际捕获|实际实体捕获|幼年|成年|幼体|宝宝|穿着|穿戴|戴着|手持|装备|持有|裸装|空手|变种|红色|蓝色|绿色|白色|黑色|黄色|紫色|棕色|橙色|粉色|灰色|青色).*" )
+        question=stateQuestion(question);return question.matches("(?s).*(雌性|雄性|母龙|公龙|[1-5]阶|第[1-5]阶段|一阶|二阶|三阶|四阶|五阶|成长阶段|充能|闪电苦力怕|带电|驯服|品种|职业|牧师|农民|图书管理员|渔夫|盔甲匠|屠夫|制图师|牧羊人|武器匠|工具匠|皮匠|制箭师|石匠|默认实例|安全准备样本|初始化样本|生成初始化|实际捕获|实际实体捕获|幼年|成年|幼体|宝宝|穿着|穿戴|戴着|戴|手持|装备|持有|裸装|空手|变种|红色|蓝色|绿色|白色|黑色|黄色|紫色|棕色|橙色|粉色|灰色|青色).*" )
                 ||java.util.regex.Pattern.compile("\\b(baby|adult|red|blue|green|white|black|yellow|purple|brown|orange|pink|gray|cyan|lime|magenta)\\b",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(question).find();
     }
     static boolean equipmentMatches(JsonNode row,Set<String> requested) {
@@ -60,10 +60,37 @@ final class EntityAppearanceState {
         }
         return requested.stream().filter(id->!id.equals(row.path("id").asText())).allMatch(actual::contains);
     }
+    private static final java.util.regex.Pattern STAGE=java.util.regex.Pattern.compile("第?([一二三四五六七八九十])阶|第([1-9]|10)阶段|\\bstage\\s*([1-9]|10)\\b|growth_stage=([1-9]|10)");
+    /** 颜色与性别既可能写在 traits.color/sex，也可能只写在声明轴 traits.axes；这里统一解析成轴值。 */
+    static Map<String,String> requestedAxes(String raw){
+        var axes=new LinkedHashMap<String,String>();if(raw==null||raw.isBlank())return axes;String q=raw.toLowerCase(Locale.ROOT);
+        var stage=STAGE.matcher(raw);if(stage.find()){String value=stage.group(1);if(value==null)value=stage.group(2);if(value==null)value=stage.group(3);if(value==null)value=stage.group(4);String[] words={"一","二","三","四","五","六","七","八","九","十"};for(int i=0;i<words.length;i++)if(value.equals(words[i]))value=Integer.toString(i+1);axes.put("growth_stage",value);}
+        if(raw.matches("(?s).*(雌性|母龙).*")||q.matches("(?s).*\\bfemale\\b.*"))axes.put("sex","female");
+        else if(raw.matches("(?s).*(雄性|公龙).*")||q.matches("(?s).*\\bmale\\b.*"))axes.put("sex","male");
+        String[][] compound={{"light_blue","浅蓝色","淡蓝色","light blue","浅蓝"},{"light_gray","浅灰色","淡灰色","light gray","light grey","浅灰"},{"lime","黄绿色","酸橙色","lime"},{"magenta","品红色","品红"}};
+        for(String[] color:compound)for(int i=1;i<color.length;i++)if(q.contains(color[i])){axes.put("variant",color[0]);return axes;}
+        String[][] colors={{"red","红色","red"},{"blue","蓝色","blue"},{"green","绿色","green"},{"white","白色","white"},{"black","黑色","black"},{"yellow","黄色","yellow"},{"purple","紫色","purple"},{"brown","棕色","brown"},{"orange","橙色","orange"},{"pink","粉色","pink"},{"gray","灰色","gray","grey"},{"cyan","青色","cyan"},{"sapphire","蓝宝石","宝石蓝","sapphire"},{"silver","银色","silver"},{"bronze","青铜色","bronze"}};
+        for(String[] color:colors){boolean hit=q.matches("(?s).*\\b"+color[0]+"\\b.*");for(int i=1;i<color.length;i++)if(q.contains(color[i]))hit=true;if(hit){axes.put("variant",color[0]);break;}}
+        return axes;
+    }
+    /** 判断一条图标记录是否满足显式状态轴；用于“用户点名的状态必须先存在”的选图约束。 */
+    static boolean matchesAxes(JsonNode row,Map<String,String> axes){
+        if(axes==null||axes.isEmpty())return true;
+        var traits=row.path("state").path("traits");var declared=traits.path("axes");
+        for(var axis:axes.entrySet()){
+            String actual=declared.path(axis.getKey()).asText();
+            if(actual.isBlank())actual=switch(axis.getKey()){case "growth_stage"->traits.path("growthStage").asText();case "variant"->traits.path("variant").asText(traits.path("color").asText());default->traits.path(axis.getKey()).asText();};
+            if(!actual.equals(axis.getValue()))return false;
+        }
+        return true;
+    }
     static boolean matches(JsonNode row,String question)throws IOException {
         Boolean axes=EntityVariantQuery.matches(row,question);if(Boolean.FALSE.equals(axes))return false;
         if(!specific(question)&&axes==null)return key(row).equals("default")||row.path("representative").asBoolean(false);
         String q=stateQuestion(question).toLowerCase(Locale.ROOT);var traits=row.path("state").path("traits");boolean matched=Boolean.TRUE.equals(axes);
+        var requested=axes==null?requestedAxes(stateQuestion(question)):Map.<String,String>of();
+        if(!requested.isEmpty()){if(!matchesAxes(row,requested))return false;matched=true;}
+        boolean variantResolved=requested.containsKey("variant");
         String origin=row.path("state").path("origin").asText("DEFAULT_INSTANCE");
         if(q.contains("默认实例")){if(!origin.equals("DEFAULT_INSTANCE"))return false;matched=true;}
         if(q.contains("安全准备样本")||q.contains("初始化样本")||q.contains("生成初始化")){if(!origin.equals("SPAWN_INITIALIZED"))return false;matched=true;}
@@ -74,10 +101,10 @@ final class EntityAppearanceState {
         String[][] compoundColors={{"light_blue","浅蓝色","淡蓝色","light blue","light_blue"},{"light_gray","浅灰色","淡灰色","light gray","light grey","light_gray"},{"lime","黄绿色","酸橙色","lime"},{"magenta","品红色","magenta"}};
         for(String[] color:compoundColors)for(int i=1;i<color.length;i++)if(q.contains(color[i])){if(!traits.path("color").asText().equals(color[0]))return false;matched=true;for(int j=1;j<color.length;j++)q=q.replace(color[j]," ");break;}
         String[] colors={"red:红色","blue:蓝色","green:绿色","white:白色","black:黑色","yellow:黄色","purple:紫色","brown:棕色","orange:橙色","pink:粉色","gray:灰色","cyan:青色"};
-        for(String color:colors){if(axes!=null&&!traits.has("color"))break;String[] names=color.split(":");if(q.contains(names[1])||java.util.regex.Pattern.compile("\\b"+names[0]+"\\b").matcher(q).find()){if(!traits.path("color").asText().equals(names[0]))return false;matched=true;}}
+        if(!variantResolved)for(String color:colors){if(axes!=null&&!traits.has("color"))break;String[] names=color.split(":");if(q.contains(names[1])||java.util.regex.Pattern.compile("\\b"+names[0]+"\\b").matcher(q).find()){if(!traits.path("color").asText().equals(names[0]))return false;matched=true;}}
         if(q.contains("空手")){if(!traits.path("equipment").isObject()||traits.path("equipment").has("mainhand")||traits.path("equipment").has("offhand"))return false;matched=true;}
         else if(q.matches("(?s).*(无装备|没有装备|未装备|裸装|没穿).*")){if(!traits.has("equipment")||!traits.path("equipment").isObject()||!traits.path("equipment").isEmpty())return false;matched=true;}
-        else if(q.matches("(?s).*(穿着|穿戴|戴着|装备|持有|手持).*")){if(!traits.path("equipment").isObject()||traits.path("equipment").isEmpty())return false;matched=true;}
+        else if(q.matches("(?s).*(穿着|穿戴|戴着|戴|装备|持有|手持).*")){if(!traits.path("equipment").isObject()||traits.path("equipment").isEmpty())return false;matched=true;}
         if(q.contains("变种")&&axes==null){String variant=traits.path("variant").asText();if(variant.isBlank()||!q.contains(variant.toLowerCase(Locale.ROOT)))return false;matched=true;}
         return matched;
     }

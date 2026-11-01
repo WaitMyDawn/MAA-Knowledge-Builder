@@ -74,4 +74,20 @@ class ExportSnapshotPreflightTest {
         assertThrows(IllegalArgumentException.class,()->ExportSnapshotPreflight.requireBuildSnapshot(request,null,List.of(mod)));
         mod.setModId("not_exported");assertThrows(IllegalArgumentException.class,()->ExportSnapshotPreflight.requireBuildSnapshot(request,null,List.of(mod)));
     }
+
+    @Test void exporterUpgradeDoesNotRequireMatchingScannedToolJar()throws Exception {
+        var exportedTool=new yagen.waitmydawn.kb.model.ModEntry();exportedTool.setModId("mkb_export");exportedTool.setVersion("0.16.0");Path exportedJar=temp.resolve("new-tool.jar");Files.writeString(exportedJar,"new exporter");exportedTool.setJarPath(exportedJar.toString());
+        Path root=RuntimeBuildFixtures.create(temp.resolve("MKB-Export"),List.of(exportedTool),"neoforge","1.21.1");
+        var scannedTool=new yagen.waitmydawn.kb.model.ModEntry();scannedTool.setModId("mkb_export");scannedTool.setVersion("0.11.1");Path oldJar=temp.resolve("old-tool.jar");Files.writeString(oldJar,"old exporter");scannedTool.setJarPath(oldJar.toString());
+        var check=ExportSnapshotPreflight.inspect(NativeIconPack.read(root),null,List.of(scannedTool));assertTrue(check.ready());assertTrue(check.warnings().stream().anyMatch(text->text.contains("0.11.1")&&text.contains("0.16.0")));
+        scannedTool.setVersion("0.16.0");assertTrue(ExportSnapshotPreflight.inspect(NativeIconPack.read(root),null,List.of(scannedTool)).ready(),"工具同版本重新构建的不同哈希也不属于内容模组冲突");
+    }
+    @Test void exporterExemptionKeepsContentAndPayloadValidationStrict()throws Exception {
+        var content=new yagen.waitmydawn.kb.model.ModEntry();content.setModId("example");content.setVersion("1.0");Path jar=temp.resolve("content.jar");Files.writeString(jar,"content version one");content.setJarPath(jar.toString());
+        Path root=RuntimeBuildFixtures.create(temp.resolve("MKB-Export"),List.of(content),"neoforge","1.21.1");var pack=NativeIconPack.read(root);
+        var tool=new yagen.waitmydawn.kb.model.ModEntry();tool.setModId("mkb_export");tool.setVersion("0.11.1");tool.setJarPath(temp.resolve("not-required.jar").toString());
+        assertTrue(ExportSnapshotPreflight.inspect(pack,null,List.of(tool,content)).ready());content.setVersion("2.0");var mismatched=ExportSnapshotPreflight.inspect(pack,null,List.of(tool,content));assertFalse(mismatched.ready());assertTrue(mismatched.blockers().stream().anyMatch(text->text.contains("example")&&text.contains("2.0")&&text.contains("1.0")));
+        content.setVersion("1.0");Files.writeString(jar,"modified content");assertTrue(ExportSnapshotPreflight.inspect(pack,null,List.of(tool,content)).blockers().contains("模组文件内容不一致：example"));
+        Files.writeString(root.resolve("data/recipes.json"),"{}");assertThrows(java.io.IOException.class,()->ExportSnapshotPreflight.inspect(pack,null,List.of(tool)));
+    }
 }

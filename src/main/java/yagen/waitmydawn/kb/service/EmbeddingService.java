@@ -19,6 +19,10 @@ public class EmbeddingService implements AutoCloseable {
     private final AppConfig config;
     private final LocalEmbeddingModel localModel;
     private boolean onnxReady = false;
+    private java.sql.Connection textCache;
+    private final Map<String,float[]> recent=new LinkedHashMap<>(128,0.75f,true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String,float[]> entry){return size()>8192;}
+    };
 
     // Fixed-weight hash n-gram fallback
     private int docCount = 0;
@@ -71,13 +75,48 @@ public class EmbeddingService implements AutoCloseable {
     }
 
     public List<float[]> embedBatch(List<String> texts) {
-        docCount += texts.size();
-        List<float[]> result = new ArrayList<>(texts.size());
-        for (String t : texts) {
-            BuildCancellation.check();
-            result.add(embedMeasured(t,true));
+        return embedBatch(texts,0);
+    }
+
+    public synchronized List<float[]> embedBatch(List<String> texts,int reused) {
+        String profile=profile();var resolved=new LinkedHashMap<String,float[]>();
+        var pending=new LinkedHashSet<String>();
+        for(String text:texts){BuildCancellation.check();if(resolved.containsKey(text)||pending.contains(text))continue;float[] cached=cached(profile,text);if(cached==null)pending.add(text);else resolved.put(text,cached);}
+        int hits=texts.size()-pending.size();RetrievalTelemetry.vectorHit(hits);docCount+=pending.size();
+        var progress=BuildTrace.counter("embedding.document","向量推理",texts.size()+reused,reused+hits);
+        int done=0;
+        for(String text:pending){BuildCancellation.check();float[] vector=embedMeasured(text,true);resolved.put(text,vector);recent.put(profile+"\n"+text,vector.clone());progress.update(reused+hits+(++done));}
+        persist(profile,pending,resolved);progress.complete();
+        return texts.stream().map(text->resolved.get(text).clone()).toList();
+    }
+    private java.sql.Connection cacheConnection()throws Exception {
+        if(config==null||config.getDataDir()==null)return null;
+        if(textCache==null||textCache.isClosed()) {
+            var directory=config.getDataDir().resolve("cache");java.nio.file.Files.createDirectories(directory);
+            textCache=java.sql.DriverManager.getConnection("jdbc:h2:file:"+directory.resolve("text_embeddings").toAbsolutePath().toString().replace('\\','/')+";DATABASE_TO_LOWER=TRUE");
+            try(var statement=textCache.createStatement()){statement.execute("CREATE TABLE IF NOT EXISTS text_embedding(profile VARCHAR(1000),text_hash VARCHAR(64),text CLOB NOT NULL,embedding BLOB NOT NULL,PRIMARY KEY(profile,text_hash))");}
         }
-        return result;
+        return textCache;
+    }
+    private float[] cached(String profile,String text) {
+        String key=profile+"\n"+text;var memory=recent.get(key);if(memory!=null)return memory.clone();
+        try{var connection=cacheConnection();if(connection==null)return null;
+            try(var query=connection.prepareStatement("SELECT text,embedding FROM text_embedding WHERE profile=? AND text_hash=?")) {
+                query.setString(1,profile);query.setString(2,yagen.waitmydawn.kb.model.BuildRequest.fingerprint(text));
+                try(var rows=query.executeQuery()){if(!rows.next())return null;if(!text.equals(rows.getString(1)))throw new IllegalStateException("Text embedding cache hash collision");
+                    var bytes=java.nio.ByteBuffer.wrap(rows.getBytes(2));if(bytes.remaining()!=DIM*Float.BYTES)throw new IllegalStateException("Text embedding cache dimension mismatch");
+                    float[] vector=new float[DIM];for(int i=0;i<DIM;i++){vector[i]=bytes.getFloat();if(!Float.isFinite(vector[i]))throw new IllegalStateException("Invalid cached embedding");}recent.put(key,vector);return vector.clone();}
+            }
+        }catch(Exception failure){throw new IllegalStateException("Text embedding cache read failed",failure);}
+    }
+    private void persist(String profile,Set<String> pending,Map<String,float[]> vectors) {
+        try{var connection=cacheConnection();if(connection==null||pending.isEmpty())return;connection.setAutoCommit(false);
+            try(var insert=connection.prepareStatement("MERGE INTO text_embedding KEY(profile,text_hash) VALUES(?,?,?,?)")) {
+                int count=0;for(String text:pending){BuildCancellation.check();var bytes=java.nio.ByteBuffer.allocate(DIM*Float.BYTES);for(float value:vectors.get(text))bytes.putFloat(value);
+                    insert.setString(1,profile);insert.setString(2,yagen.waitmydawn.kb.model.BuildRequest.fingerprint(text));insert.setString(3,text);insert.setBytes(4,bytes.array());insert.addBatch();if(++count%500==0){insert.executeBatch();insert.clearBatch();}}
+                insert.executeBatch();connection.commit();
+            }catch(Exception failure){connection.rollback();throw failure;}finally{connection.setAutoCommit(true);}
+        }catch(java.util.concurrent.CancellationException cancelled){throw cancelled;}catch(Exception failure){throw new IllegalStateException("Text embedding cache write failed",failure);}
     }
 
     // ==================== Fixed-weight hash n-gram ====================
@@ -133,5 +172,5 @@ public class EmbeddingService implements AutoCloseable {
     }
 
     @Override
-    public void close() { localModel.close(); onnxReady = false; }
+    public synchronized void close() { localModel.close(); onnxReady = false;recent.clear();if(textCache!=null)try{textCache.close();}catch(java.sql.SQLException failure){log.warn("Text embedding cache close failed",failure);}finally{textCache=null;} }
 }

@@ -621,6 +621,7 @@ public final class EvalRunner {
         map.put("dialogueFilter", cfg.dialogueIndexes());
         map.put("defaultRepeat", cfg.defaultRepeat());
         map.put("judgeEnabled", cfg.judgeEnabled());
+        map.put("maxModelRequests",Integer.getInteger("maa.eval.maxModelRequests",0));
         map.put("embeddingModel", appConfig.getEmbeddingModelName());
         map.put("embeddingProfile", embedder.profile());
         map.put("answerModel","deepseek-chat");map.put("judgeModel",cfg.judgeEnabled()?"deepseek-chat":null);

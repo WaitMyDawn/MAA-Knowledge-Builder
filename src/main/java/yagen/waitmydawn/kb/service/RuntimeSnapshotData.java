@@ -19,23 +19,31 @@ public final class RuntimeSnapshotData {
             if(!yagen.waitmydawn.kb.model.BuildRequest.fingerprint(pack.manifestJson()).equals(pack.manifestHash()))throw new IOException("预检查后知识声明丢失");
             return new Data(JSON.createObjectNode(),Map.of());
         }
-        byte[] descriptorBytes=bytes(descriptor,1024*1024);
-        if(!yagen.waitmydawn.kb.model.BuildRequest.fingerprint(pack.manifestJson()+"\n"+BuildHash.sha256(descriptorBytes)).equals(pack.manifestHash()))throw new IOException("预检查后知识声明发生变化");
-        JsonNode root=JSON.readTree(descriptorBytes);var payloads=new TreeMap<String,JsonNode>();
-        for(String category:List.of("mod_metadata","registries","language","recipes","tags","loot_tables","loot_modifiers","entity_icons")) {
+        if(!yagen.waitmydawn.kb.model.BuildRequest.fingerprint(pack.manifestJson()+"\n"+ArtifactFingerprint.sha256(descriptor)).equals(pack.manifestHash()))throw new IOException("预检查后知识声明发生变化");
+        JsonNode root=SnapshotReadCache.read(descriptor,1024*1024);var payloads=new TreeMap<String,JsonNode>();
+        for(String category:List.of("mod_metadata","registries","language","recipes","tags","loot_tables","loot_modifiers","entity_icons","item_attributes","entity_attributes","entity_state_attributes","loot_entrypoints","trades","brewing","workstation_rules","potions","effects","enchantments","spawn_rules","structures","structure_sets","template_pools","structure_processors","structure_templates","multiblocks")) {
             var declaration=root.path("categories").path(category);
             if(!Set.of("COMPLETE","COMPLETE_WITH_ERRORS").contains(declaration.path("status").asText()))continue;
-            Path file=ArchivePaths.resolve(pack.root(),"data/"+category+".json");byte[] bytes=bytes(file,64*1024*1024);
-            if(!BuildHash.sha256(bytes).equals(declaration.path("sha256").asText()))throw new IOException("快照载荷发生变化："+category);
-            JsonNode payload=JSON.readTree(bytes);validate(category,payload,declaration,pack.root());
+            BuildCancellation.check();
+            try(var categoryTiming=BuildTrace.phase("snapshot.read.category",category)) {
+            Path file=ArchivePaths.resolve(pack.root(),"data/"+category+".json");
+            if(!ArtifactFingerprint.sha256(file).equals(declaration.path("sha256").asText()))throw new IOException("快照载荷发生变化："+category);
+            JsonNode payload=SnapshotReadCache.read(file,64*1024*1024);validate(category,payload,declaration,pack.root());
             if(category.equals("entity_icons")&&!payload.has("imageStorage")){var images=EntityImageReferences.index(payload.path("records"));for(var row:payload.path("records"))RuntimeEntityMedia.validateExternal(pack.root(),EntityImageReferences.resolve(row,images));}
             payloads.put(category,payload);
+            }
         }
         return new Data(root,Collections.unmodifiableMap(payloads));
         }
     }
     static void validate(String category,JsonNode payload,JsonNode declaration)throws IOException {validate(category,payload,declaration,null);}
     static void validate(String category,JsonNode payload,JsonNode declaration,Path root)throws IOException {
+        if(SnapshotReadCache.validated(category,payload,declaration,root))return;
+        validateUncached(category,payload,declaration,root);
+        SnapshotReadCache.markValidated(category,payload,declaration,root);
+    }
+    private static void validateUncached(String category,JsonNode payload,JsonNode declaration,Path root)throws IOException {
+        if((RuntimeAttributes.CATEGORIES.contains(category)||RuntimeRules.CATEGORIES.contains(category)||RuntimeMagic.CATEGORIES.contains(category)||category.equals("spawn_rules")||RuntimeStructures.CATEGORIES.contains(category))&&(payload==null||payload.path("capabilityVersion").asInt()!=1))throw new IOException("不支持的属性能力版本");
         boolean external=payload!=null&&payload.has("imageStorage");
         if(external&&(!category.equals("entity_icons")||!payload.path("imageStorage").asText().equals("EXTERNAL_PNG")))throw new IOException("未知实体图片存储协议");
         if(payload==null||!payload.isObject()||!"mkb-data".equals(payload.path("format").asText())||!payload.path("schemaVersion").isIntegralNumber()||payload.path("schemaVersion").asInt()!=1
@@ -48,10 +56,17 @@ public final class RuntimeSnapshotData {
         for(var row:payload.path("records")) {
             if(!row.isObject())throw new IOException("知识记录不是对象");String id=text(row,"id",500);
             String identity=(category.equals("registries")||category.equals("tags")?text(row,"registry",500)+"|":"")+id;
+            if(category.equals("entity_state_attributes"))identity+="|"+EntityAppearanceState.key(row);
             if(category.equals("entity_icons")){identity+="|"+EntityAppearanceState.key(row);entityIds.add(id);}
             if(!identities.add(identity))throw new IOException("重复知识记录："+identity);
             if(row.has("error")){text(row,"error",2000);failed++;continue;}
             switch(category) {
+                case "trades","brewing","workstation_rules" -> {resource(id);RuntimeRules.validate(category,row);}
+                case "structures","structure_sets","template_pools","structure_processors","structure_templates","multiblocks" -> {resource(id);RuntimeStructures.validate(category,row);}
+                case "spawn_rules" -> {resource(id);RuntimeSpawns.validate(row);}
+                case "potions","effects","enchantments" -> {resource(id);RuntimeMagic.validate(category,row);}
+                case "loot_entrypoints" -> {resource(id);resource(text(row,"source",500));resource(text(row,"lootTable",500));if(!Set.of("entity","block","container","structure").contains(row.path("sourceKind").asText()))throw new IOException("掉落入口类型无效");}
+                case "item_attributes","entity_attributes","entity_state_attributes" -> {resource(id);if(payload.path("capabilityVersion").asInt()!=1)throw new IOException("不支持的属性能力版本");RuntimeAttributes.validate(category,row);}
                 case "mod_metadata" -> {if(!id.matches("[a-z0-9_.-]+"))throw new IOException("模组 ID 无效");text(row,"version",128);text(row,"displayName",1000);}
                 case "registries" -> {
                     resource(id);if(!Set.of("item","block","entity_type").contains(row.path("registry").asText()))throw new IOException("未知对象注册表");

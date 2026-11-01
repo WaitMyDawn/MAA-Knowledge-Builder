@@ -70,6 +70,11 @@ public class UrlAgent {
             4. NO extra text, NO explanations.
             """;
 
+    public static String pageSource(String url) {
+        String host=java.net.URI.create(url).getHost();
+        return "wiki.biligame.com".equalsIgnoreCase(host)?"mcwiki":"mcmod";
+    }
+
     /** AiServices 结构化匹配接口：LLM 直接返回 JSON 数组（包一层 record 以保证反序列化稳定）。 */
     public interface UrlMatcher {
         @SystemMessage(MATCH_SYSTEM_PROMPT)
@@ -213,7 +218,8 @@ public class UrlAgent {
                 continue;
             }
             log.info("UrlAgent: fetching alias '{}' from {}", hit.label(), hit.url());
-            WikiScraperService.FetchedPage fetched = scraper.fetchPageWithRegistries(hit.url(), "mcmod");
+            String pageSource=pageSource(hit.url());
+            WikiScraperService.FetchedPage fetched = scraper.fetchPageWithRegistries(hit.url(), pageSource);
             if (fetched == null || fetched.page() == null) {
                 log.info("UrlAgent: alias '{}' fetch failed or empty", hit.label());
                 continue;
@@ -222,7 +228,7 @@ public class UrlAgent {
                     fetched.registries().size(), fetched.registries());
             String modName = resolveModName(hit.modId());
             List<TextChunker.TextChunk> stored = pageMedia==null?incremental.acquireFetchedPage(
-                    hit.label(), hit.url(), fetched.page().content(), "mcmod",hit.modId(), modName, embedder):pageMedia.acquirePage(fetched.page().url(),hit.modId(),modName,fetched.page().content());
+                    hit.label(), hit.url(), fetched.page().content(), pageSource,hit.modId(), modName, embedder):pageMedia.acquirePage(fetched.page().url(),hit.modId(),modName,fetched.page().content());
             visitedUrls.add(hit.url());
             fetchedPageCache.put(hit.url(), new CachedPage(hit.label(), hit.subQuery(),
                     toSearchResults(stored), fetched.registries()));

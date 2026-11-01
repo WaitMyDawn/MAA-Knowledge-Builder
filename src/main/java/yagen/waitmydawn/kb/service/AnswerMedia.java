@@ -74,9 +74,11 @@ public final class AnswerMedia {
         var matcher=MARKER.matcher(referenceText(text));
         while(matcher.find()) if(matcher.group(1).equals("source") && allowed.contains(matcher.group(2))) ids.add(matcher.group(2));
         ids.retainAll(allowed);
-        return new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),artifacts.pictures(),List.copyOf(ids));
+        return new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),artifacts.pictures(),List.copyOf(ids),artifacts.turnState());
     }
 
+    /** 未解析的占位标记是模型输出噪声：绑定完成后清掉，避免正文留下 [[source:...]] 与无效引用。 */
+    static String stripUnresolvedPlaceholders(String text){return text==null?null:text.replaceAll("\\[\\[(?:source|image):[^\\]\\r\\n]*]]","");}
     public static String bind(String answer, AnswerArtifacts artifacts) {
         String safe = answer == null ? "" : answer;
         safe = CONTROLLED.matcher(safe).replaceAll("");
@@ -120,7 +122,7 @@ public final class AnswerMedia {
         matcher.appendTail(out); safe = alignIllustrations(out.toString(),artifacts);
         usedImages.clear();var visibleImages=IMAGE_REFERENCE.matcher(referenceText(safe));while(visibleImages.find())usedImages.add(visibleImages.group(1));
         for (var image : artifacts.pictures()) {
-            if (usedImages.contains(image.id()) || java.util.Set.of("ENTITY","ITEM","RECIPE").contains(image.role())) continue;
+            if (usedImages.contains(image.id()) || java.util.Set.of("ENTITY","ITEM","RECIPE","RUNTIME_RULE").contains(image.role())) continue;
             var paragraphs = new ArrayList<>(List.of(safe.split("\\n\\s*\\n")));
             int best = -1; double score = 0;
             for (int i = 0; i < paragraphs.size(); i++) {
@@ -174,7 +176,7 @@ public final class AnswerMedia {
             var heading=Pattern.compile("(?m)^(?:名称|标题)：+\\s*(.+)$").matcher(text);if(heading.find())title=heading.group(1);
             String key=BuildRequest.fingerprint(group.getKey());sources.add(new AnswerArtifacts.Source("sv"+key.substring(0,20),"vector:"+key,title,group.getKey(),"本轮网页检索摘录",null,"RETRIEVED_TEXT",text.toString()));
         }
-        result.artifacts=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),sources,artifacts.pictures(),artifacts.citedSourceIds());
+        result.artifacts=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),sources,artifacts.pictures(),artifacts.citedSourceIds(),artifacts.turnState());
     }
 
     private static String label(String value) { return Objects.toString(value, "").replaceAll("[\\[\\]\\r\\n]", " "); }
@@ -206,7 +208,7 @@ public final class AnswerMedia {
             pictures.add(new AnswerArtifacts.Picture(picture.id(),picture.assetId(),picture.relativePath(),card.plan().kind().station+" · "+picture.caption(),sourceId,"RECIPE",List.of(),card.summary(),null,null,null,
                     new AnswerArtifacts.RuntimeIdentity(Objects.toString(card.plan().output().itemId(),"dynamic"),card.recipeId(),Map.of("kind",card.plan().kind().name()))));
         }
-        result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
+        result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds(),result.artifacts.turnState());
     }
     public static void attachRecipes(QaPipeline.QaResult result, Map<String,String> rendered, Path dataDir) throws java.io.IOException {
         if (rendered.isEmpty()) return;
@@ -231,6 +233,6 @@ public final class AnswerMedia {
             } catch(java.io.IOException | IllegalArgumentException ignored) { }
         }
         result.answer = answer;
-        result.artifacts = new AnswerArtifacts(artifacts.scopeId(), artifacts.scopeLabel(), artifacts.sources(), images,artifacts.citedSourceIds());
+        result.artifacts = new AnswerArtifacts(artifacts.scopeId(), artifacts.scopeLabel(), artifacts.sources(), images,artifacts.citedSourceIds(),artifacts.turnState());
     }
 }

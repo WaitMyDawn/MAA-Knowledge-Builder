@@ -69,6 +69,7 @@ public final class AnswerRenderer {
             var details=new TitledPane("查看检索依据（"+sources.size()+" 个文本块）",evidence);details.setExpanded(false);
             container.getChildren().add(details);
         }
+        TextSelection.install(container);
         return container;
     }
 
