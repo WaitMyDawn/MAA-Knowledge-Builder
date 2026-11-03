@@ -21,4 +21,5 @@ test-set/
 run.bat
 run.sh
 MKB-QA.md
+Spec.md
 dependency-reduced-pom.xml

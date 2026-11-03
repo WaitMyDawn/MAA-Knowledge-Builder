@@ -73,6 +73,7 @@ public class MaaKnowledgeBuilderApp extends Application {
     private VBox chatHistory;
     private ScrollPane chatScroll;
     private Label qaSessionTitle;
+    private boolean restoringSession;
     private TextArea questionField;
     private Button cancelButton;
     private volatile Thread activeWorker;
@@ -958,7 +959,7 @@ public class MaaKnowledgeBuilderApp extends Application {
 
     private void loadSession(ChatHistoryService.ChatSession sess) {
         if (busy()) return;
-        currentSession = sess;if(qaSessionTitle!=null)qaSessionTitle.setText(sess.title==null?"会话":sess.title);
+        currentSession = sess;restoringSession=true;if(qaSessionTitle!=null)qaSessionTitle.setText(sess.title==null?"会话":sess.title);
         // Switch incremental DB for this session
         dbManager.setCurrentSessionId(sess.sessionId);
         IncrementalDB incDb = dbManager.getCurrentIncDB();
@@ -982,6 +983,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             addChatBubble(msg.role().equals("user") ? "You" : "MAA", msg.content(), bg, msg.artifacts());
         }
         qaLog.appendText("Loaded: " + sess.title + " (" + ((sess.messages.size()+1)/2) + " QA)\n");
+        restoringSession=false;
     }
 
     private void onAsk() {
@@ -1109,7 +1111,7 @@ public class MaaKnowledgeBuilderApp extends Application {
             b.getChildren().add(header);
             b.getChildren().add(yagen.waitmydawn.kb.ui.AnswerRenderer.render(msg, artifacts, config.getDataDir()));
         }
-        chatHistory.getChildren().add(b);if(chatScroll!=null)javafx.application.Platform.runLater(()->chatScroll.setVvalue(1.0));
+        chatHistory.getChildren().add(b);if(chatScroll!=null&&!restoringSession)javafx.application.Platform.runLater(()->chatScroll.setVvalue(1.0));
     }
 
     // =================== Seed Page ===================

@@ -43,7 +43,13 @@ public final class RuntimeSnapshotData {
         SnapshotReadCache.markValidated(category,payload,declaration,root);
     }
     private static void validateUncached(String category,JsonNode payload,JsonNode declaration,Path root)throws IOException {
-        if((RuntimeAttributes.CATEGORIES.contains(category)||RuntimeRules.CATEGORIES.contains(category)||RuntimeMagic.CATEGORIES.contains(category)||category.equals("spawn_rules")||RuntimeStructures.CATEGORIES.contains(category))&&(payload==null||payload.path("capabilityVersion").asInt()!=1))throw new IOException("不支持的属性能力版本");
+        if(RuntimeAttributes.CATEGORIES.contains(category)||RuntimeRules.CATEGORIES.contains(category)||RuntimeMagic.CATEGORIES.contains(category)||category.equals("spawn_rules")||RuntimeStructures.CATEGORIES.contains(category)) {
+            var version=payload==null?com.fasterxml.jackson.databind.node.MissingNode.getInstance():payload.path("capabilityVersion");
+            // 实体属性 v2/v3 扩展采样来源和初始化元数据，保留 v1 的记录结构。
+            var supported=category.equals("entity_attributes")?Set.of(1,2,3):Set.of(1);
+            if(!version.isIntegralNumber()||!version.canConvertToInt()||!supported.contains(version.asInt()))
+                throw new IOException("不支持的知识能力版本："+category+" / "+version+"；支持版本："+new TreeSet<>(supported));
+        }
         boolean external=payload!=null&&payload.has("imageStorage");
         if(external&&(!category.equals("entity_icons")||!payload.path("imageStorage").asText().equals("EXTERNAL_PNG")))throw new IOException("未知实体图片存储协议");
         if(payload==null||!payload.isObject()||!"mkb-data".equals(payload.path("format").asText())||!payload.path("schemaVersion").isIntegralNumber()||payload.path("schemaVersion").asInt()!=1
@@ -66,7 +72,7 @@ public final class RuntimeSnapshotData {
                 case "spawn_rules" -> {resource(id);RuntimeSpawns.validate(row);}
                 case "potions","effects","enchantments" -> {resource(id);RuntimeMagic.validate(category,row);}
                 case "loot_entrypoints" -> {resource(id);resource(text(row,"source",500));resource(text(row,"lootTable",500));if(!Set.of("entity","block","container","structure").contains(row.path("sourceKind").asText()))throw new IOException("掉落入口类型无效");}
-                case "item_attributes","entity_attributes","entity_state_attributes" -> {resource(id);if(payload.path("capabilityVersion").asInt()!=1)throw new IOException("不支持的属性能力版本");RuntimeAttributes.validate(category,row);}
+                case "item_attributes","entity_attributes","entity_state_attributes" -> {resource(id);RuntimeAttributes.validate(category,row);}
                 case "mod_metadata" -> {if(!id.matches("[a-z0-9_.-]+"))throw new IOException("模组 ID 无效");text(row,"version",128);text(row,"displayName",1000);}
                 case "registries" -> {
                     resource(id);if(!Set.of("item","block","entity_type").contains(row.path("registry").asText()))throw new IOException("未知对象注册表");

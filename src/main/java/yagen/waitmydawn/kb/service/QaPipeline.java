@@ -564,6 +564,7 @@ public class QaPipeline {
         var turn=new QaAgentTurn(baseDb,baseVectorStore,knowledge,urlAgent,result,effectiveQuestion,selectedScope,lastKnowledgeScope,()->prepareMedia(result,result.mediaQuestion));
         turn.inheritImages=lastTurnImages;
         turn.rawQuestion=question;
+        try{turn.prepareEnumeration();}catch(Exception ignored){}
         String toolContext="Selected scope: "+result.sourceScope+RuntimeEvidencePolicy.context(m.runtimeEvidence,turn.documentScope())+"\nCurrent object/state task: "+effectiveQuestion+"\n"+buildConversationContext();
         var outcome=new AgentToolLoop().run(llm::toolChat,turn,effectiveQuestion,toolContext);result.toolTrace=outcome;m.answerGeneration=outcome.reason().startsWith("MODEL_ERROR")?"MODEL_ERROR":"NO_EVIDENCE";m.fallbackUsed=outcome.reason().startsWith("MODEL_ERROR");
         for(var decision:outcome.decisions())m.addTrace("ToolModel:"+decision.round(),decision.elapsedMs(),decision.status()+" · 请求工具 "+decision.toolRequests());
@@ -576,7 +577,7 @@ public class QaPipeline {
             else result.answer=outcome.reason().startsWith("MODEL_ERROR")?"工具决策模型未成功返回，本轮尚未完成取证。请检查模型服务或稍后重试。":"本轮没有取得足够证据，无法确认。工具执行状态："+outcome.reason();
         }
         else {
-            var context=new AnswerContext(question,QuestionType.GENERAL,result.resolvedEntities,result.recipeResults.stream().map(recipe->new AnswerAgent.RecipeMatch(recipe.recipeJson(),recipe.outputItem(),recipe.sourceMod(),recipe.sourceType())).toList(),result.vectorResults,null,List.of(),null,result.sourceScope,RuntimeEvidencePolicy.context(m.runtimeEvidence,turn.documentScope())+"\nCurrent task: "+effectiveQuestion+"\n"+turn.coverageContext()+"\n名称口径：物品、方块与工作站的中文名必须使用证据里的 name 字段，不要自行改写或换成俗称。"+"\n面向玩家的组织规则：先给结论与可执行做法，再补机制和数值；不写内部字段名、状态键、哈希或 appearanceHash/FULL_CARTESIAN/SAFE_DETACHED_SETUP 这类导出元数据；表格没有来源就去掉来源列，不留空列；没有证据的“材料准备（一跳）”不写；对象没有装备槽位时不必说明；不要整段写“本轮无法确认的部分”，只在确实缺关键事实时用一句话点明。"+"\n属性口径：AttributeMap 中等于 1.0 的法术强度、法术抗性等数值通常是工厂默认值，不代表模组实际战斗数值；若网页或源码给出不同数值（例如 125%、25%），引用来源并说明差异，不要用默认值覆盖来源。"+entityMedia.evidence(result,KnowledgeRetrievalService.evidence(result.artifacts,null)));
+            var context=new AnswerContext(question,QuestionType.GENERAL,result.resolvedEntities,result.recipeResults.stream().map(recipe->new AnswerAgent.RecipeMatch(recipe.recipeJson(),recipe.outputItem(),recipe.sourceMod(),recipe.sourceType())).toList(),result.vectorResults,null,List.of(),null,result.sourceScope,RuntimeEvidencePolicy.context(m.runtimeEvidence,turn.documentScope())+"\nCurrent task: "+effectiveQuestion+"\n"+turn.coverageContext()+"\n名称口径：物品、方块与工作站的中文名必须使用证据里的 name 字段，不要自行改写或换成俗称。"+"\n面向玩家的组织规则：谈获取途径时覆盖证据里出现的每一类（自然生成/合成/修复/掉落/交易），写出具体地点或容器，不要只写其中一类；先给结论与可执行做法，再补机制和数值；不写内部字段名、状态键、哈希或 appearanceHash/FULL_CARTESIAN/SAFE_DETACHED_SETUP 这类导出元数据；表格没有来源就去掉来源列，不留空列；没有证据的“材料准备（一跳）”不写；对象没有装备槽位时不必说明；不要整段写“本轮无法确认的部分”，只在确实缺关键事实时用一句话点明。"+"\n属性口径：先检查 context、sampleOrigin、defaultsOnly 和采样条件；真实已加载或显式捕获实体的属性优先于离世界工厂样本。base 是基础值，effective 包含采样时修饰符，攻击属性不等于最终命中伤害。不能仅凭 1.0 判断采错，也不能用源码构建器或网页数值覆盖已确认的真实实例；来源冲突需要保留条件与差异。"+entityMedia.evidence(result,KnowledgeRetrievalService.evidence(result.artifacts,null)));
             long answerStarted=System.nanoTime();result.answer=answerAgent.composeSinglePass(context);m.answerGeneration=answerAgent.lastGenerationMode();m.addTrace("ToolAnswer",(System.nanoTime()-answerStarted)/1_000_000,m.answerGeneration);
             guardInstallationClaims(result,m);
             result.answer=NameNormalizer.apply(baseDb,m.runtimeEvidence==null?null:m.runtimeEvidence.profile(),result.answer);
@@ -637,43 +638,109 @@ public class QaPipeline {
         }
         return null;
     }    /** 未适配的机械合成配方按 pattern 实际尺寸出卡。 */
-    private void attachMechanicalCrafting(QaResult result){
+    /** 原版配方族由 RendererService 出图，不在这里重复渲染。 */
+    private static final java.util.Set<String> VANILLA_RECIPE_FAMILIES = java.util.Set.of(
+        "crafting_shaped", "crafting_shapeless", "crafting_special", "smelting", "blasting", "smoking",
+        "campfire_cooking", "stonecutting", "smithing_transform", "smithing_trim");
+
+    private void attachMechanicalCrafting(QaResult result,String question){
         if(result.recipesToRender.isEmpty()&&result.toolRecipes.isEmpty())return;
+        if(!hasCraftingIntent(question))return;
         String profile=RuntimeKnowledgeStore.active(baseDb);if(profile==null)return;
         var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
-        for(var match:result.recipesToRender){
+        var raw=new ArrayList<String>();
+        for(var match:result.recipesToRender)raw.add(match.recipeJson());
+        raw.addAll(result.toolRecipes);
+        var seenIds=new HashSet<String>();
+        var tagCache=new java.util.HashMap<String,String>();
+        for(String rawJson:raw){
             try{
-                var json=mapper.readTree(match.recipeJson());
-                var render=findPatternNode(json);if(render==null){var genericNode=findResultNode(json);if(genericNode==null)continue;String genericId=recipeId(json);String genericKey="g"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(profile+genericId).substring(0,20);if(result.artifacts.pictures().stream().anyMatch(p->p.id().equals(genericKey)))continue;var genericImage=yagen.waitmydawn.kb.service.GenericRecipeCard.draw(genericNode,genericId,new yagen.waitmydawn.kb.service.ItemIconService(baseDb,mediaDirectory).snapshot());var genericFolder=mediaDirectory.resolve("generated/recipes");java.nio.file.Files.createDirectories(genericFolder);var genericFile=genericFolder.resolve(genericKey+".png");javax.imageio.ImageIO.write(genericImage,"PNG",genericFile.toFile());var genericAsset=new yagen.waitmydawn.kb.service.ImageAssetStore(mediaDirectory).put(java.nio.file.Files.readAllBytes(genericFile));String genericSource="s"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint("generic:"+profile+genericId).substring(0,20);var genericSources=new ArrayList<>(result.artifacts.sources());var genericPictures=new ArrayList<>(result.artifacts.pictures());genericSources.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Source(genericSource,"mkb-runtime:"+profile+"/recipes/"+genericId,genericId,genericId,"实机配方",null,"RUNTIME_SNAPSHOT",genericId));genericPictures.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Picture(genericKey,genericAsset.id(),genericAsset.relativePath(),"通用配方："+genericId,genericSource,"RECIPE",java.util.List.of(),genericId,null,null,null));result.artifacts=new yagen.waitmydawn.kb.model.AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),genericSources,genericPictures,result.artifacts.citedSourceIds());continue;}
-                if(!MechanicalCraftingCard.supports(render))continue;
+                var json=mapper.readTree(rawJson);
+                var node=findRecipeNode(json);if(node==null)continue;
+                String type=node.path("type").asText(node.path("serializer").asText(""));
                 String id=recipeId(json);
-                String key="m"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(profile+id).substring(0,20);
-                if(result.artifacts.pictures().stream().anyMatch(p->p.id().equals(key)))continue;
-                var image=MechanicalCraftingCard.draw(render,new yagen.waitmydawn.kb.service.ItemIconService(baseDb,mediaDirectory).snapshot());
-                var folder=mediaDirectory.resolve("generated/mechanical");java.nio.file.Files.createDirectories(folder);
-                var file=folder.resolve(key+".png");javax.imageio.ImageIO.write(image,"PNG",file.toFile());
-                var asset=new yagen.waitmydawn.kb.service.ImageAssetStore(mediaDirectory).put(java.nio.file.Files.readAllBytes(file));
-                String source="s"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint("mechanical:"+profile+id).substring(0,20);
-                var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<>(result.artifacts.pictures());
-                sources.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Source(source,"mkb-runtime:"+profile+"/recipes/"+id,id,id,"实机配方",null,"RUNTIME_SNAPSHOT",id));
-                pictures.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),"动力合成："+id,source,"RECIPE",java.util.List.of(),id,null,null,null));
-                result.artifacts=new yagen.waitmydawn.kb.model.AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
-            }catch(Exception failure){result.mediaWarnings.add("机械合成图 · "+failure.getMessage());}
+                String dedupe=node.toString();
+                if(!seenIds.add(id)||!seenIds.add("h"+Integer.toHexString(dedupe.hashCode())))continue;
+                if(MechanicalCraftingCard.supports(node)&&node.has("pattern")){
+                    if(hasRecipeCard(result,"m",profile,id))continue;
+                    var image=MechanicalCraftingCard.draw(node,icons(),tag->representativeTag(tag,tagCache));
+                    attachRecipeCard(result,profile,id,"m","generated/mechanical","动力合成",image);
+                    continue;
+                }
+                String family=type.contains(":")?type.substring(type.indexOf(':')+1):type;
+                if(VANILLA_RECIPE_FAMILIES.contains(family))continue;
+                if(result.recipeRenderBatch!=null&&result.recipeRenderBatch.images().containsKey(id))continue;
+                if(!GenericRecipeCard.supports(node))continue;
+                if(hasRecipeCard(result,"g",profile,id))continue;
+                var generic=GenericRecipeCard.draw(node,id,icons(),tag->representativeTag(tag,tagCache));
+                attachRecipeCard(result,profile,id,"g","generated/recipes","通用配方",generic);
+            }catch(Exception failure){result.mediaWarnings.add("配方图 · "+failure.getMessage());}
         }
-    }    private void prepareMedia(QaResult result,String question){
+    }
+
+    /** 任一层级里取配方节点：优先带 pattern 的机械合成，其次带 result(s) 的通用结构。 */
+    private static com.fasterxml.jackson.databind.JsonNode findRecipeNode(com.fasterxml.jackson.databind.JsonNode node){
+        var pattern=findPatternNode(node);return pattern!=null?pattern:findResultNode(node);
+    }
+
+    private ItemIconService.Snapshot icons(){return new ItemIconService(baseDb,mediaDirectory).snapshot();}
+
+    private boolean hasRecipeCard(QaResult result,String prefix,String profile,String id){
+        String key=prefix+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(profile+id).substring(0,20);
+        return result.artifacts.pictures().stream().anyMatch(p->p.id().equals(key));
+    }
+
+    private void attachRecipeCard(QaResult result,String profile,String id,String prefix,String folderName,String roleLabel,java.awt.image.BufferedImage image)throws Exception{
+        String key=prefix+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(profile+id).substring(0,20);
+        var folder=mediaDirectory.resolve(folderName);java.nio.file.Files.createDirectories(folder);
+        var file=folder.resolve(key+".png");javax.imageio.ImageIO.write(image,"PNG",file.toFile());
+        var asset=new ImageAssetStore(mediaDirectory).put(java.nio.file.Files.readAllBytes(file));
+        String source="s"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint(roleLabel+":"+profile+id).substring(0,20);
+        String caption=roleLabel+"："+id;
+        var sources=new ArrayList<>(result.artifacts.sources());
+        var pictures=new ArrayList<>(result.artifacts.pictures());
+        sources.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Source(source,"mkb-runtime:"+profile+"/recipes/"+id,id,id,roleLabel,null,"RUNTIME_SNAPSHOT",id));
+        pictures.add(new yagen.waitmydawn.kb.model.AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),caption,source,"RECIPE",java.util.List.of(),id,null,null,null));
+        result.artifacts=new yagen.waitmydawn.kb.model.AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
+    }
+
+    /** 标签取一个代表物品，用于卡片图标；取不到就退回文字标签。 */
+    private String representativeTag(String tag,java.util.Map<String,String> cache){
+        if(cache.containsKey(tag))return cache.get(tag);
+        String found=null;
+        try{
+            var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
+            for(String registry:java.util.List.of("minecraft:item","minecraft:block")){
+                try(var c=baseDb.getConnection();var p=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE category='tags' AND record_id=?")){
+                    p.setString(1,registry+"|"+tag);
+                    try(var rows=p.executeQuery()){
+                        if(rows.next()){
+                            var members=mapper.readTree(rows.getString(1)).path("members");
+                            if(members.size()>0){found=members.get(0).asText();break;}
+                        }
+                    }
+                }
+            }
+        }catch(Exception ignored){}
+        cache.put(tag,found);
+        return found;
+    }
+    private void prepareMedia(QaResult result,String question){
         long started=System.nanoTime();String saved=result.answer;result.answer="";
         try{
             boolean crafting=question.matches("(?is).*(合成|配方|制作|烧炼|锻造|加工|怎么做|如何做|如何获得|怎么获得|craft|recipe).*" );
+            if(crafting){var merged=new ArrayList<ScoredRecipe>();var seenRecipes=new HashSet<String>();for(var match:result.recipesToRender)if(seenRecipes.add(match.recipeJson()))merged.add(new ScoredRecipe(match,100));for(var match:result.recipeResults)if(seenRecipes.add(match.recipeJson()))merged.add(new ScoredRecipe(match,100));for(var match:findSnapshotRecipes(question))if(seenRecipes.add(match.recipeJson()))merged.add(new ScoredRecipe(match,100));result.recipesToRender=selectRecipesToRender(merged,true);}
+            if(result.rawQuestion==null)result.rawQuestion=question;
             if(crafting&&!result.recipesToRender.isEmpty()){
                 var config=yagen.waitmydawn.kb.config.AppConfig.forIsolatedRun(false).forBuildTarget(mediaDirectory);
                 result.recipeRenderBatch=new RendererService(config,baseDb).renderDetailed(result.recipesToRender);
                 AnswerMedia.attachRecipes(result,result.recipeRenderBatch,mediaDirectory);
             }else result.recipeRenderBatch=new RendererService.RenderBatch(Map.of(),List.of(),List.of());
-            attachMechanicalCrafting(result);
+            attachMechanicalCrafting(result,question);
             entityMedia.prepare(result,question.replaceAll("https?://[^\\s<>]+"," "));
             new LootCardService(baseDb,mediaDirectory).attach(result,question);
             new RuleCardService(baseDb,mediaDirectory).attach(result,question);
-            int tradeCards=0;for(String tradeId:result.tradeIds){if(tradeCards++>=2)break;try{new RuleCardService(baseDb,mediaDirectory).attachTrade(result,tradeId);}catch(Exception failure){result.mediaWarnings.add("交易图："+tradeId+" · "+failure.getMessage());}}
+            int tradeLimit=question!=null&&question.matches("(?s).*(所有|全部|各等级|等级|几级).*")?5:2;int tradeCards=0;for(String tradeId:result.tradeIds){if(tradeCards++>=tradeLimit)break;try{new RuleCardService(baseDb,mediaDirectory).attachTrade(result,tradeId);}catch(Exception failure){result.mediaWarnings.add("交易图："+tradeId+" · "+failure.getMessage());}}
             new LayoutCardService(baseDb,mediaDirectory).attach(result,question);
             String layoutKey="i"+yagen.waitmydawn.kb.model.BuildRequest.fingerprint("layout:"+result.multiblockId).substring(0,20);if(result.multiblockId!=null&&result.artifacts.pictures().stream().noneMatch(p->p.id().equals(layoutKey)))try{new LayoutCardService(baseDb,mediaDirectory).attachOne(result,result.multiblockId);}catch(Exception failure){result.mediaWarnings.add("布局图："+failure.getMessage());}
         }catch(java.io.IOException failure){result.mediaWarnings.add("配方图片归档失败："+failure.getClass().getSimpleName());}
@@ -717,13 +784,13 @@ public class QaPipeline {
             result.recipeResults=findSnapshotRecipes(lookupQuestion);
             if(result.recipeResults.isEmpty())result.mediaWarnings.add("当前快照未命中目标配方；请核对物品名称或注册名。这不表示游戏中无法合成，也未使用百科默认配方替代。");
             var recipes=result.recipeResults.stream().map(recipe->new ScoredRecipe(recipe,100)).toList();
-            result.recipesToRender=selectRecipesToRender(recipes,true);m.recipeResultCount=result.recipeResults.size();
+            result.recipesToRender=withOutputRecipes(recipes);m.recipeResultCount=result.recipeResults.size();
         } else if(boundMod!=null && hasCraftingIntent(question)) {
             var entities=entityAgent.resolveEntities(question,"本轮仅查询已选资料对应模组："+boundMod);
             result.resolvedEntities=entities.inferredEntities().stream().filter(e -> boundMod.equals(e.modId())).toList();
             var recipes=findScoredRecipes(result.resolvedEntities).stream().filter(r -> boundMod.equals(r.match().sourceMod())).toList();
             result.recipeResults=recipes.stream().map(ScoredRecipe::match).toList();
-            result.recipesToRender=selectRecipesToRender(recipes,true);
+            result.recipesToRender=withOutputRecipes(recipes);
             m.entityCount=result.resolvedEntities.size();m.recipeResultCount=result.recipeResults.size();
         }
         m.classifySource = "knowledge_source"; m.classifyCategory = "资料问答";
@@ -923,12 +990,50 @@ public class QaPipeline {
      *   - 存在精确产物的配方时 → 只渲染产物本身（score &gt;= 100），排除"材料还能合成什么"的旁支
      *   - 无精确产物但确属制作意图 → 渲染最高分的若干条
      */
+    /** 原版合成族优先：问题问"怎么做"时先给工作台配方，再给工作站/机械配方。 */
+    private static int recipeFamilyRank(RecipeMatch match){
+        String json=match==null?null:match.recipeJson();
+        if(json==null)return 9;
+        String type="";
+        int ti=json.indexOf("type");if(ti>=0){int colon=json.indexOf(58,ti);int q1=json.indexOf(34,colon);int q2=json.indexOf(34,q1+1);if(q1>0&&q2>q1)type=json.substring(q1+1,q2);}
+
+        if(type.endsWith(":crafting_shaped")||type.endsWith(":crafting_shapeless"))return 0;
+        if(type.contains("smithing"))return 1;
+        if(type.contains("smelting")||type.contains("blasting")||type.contains("smoking")||type.contains("stonecutting")||type.contains("campfire"))return 2;
+        if(type.contains("mechanical_crafting"))return 5;
+        return 3;
+    }
+
+    /** 从已命中的配方反查同一产物的全部配方，保证工作台与工作站配方都能进入渲染候选。 */
+    private List<RecipeMatch> withOutputRecipes(List<ScoredRecipe> base){
+        if(base==null||base.isEmpty())return List.of();
+        var outputs=new LinkedHashSet<String>();
+        for(var sr:base)if(sr.match()!=null&&sr.match().outputItem()!=null&&!sr.match().outputItem().isBlank())outputs.add(sr.match().outputItem());
+        var merged=new ArrayList<ScoredRecipe>(base);
+        var seen=new HashSet<String>();
+        for(var sr:base)if(sr.match()!=null)seen.add(sr.match().outputItem()+"\n"+sr.match().recipeJson());
+        for(String out:outputs){
+            try(var c=baseDb.getConnection();
+                var ps=c.prepareStatement("SELECT recipe_data, output_item, source_mod, source_type FROM "+RuntimeKnowledgeStore.recipeRelation(baseDb)+" WHERE output_item=? AND COALESCE(source_type,'UNKNOWN')<>'SEED' LIMIT 20")){
+                ps.setString(1,out);
+                try(var rs=ps.executeQuery()){
+                    while(rs.next()){
+                        var match=new RecipeMatch(rs.getString("recipe_data"),rs.getString("output_item"),rs.getString("source_mod"),rs.getString("source_type"));
+                        if(seen.add(match.outputItem()+"\n"+match.recipeJson()))merged.add(new ScoredRecipe(match,100));
+                    }
+                }
+            }catch(Exception ignored){}
+        }
+        return selectRecipesToRender(merged,true);
+    }
+
     private List<RecipeMatch> selectRecipesToRender(List<ScoredRecipe> scoredRecipes, boolean recipeIntent) {
         if (scoredRecipes == null || scoredRecipes.isEmpty() || !recipeIntent) return List.of();
         boolean exactOutput = scoredRecipes.stream().anyMatch(s -> s.score() >= 100);
         List<RecipeMatch> toRender = new ArrayList<>();
-        for (ScoredRecipe sr : scoredRecipes) {
-            if (exactOutput && sr.score() < 100) continue;
+        var ordered = scoredRecipes.stream().filter(sr -> !exactOutput || sr.score() >= 100)
+            .sorted(java.util.Comparator.comparingInt(sr -> recipeFamilyRank(sr.match()))).toList();
+        for (ScoredRecipe sr : ordered) {
             toRender.add(sr.match());
             if (toRender.size() >= MAX_RECIPES_TO_RENDER) break;
         }
@@ -1252,6 +1357,10 @@ public class QaPipeline {
         /** 本轮结构化查询命中的多方块 id，用它在最终组织前渲染分层图卡。 */
         public String multiblockId;
         /** 本轮结构化查询命中的交易记录 id，用于在最终组织前渲染交易卡。 */
+        /** 本轮的原始用户问题，用于状态轴与装备判断，避免被增强文本影响。 */
+        public String rawQuestion;
+        /** 会话级模组记忆：枚举类追问只说“这个模组”时沿用。 */
+        public String enumerationMod;
         public final Set<String> tradeIds = new LinkedHashSet<>();
         /** 工具查询读到的配方原文，供未适配类型的图卡使用。 */
         public final List<String> toolRecipes = new ArrayList<>();

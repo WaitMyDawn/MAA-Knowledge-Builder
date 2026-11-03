@@ -373,10 +373,19 @@ public final class RuleJudge {
         return prefix + " " + expect + (evidence == null ? "" : " -> " + evidence);
     }
 
+    /** 身份值比较忽略命名空间前缀（variant=tabby 与 minecraft:tabby 等价）。 */
+    private static boolean sameValue(String wanted,String actual){
+        if(wanted==null||actual==null)return false;
+        if(wanted.equalsIgnoreCase(actual))return true;
+        return bare(wanted).equalsIgnoreCase(bare(actual));
+    }
+
+    private static String bare(String value){int colon=value.indexOf(58);return colon>0?value.substring(colon+1):value;}
+
     private static boolean identityMatches(yagen.waitmydawn.kb.model.AnswerArtifacts.Picture picture,String selector) {
         String[] parts=selector.split("\\|",-1);var identity=picture.runtimeIdentity();
         if(parts.length<2||identity==null||!parts[0].equals(picture.role())||!parts[1].equals(identity.registry()))return false;
-        for(int i=2;i<parts.length;i++){int equals=parts[i].indexOf('=');if(equals<=0||!parts[i].substring(equals+1).equals(identity.attributes().get(parts[i].substring(0,equals))))return false;}
+            for(int i=2;i<parts.length;i++){int equals=parts[i].indexOf(61);if(equals<=0||!sameValue(parts[i].substring(equals+1),identity.attributes().get(parts[i].substring(0,equals))))return false;}
         return true;
     }
 

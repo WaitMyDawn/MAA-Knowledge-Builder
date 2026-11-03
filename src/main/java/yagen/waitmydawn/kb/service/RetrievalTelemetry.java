@@ -19,7 +19,7 @@ public final class RetrievalTelemetry {
     public record ResourceAudit(int requests,int documents,int images,int unknown,int retries,int redirects,long waitMs,long backoffMs,long fetchMs,java.util.List<Request> events,boolean truncated){}
     public static ResourceAudit resources() {
         var c=CURRENT.get();if(c==null)return null;
-        synchronized(c){return new ResourceAudit(c.httpRequests,c.documentRequests,c.imageRequests,Math.max(0,c.httpRequests-c.documentRequests-c.imageRequests),c.retries,c.redirects,c.waitNanos/1_000_000,c.backoffNanos/1_000_000,c.fetchNanos/1_000_000,java.util.List.copyOf(c.events),c.eventsTruncated);}
+        synchronized(c){return new ResourceAudit(c.resourceDownloads+c.documentRequests,c.documentRequests,c.imageRequests,Math.max(0,c.httpRequests-c.documentRequests-c.imageRequests),c.retries,c.redirects,c.waitNanos/1_000_000,c.backoffNanos/1_000_000,c.fetchNanos/1_000_000,java.util.List.copyOf(c.events),c.eventsTruncated);}
     }
     public record Work(long count,long millis){}
     public static java.util.Map<String,Work> work(){var c=CURRENT.get();if(c==null)return java.util.Map.of();synchronized(c){var result=new java.util.TreeMap<String,Work>();c.work.forEach((key,value)->result.put(key,new Work(value[0],value[1]/1_000_000)));return java.util.Map.copyOf(result);}}
@@ -32,7 +32,7 @@ public final class RetrievalTelemetry {
         String cause=resourceCause();boolean imageKind=image&&!cause.contains("SOURCE_DOCUMENT");
         String host="",path="";try{var uri=java.net.URI.create(url);host=java.util.Objects.toString(uri.getHost(),"");path=java.util.Objects.toString(uri.getPath(),"");if(path.length()>180)path=path.substring(0,180);}catch(IllegalArgumentException ignored){}
         synchronized(c) {
-            if(imageKind)c.imageRequests++;else c.documentRequests++;if(status==0)c.httpErrors++;if(retry)c.retries++;if(redirect)c.redirects++;c.fetchNanos+=Math.max(0,nanos);
+            if(imageKind){c.imageRequests++;c.resourceDownloads++;}else c.documentRequests++;if(status==0)c.httpErrors++;if(retry)c.retries++;if(redirect)c.redirects++;c.fetchNanos+=Math.max(0,nanos);
             if(c.events.size()<200)c.events.add(new Request(imageKind?"IMAGE":"DOCUMENT",host,path,cause,status,nanos/1_000_000,retry,redirect));else c.eventsTruncated=true;
         }
     }
@@ -54,6 +54,8 @@ public final class RetrievalTelemetry {
         public int documentEmbeddings, queryEmbeddings, reusedEmbeddings;
         public long responseBytes, embeddingNanos;
         private int documentRequests,imageRequests,retries,redirects;
+        /** 仅统计答案侧的资源下载（图片/图标等），不含网页正文抓取。 */
+        private int resourceDownloads;
         private long waitNanos,backoffNanos,fetchNanos;
         private final java.util.List<Request> events=new java.util.ArrayList<>();
         private boolean eventsTruncated;

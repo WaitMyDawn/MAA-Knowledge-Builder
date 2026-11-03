@@ -185,7 +185,7 @@ final class RuntimeEntityMedia {
         for(String warning:result.mediaWarnings)text.append("Media limitation: ").append(warning).append('\n');
         text.append("Insert each image only next to its matching object/state/recipe. For comparisons keep every state distinct, even when images share pixels. Never claim an unavailable state exists. Images are independently scaled; do not infer actual size, stats, recipes or drops from appearance.\n");return text.toString();
     }
-    void finish(QaPipeline.QaResult result,String question){
+    void finish(QaPipeline.QaResult result,String question){String asked=result.rawQuestion!=null&&!result.rawQuestion.isBlank()?result.rawQuestion:question;
         String answer=Objects.toString(result.answer,"");var used=new HashSet<String>();var matcher=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(AnswerMedia.referenceText(answer));while(matcher.find())used.add(matcher.group(1));
         var kept=new ArrayList<AnswerArtifacts.Picture>();var additions=new ArrayList<String>();boolean visual=question.matches("(?is).*(展示|外观|图片|配图|长什么样|比较|对比|区别|分别|介绍|show|look).*" );
         for(var picture:result.artifacts.pictures()){
@@ -196,6 +196,8 @@ final class RuntimeEntityMedia {
             if(used.contains(picture.id())&&!picture.role().equals("RUNTIME_RULE")&&request!=null&&!associated(answer,picture,request,result.runtimeMediaStates.get(picture.id()))){
                 answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");used.remove(picture.id());
             }
+            if(picture.role().equals("ENTITY")&&wantsEquipment(asked)&&isUnequipped(picture))show=false;
+            if(picture.role().equals("RECIPE")&&!asked.matches("(?s).*(合成|配方|制作|烧炼|锻造|加工|怎么做|如何做|如何获得|怎么获得|craft|recipe).*"))show=false;
             if(!show){answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");continue;}kept.add(picture);
             if(!used.contains(picture.id()))additions.add(marker);
         }
@@ -239,7 +241,12 @@ final class RuntimeEntityMedia {
         if(title.length()>=2)keys.add(title);
         if(caption.contains("成长阶段：")){var matcher=java.util.regex.Pattern.compile("成长阶段：(\\d+)").matcher(caption);if(matcher.find())keys.add(matcher.group(1)+"阶");}
         return keys;
-    }    private static boolean associated(String answer,AnswerArtifacts.Picture picture,MediaRequestPlanner.Request request,JsonNode state){
+    }    /** 问题点名了装备状态：只有无装备图时不要用无装备图顶替。 */
+    private static boolean wantsEquipment(String question){return question!=null&&question.matches("(?is).*(戴着|穿着|戴上|穿上|手持|拿着|装备着|装备了|装备着\\S{0,6}的).*");}
+
+    private static boolean isUnequipped(AnswerArtifacts.Picture picture){String caption=picture.caption()==null?"":picture.caption();return caption.contains("无装备")||caption.contains("无槽位装备")||caption.contains("未装备");}
+
+    private static boolean associated(String answer,AnswerArtifacts.Picture picture,MediaRequestPlanner.Request request,JsonNode state){
         var paragraphs=answer.split("\\n\\s*\\n");String text="";
         for(int i=0;i<paragraphs.length;i++)if(paragraphs[i].contains("kb-image:"+picture.id()+")")){
             text=paragraphs[i].replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:[^)]+\\)","");

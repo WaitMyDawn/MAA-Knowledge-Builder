@@ -27,6 +27,10 @@ public final class GenericRecipeCard {
     }
 
     public static BufferedImage draw(JsonNode definition, String recipeId, ItemIconService.Snapshot icons) {
+        return draw(definition, recipeId, icons, null);
+    }
+
+    public static BufferedImage draw(JsonNode definition, String recipeId, ItemIconService.Snapshot icons, java.util.function.Function<String, String> tagResolver) {
         var inputs = collect(definition, List.of("input", "inputs", "ingredients"));
         var outputs = collect(definition, List.of("result", "results", "output", "outputs"));
         var fluids = collectFluids(definition);
@@ -49,7 +53,7 @@ public final class GenericRecipeCard {
             g.drawString("输入", leftX, y - 6);
             int column = 0;
             for (var input : inputs) {
-                drawEntry(g, input, icons, leftX, y + column * (CELL + GAP));
+                drawEntry(g, input, icons, tagResolver, leftX, y + column * (CELL + GAP));
                 column++;
                 if (column >= 4) break;
             }
@@ -58,14 +62,21 @@ public final class GenericRecipeCard {
             int fluidY = y + Math.max(1, Math.min(4, inputs.size())) * (CELL + GAP) + 6;
             if (!fluids.isEmpty()) {
                 g.setColor(MUTED); g.setFont(new Font("Microsoft YaHei", Font.PLAIN, 12));
-                for (int i = 0; i < fluids.size() && i < 3; i++) g.drawString("液体：" + fluids.get(i), leftX, fluidY + i * 16);
+                for (int i = 0; i < fluids.size() && i < 3; i++) {
+                    var fluid = fluids.get(i);
+                    int chipY = fluidY + i * 24;
+                    g.setColor(new Color(0x2a3446)); g.fillRoundRect(leftX, chipY, 132, 20, 8, 8);
+                    g.setColor(new Color(0x4f8bd6)); g.fillOval(leftX + 4, chipY + 5, 10, 10);
+                    g.setColor(TEXT); g.setFont(new Font("Microsoft YaHei", Font.PLAIN, 11));
+                    g.drawString(shortId(fluid.id()) + " · " + fluid.amount() + " mB", leftX + 20, chipY + 14);
+                }
             }
 
             int stationX = 300;
             g.setColor(MUTED); g.setFont(new Font("Microsoft YaHei", Font.PLAIN, 12)); g.drawString("工作站", stationX, y - 6);
-            drawIconBox(g, icons, station, stationX, y, 56);
+            if (station != null) drawIconBox(g, icons, station, stationX, y, 56);
             g.setColor(TEXT); g.setFont(new Font("Microsoft YaHei", Font.PLAIN, 12));
-            g.drawString(station == null ? type : station, stationX, y + 76);
+            g.drawString(station == null ? "未识别工作站" : station, stationX, y + 76);
 
             g.setColor(new Color(0x8fb4ff)); g.setFont(new Font("Segoe UI", Font.BOLD, 26));
             g.drawString("→", stationX + 84, y + 36);
@@ -74,7 +85,7 @@ public final class GenericRecipeCard {
             g.setColor(MUTED); g.setFont(new Font("Microsoft YaHei", Font.PLAIN, 12)); g.drawString("输出", outX, y - 6);
             column = 0;
             for (var output : outputs) {
-                drawEntry(g, output, icons, outX, y + column * (CELL + GAP));
+                drawEntry(g, output, icons, tagResolver, outX, y + column * (CELL + GAP));
                 column++;
                 if (column >= 4) break;
             }
@@ -109,17 +120,42 @@ public final class GenericRecipeCard {
         entries.add(new Entry(id, tag, node));
     }
 
-    private static java.util.List<String> collectFluids(JsonNode definition) {
-        var fluids = new ArrayList<String>();
-        for (String field : java.util.List.of("fluid", "base_fluid")) {
+    private static java.util.List<Fluid> collectFluids(JsonNode definition) {
+        var fluids = new ArrayList<Fluid>();
+        for (String field : java.util.List.of("fluid", "base_fluid")) addFluid(fluids, definition.path(field));
+        for (String field : java.util.List.of("input", "inputs", "ingredients")) {
             var node = definition.path(field);
-            if (node.isObject() && node.has("id")) fluids.add(shortId(node.path("id").asText()) + " " + node.path("amount").asInt(0) + " mB");
+            if (node.isArray()) for (JsonNode item : node) addFluid(fluids, item.path("fluid"));
+            else addFluid(fluids, node.path("fluid"));
         }
         return fluids;
     }
 
+    private static void addFluid(List<Fluid> fluids, JsonNode node) {
+        if (node == null || !node.isObject() || !node.has("id")) return;
+        fluids.add(new Fluid(node.path("id").asText(""), node.path("amount").asInt(0)));
+    }
+
+    private record Fluid(String id, int amount) {}
+
+    private static final java.util.Map<String, String> KNOWN_STATIONS = java.util.Map.ofEntries(
+        java.util.Map.entry("create:mixing", "create:mechanical_mixer"),
+        java.util.Map.entry("create:compacting", "create:mechanical_press"),
+        java.util.Map.entry("create:pressing", "create:mechanical_press"),
+        java.util.Map.entry("create:crushing", "create:crushing_wheel"),
+        java.util.Map.entry("create:milling", "create:millstone"),
+        java.util.Map.entry("create:cutting", "create:mechanical_saw"),
+        java.util.Map.entry("create:filling", "create:spout"),
+        java.util.Map.entry("create:emptying", "create:item_drain"),
+        java.util.Map.entry("create:deploying", "create:deployer"),
+        java.util.Map.entry("create:splashing", "create:encased_fan"),
+        java.util.Map.entry("create:haunting", "create:encased_fan"),
+        java.util.Map.entry("create:smoking", "create:encased_fan"),
+        java.util.Map.entry("create:blasting", "create:encased_fan"));
     private static String station(String type) {
         if (type == null || !type.contains(":")) return null;
+        String known = KNOWN_STATIONS.get(type);
+        if (known != null) return known;
         String path = type.substring(type.indexOf(':') + 1);
         for (String suffix : List.of("_brew", "_empty", "_fill", "_mixing", "_basin", "_spout", "_press")) {
             if (path.endsWith(suffix)) return type.substring(0, type.length() - suffix.length());
@@ -127,16 +163,43 @@ public final class GenericRecipeCard {
         return null;
     }
 
-    private static void drawEntry(Graphics2D g, Entry entry, ItemIconService.Snapshot icons, int x, int y) {
+    private static void drawEntry(Graphics2D g, Entry entry, ItemIconService.Snapshot icons, java.util.function.Function<String, String> tagResolver, int x, int y) {
         g.setColor(SLOT); g.fillRoundRect(x, y, CELL, CELL, 8, 8);
+        boolean drawn = false;
         if (!entry.id().isBlank()) {
             var icon = icons == null ? null : icons.item(entry.id(), false, null);
-            if (icon != null && icon.image() != null) { g.drawImage(icon.image(), x + 5, y + 5, CELL - 10, CELL - 10, null); return; }
-            label(g, shortId(entry.id()), x, y, CELL);
-            return;
+            if (icon != null && icon.image() != null) { g.drawImage(icon.image(), x + 5, y + 5, CELL - 10, CELL - 10, null); drawn = true; }
+            else label(g, shortId(entry.id()), x, y, CELL);
+        } else {
+            String member = tagResolver == null ? null : tagResolver.apply(entry.tag());
+            if (member != null && !member.isBlank()) {
+                var icon = icons == null ? null : icons.item(member, false, null);
+                if (icon != null && icon.image() != null) { g.drawImage(icon.image(), x + 5, y + 5, CELL - 10, CELL - 10, null); drawn = true; }
+            }
+            if (!drawn) {
+                int colon = entry.tag().indexOf(':');
+                label(g, colon > 0 ? entry.tag().substring(colon + 1) : entry.tag(), x, y, CELL);
+            }
         }
-        int colon = entry.tag().indexOf(':');
-        label(g, colon > 0 ? entry.tag().substring(colon + 1) : entry.tag(), x, y, CELL);
+        drawBadge(g, amount(entry.raw()), x, y, CELL);
+    }
+
+    /** 数量角标：count/amount 都显示在右下角，缺省不画。 */
+    private static void drawBadge(Graphics2D g, String text, int x, int y, int size) {
+        if (text == null || text.isBlank()) return;
+        g.setColor(TEXT);
+        g.setFont(new Font("Microsoft YaHei", Font.BOLD, 12));
+        int width = g.getFontMetrics().stringWidth(text);
+        g.setColor(new Color(0x101723));
+        g.fillRoundRect(x + size - width - 8, y + size - 16, width + 6, 14, 6, 6);
+        g.setColor(TEXT);
+        g.drawString(text, x + size - width - 5, y + size - 5);
+    }
+
+    private static String amount(JsonNode node) {
+        if (node == null) return "";
+        int count = node.path("count").asInt(node.path("amount").asInt(0));
+        return count > 1 ? "x" + count : "";
     }
 
     private static void drawIconBox(Graphics2D g, ItemIconService.Snapshot icons, String id, int x, int y, int size) {

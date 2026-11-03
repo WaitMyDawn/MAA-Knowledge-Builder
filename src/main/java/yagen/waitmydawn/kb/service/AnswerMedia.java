@@ -216,13 +216,16 @@ public final class AnswerMedia {
         var images = new ArrayList<>(artifacts.pictures());
         String answer = Objects.toString(result.answer,"");
         var store = new ImageAssetStore(dataDir);
+        var seenNames = new HashSet<String>();var seenAssets = new HashSet<String>();
         for (var entry : rendered.entrySet()) {
             if (images.size() >= 8) break;
             try {
                 Path path = Path.of(entry.getValue()).toRealPath();
                 if (!path.startsWith(dataDir.resolve("generated").toRealPath()) || Files.size(path) > 32L * 1024 * 1024) continue;
-                var asset = store.put(Files.readAllBytes(path));
                 String name = entry.getKey().split("#",2)[0];
+                if(!seenNames.add(name)) continue;
+                var asset = store.put(Files.readAllBytes(path));
+                if(!seenAssets.add(asset.id())) continue;
                 var picture = new AnswerArtifacts.Picture("i" + BuildRequest.fingerprint(entry.getKey()).substring(0,20), asset.id(), asset.relativePath(),
                         name + " 配方", null, "RECIPE", List.of(), name);
                 images.add(picture);

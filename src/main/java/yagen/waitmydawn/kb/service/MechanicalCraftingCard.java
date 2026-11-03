@@ -21,11 +21,14 @@ public final class MechanicalCraftingCard {
     /** 该定义是否由本卡处理。 */
     public static boolean supports(JsonNode definition) {
         String type = definition.path("type").asText(definition.path("serializer").asText(""));
-        if (type.contains("mechanical_crafting")) return true;
-        return definition.has("pattern") && definition.path("pattern").isArray() && definition.has("result");
+        return type.contains("mechanical_crafting");
     }
 
     public static BufferedImage draw(JsonNode definition, ItemIconService.Snapshot icons) {
+        return draw(definition, icons, null);
+    }
+
+    public static BufferedImage draw(JsonNode definition, ItemIconService.Snapshot icons, java.util.function.Function<String, String> tagResolver) {
         var pattern = new ArrayList<String>();
         for (JsonNode line : definition.path("pattern")) pattern.add(line.asText(""));
         int rows = pattern.size();
@@ -54,7 +57,9 @@ public final class MechanicalCraftingCard {
                     int x = MARGIN + c * (CELL + GAP), y = TOP + r * (CELL + GAP);
                     if (Character.isWhitespace(symbol)) continue;
                     g.setColor(SLOT); g.fillRoundRect(x, y, CELL, CELL, 8, 8);
-                    drawIngredient(g, key.path(String.valueOf(symbol)), icons, x, y);
+                    int amount = key.path(String.valueOf(symbol)).path("count").asInt(1);
+                    if (amount > 1) { g.setColor(TEXT); g.setFont(new Font("Microsoft YaHei", Font.BOLD, 12)); g.drawString("x" + amount, x + CELL - 16, y + CELL - 3); }
+                    drawIngredient(g, key.path(String.valueOf(symbol)), icons, tagResolver, x, y);
                 }
             }
 
@@ -83,7 +88,7 @@ public final class MechanicalCraftingCard {
         return image;
     }
 
-    private static void drawIngredient(Graphics2D g, JsonNode entry, ItemIconService.Snapshot icons, int x, int y) {
+    private static void drawIngredient(Graphics2D g, JsonNode entry, ItemIconService.Snapshot icons, java.util.function.Function<String, String> tagResolver, int x, int y) {
         String id = entry.path("item").asText("");
         if (!id.isBlank()) {
             var icon = icons == null ? null : icons.item(id, false, null);
@@ -92,7 +97,16 @@ public final class MechanicalCraftingCard {
             return;
         }
         String tag = entry.path("tag").asText("");
-        if (!tag.isBlank()) { int colon = tag.indexOf(':'); label(g, colon > 0 ? tag.substring(colon + 1) : tag, x, y); return; }
+        if (!tag.isBlank()) {
+            String member = tagResolver == null ? null : tagResolver.apply(tag);
+            if (member != null && !member.isBlank()) {
+                var icon = icons == null ? null : icons.item(member, false, null);
+                if (icon != null && icon.image() != null) { g.drawImage(icon.image(), x + 6, y + 6, CELL - 12, CELL - 12, null); return; }
+            }
+            int colon = tag.indexOf(':');
+            label(g, colon > 0 ? tag.substring(colon + 1) : tag, x, y);
+            return;
+        }
         label(g, "?", x, y);
     }
 

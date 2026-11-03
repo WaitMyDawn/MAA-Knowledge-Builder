@@ -55,6 +55,7 @@ public final class RuleCardService {
         String profile=RuntimeKnowledgeStore.active(db);if(profile==null||id==null||id.isBlank())return;
         String prefix="mkb-runtime:"+profile+"/trades/"+id;String pictureId="i"+BuildRequest.fingerprint(prefix).substring(0,20);
         if(result.artifacts.pictures().stream().anyMatch(p->p.id().equals(pictureId)))return;
+        if(result.artifacts.sources().stream().anyMatch(s->s.location().equals(prefix)))return;
         var requested=new HashSet<String>();result.resolvedEntities.forEach(entity->requested.add(entity.registry()));
         var file=render(profile,"trades",id,false,requested);
         var asset=new ImageAssetStore(directory).put(Files.readAllBytes(file));
@@ -64,5 +65,16 @@ public final class RuleCardService {
         pictures.add(new AnswerArtifacts.Picture(pictureId,asset.id(),asset.relativePath(),caption,source,"RUNTIME_RULE",java.util.List.of(),caption,null,null,null));
         result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
     }    public void attach(QaPipeline.QaResult result){attach(result,null);}
-    public void attach(QaPipeline.QaResult result,String question){if(question!=null&&!question.matches("(?s).*(交易|购买|出售|商人|酿造|药水|铁砧|修复|附魔|重命名|获取|获得|怎么做|如何做|制作|合成|加工).*"))return;String profile=RuntimeKnowledgeStore.active(db);if(profile==null)return;var seen=new HashSet<String>();for(var hit:result.vectorResults){if(seen.size()>=3)break;if(hit.score()<=0.3)continue;String type=hit.type();if(!type.startsWith("runtime_"))continue;String category=type.substring(8);if(!RuntimeRules.CATEGORIES.contains(category))continue;String prefix="mkb-runtime:"+profile+"/"+category+"/";if(!hit.sourcePath().startsWith(prefix))continue;String id=hit.sourcePath().substring(prefix.length());if(!seen.add(category+id))continue;try{var requested=new HashSet<String>();result.resolvedEntities.forEach(entity->requested.add(entity.registry()));var file=render(profile,category,id,false,requested);var asset=new ImageAssetStore(directory).put(Files.readAllBytes(file));String source="s"+BuildRequest.fingerprint(prefix+id).substring(0,20);var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<>(result.artifacts.pictures());sources.add(new AnswerArtifacts.Source(source,prefix+id,id,prefix+id,"实机规则",null,"RUNTIME_SNAPSHOT",hit.chunkText()));pictures.add(new AnswerArtifacts.Picture("i"+asset.id().substring(0,20),asset.id(),asset.relativePath(),category+"："+id,source,"RUNTIME_RULE",java.util.List.of(hit.chunkId()),hit.chunkText()));result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());}catch(Exception failure){result.mediaWarnings.add("规则图："+id+" · "+failure.getMessage());}}}
+    /** 问题点名的交易等级：新手1/学徒2/老手3/专家4/大师5；未点名返回 0。 */
+    static int wantedLevel(String question){
+        if(question==null)return 0;
+        if(question.matches("(?s).*(大师|五级|5级).*"))return 5;
+        if(question.matches("(?s).*(专家|四级|4级).*"))return 4;
+        if(question.matches("(?s).*(老手|三级|3级).*"))return 3;
+        if(question.matches("(?s).*(学徒|二级|2级).*"))return 2;
+        if(question.matches("(?s).*(新手|一级|1级).*"))return 1;
+        return 0;
+    }
+
+    public void attach(QaPipeline.QaResult result,String question){if(question!=null&&!question.matches("(?s).*(交易|购买|出售|商人|酿造|药水|铁砧|修复|附魔|重命名|获取|获得|怎么做|如何做|制作|合成|加工).*"))return;String profile=RuntimeKnowledgeStore.active(db);if(profile==null)return;var seen=new HashSet<String>();for(var hit:result.vectorResults){if(seen.size()>=6)break;if(hit.score()<=0.3)continue;String type=hit.type();if(!type.startsWith("runtime_"))continue;String category=type.substring(8);if(!RuntimeRules.CATEGORIES.contains(category))continue;String prefix="mkb-runtime:"+profile+"/"+category+"/";if(!hit.sourcePath().startsWith(prefix))continue;String id=hit.sourcePath().substring(prefix.length());if(category.equals("trades")&&wantedLevel(question)>0&&!id.endsWith("/"+wantedLevel(question)))continue;if(!seen.add(category+id))continue;try{var requested=new HashSet<String>();result.resolvedEntities.forEach(entity->requested.add(entity.registry()));var file=render(profile,category,id,false,requested);var asset=new ImageAssetStore(directory).put(Files.readAllBytes(file));String source="s"+BuildRequest.fingerprint(prefix+id).substring(0,20);var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<>(result.artifacts.pictures());sources.add(new AnswerArtifacts.Source(source,prefix+id,id,prefix+id,"实机规则",null,"RUNTIME_SNAPSHOT",hit.chunkText()));pictures.add(new AnswerArtifacts.Picture("i"+asset.id().substring(0,20),asset.id(),asset.relativePath(),category+"："+id,source,"RUNTIME_RULE",java.util.List.of(hit.chunkId()),hit.chunkText()));result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());}catch(Exception failure){result.mediaWarnings.add("规则图："+id+" · "+failure.getMessage());}}}
 }

@@ -17,7 +17,7 @@ public final class AgentToolLoop {
     public record Decision(int round,long elapsedMs,int toolRequests,String status){}
     public record Outcome(String reason,List<Event> events,int rounds,List<Decision> decisions){public Outcome{events=List.copyOf(events);decisions=List.copyOf(decisions);}public Outcome(String reason,List<Event> events,int rounds){this(reason,events,rounds,List.of());}}
     private static final Map<String,List<String>> FIELDS=Map.ofEntries(
-        Map.entry("query_environment",List.of()),Map.entry("list_objects",List.of("mod","kind","query","offset","limit")),
+        Map.entry("query_environment",List.of()),Map.entry("list_objects",List.of("mod","kind","query","offset","limit")),Map.entry("enumerate_entities",List.of("mod","category","query","offset","limit")),
         Map.entry("query_objects",List.of("ids_json","category","section")),Map.entry("query_task_status",List.of()),
         Map.entry("request_clarification",List.of("question")),
         Map.entry("discover_sources",List.of("query","gap","source","mod")),
@@ -31,6 +31,7 @@ public final class AgentToolLoop {
             switch(entry.getKey()){case "resolve_objects"->schema.required("name");case "query_recipes","query_acquisition","query_attributes","query_loot","query_brewing"->schema.required("id");case "query_runtime","query_world_rules"->schema.required("category");case "search_documents"->schema.required("query");case "supplement_web"->schema.required("url","gap");case "query_images"->schema.required("need");case "discover_sources"->schema.required("query","gap","source");case "request_clarification"->schema.required("question");case "query_objects"->schema.required("ids_json","category");default->{}}
             String description=switch(entry.getKey()) {
                 case "query_environment"->"Read the complete installed mod membership in the selected game snapshot. Web sources never establish installation; an absent namespace is not installed in this snapshot.";
+                case "enumerate_entities"->"Enumerate registered entities of one mod by spawn category (monster/hostile, water_creature/aquatic, creature/neutral, ambient, water_ambient), with total count and paging. Use this first for 有哪些/列出 questions, then cross-check web catalog pages; do not present a few examples as the full list.";
                 case "list_objects"->"Enumerate registered objects and localized names by exact namespace mod and kind, optionally query as a name or id substring. limit is 1..100 (default 20). Registry ids carry stable meaning: list one mod once when a question asks which objects of a kind exist, then batch-read attributes or images by those ids. Do not treat a namespace as a record id.";
                 case "query_objects"->"Read a batch of 1..8 exact registered ids encoded as a JSON string array ids_json. category is entity_attributes, item_attributes or registries. Missing records remain missing, not defaults. Use section for projected fields.";
                 case "query_task_status"->"Inspect required action facts still missing from the current evidence. Finding attributes does not answer how to build, tame, summon or fight.";

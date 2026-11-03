@@ -111,8 +111,8 @@ public class MarkdownRenderer {
                 flushBuffer(container, buffer, imageRoots);
                 int j = i; var items = new ArrayList<String>();
                 while (j < lines.length) { String candidate=lines[j].strip(); if (candidate.matches("([-*+]\\s+|\\d+[.)]\\s+).*")) { items.add(candidate); j++; continue; } if (candidate.isEmpty() && j+1 < lines.length && lines[j+1].strip().matches("([-*+]\\s+|\\d+[.)]\\s+).*")) { j++; continue; } break; }
-                boolean explanation = lastContext.matches("(?s).*(对比|区别|注意|说明|特点|外观差异).*");
-                if (items.size() > 5 && !explanation) {
+                boolean enumerative = lastContext.matches("(?s).*(战利品|宝箱|掉落|交易|报价|获取途径|获取方式|来源|条目|候选|配方|原料|材料清单).*");
+                if (items.size() > 5 && enumerative) {
                     var body = new VBox(2);
                     for (String item : items) body.getChildren().add(bullet(item));
                     body.setVisible(false); body.setManaged(false);
@@ -280,7 +280,7 @@ public class MarkdownRenderer {
 
     private static void appendStyled(TextFlow flow, String text) {
         // Simple inline parsing: **bold**, `code`, plain text
-        Pattern inline = Pattern.compile("(\\*\\*(.+?)\\*\\*)|(`(.+?)`)|([^*`]+)");
+        Pattern inline = Pattern.compile("(?s)(\\*\\*(.+?)\\*\\*)|(`(.+?)`)|([^*`]+)");
         Matcher m = inline.matcher(text);
         while (m.find()) {
             if (m.group(1) != null) {

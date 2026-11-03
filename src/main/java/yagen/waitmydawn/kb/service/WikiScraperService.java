@@ -937,7 +937,7 @@ public class WikiScraperService {
     /** 搜索结果只声明候选链接；正文抓取后才可作为机制证据。 */
     public List<SearchCandidate> discoverPages(String query,boolean vanilla) {
         if(query==null||query.isBlank()||query.length()>200)throw new IllegalArgumentException("Invalid discovery query");
-        if(vanilla){String url=searchMcWikiUrl(query);return url==null?List.of():List.of(new SearchCandidate(query,url,"MC Wiki search candidate; version unverified"));}
+        if(vanilla){String url=searchMcWikiUrl(query);if(url==null)url=MC_WIKI_BASE+"/"+URLEncoder.encode(query,StandardCharsets.UTF_8);return List.of(new SearchCandidate(query,url,"MC Wiki search candidate; 直接页面兜底，版本未核对"));}
         String url=MCMOD_SEARCH_BASE+URLEncoder.encode(query,StandardCharsets.UTF_8);
         FetchOutcome response=executeRaw(url,null,MCMOD_BASE+"/",true,2);
         if(response.status()!=200||response.body()==null)throw new IllegalStateException("百科搜索失败 HTTP "+response.status());

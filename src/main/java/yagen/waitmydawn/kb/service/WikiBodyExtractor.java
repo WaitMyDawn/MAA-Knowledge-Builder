@@ -10,7 +10,7 @@ public final class WikiBodyExtractor {
 
     public static String extract(Element main) {
         Element clone=main.clone();
-        clone.select("style, script, .mw-editsection, .toc, .msgbox, .hatnote, .navbox, .printfooter, .catlinks, .comment, .comments").remove();
+        clone.select("style, script, .mw-editsection, .toc, .msgbox, .hatnote, .navbox, .printfooter, .catlinks, .comment, .comments, .uknowtoomuch, span.uknowtoomuch, .uknow-too-much").remove();
         StringBuilder content=new StringBuilder();
         String section="正文";
         for(Element element:clone.select("p, h2, h3, h4, .common-text-title, li:not(:has(p)), table")) {

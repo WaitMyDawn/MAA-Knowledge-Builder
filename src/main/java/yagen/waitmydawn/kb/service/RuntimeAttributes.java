@@ -19,7 +19,10 @@ public final class RuntimeAttributes {
         if(row.has("lootTable"))out.append("采样掉落入口：").append(row.path("lootTable").asText()).append("；仍受掉落条件、函数、全局修饰器及事件影响。\n");
         if(row.has("state"))out.append("状态：").append(row.path("state")).append('\n');
         if(category.equals("item_attributes")){out.append("默认物品堆叠上限：").append(row.path("maxStackSize")).append("；最大耐久：").append(row.path("maxDamage")).append('\n');for(var m:row.path("modifiers"))out.append("槽位 ").append(m.path("slot").asText()).append("：").append(label(m.path("attribute").asText())).append(" ").append(m.path("amount")).append("，运算 ").append(m.path("operation").asText()).append('\n');out.append("这些是默认物品按槽位的修饰器，不是玩家最终攻击伤害；附魔、组件、效果及事件可能改变结果。");}
-        else{for(var a:row.path("attributes"))out.append(label(a.path("attribute").asText())).append("（").append(a.path("attribute").asText()).append("）：基础值 ").append(a.path("base")).append("；此采样有效值 ").append(a.path("effective")).append('\n');out.append("难度：").append(row.path("difficulty").asText("未知")).append("；幼年：").append(row.path("baby")).append("。生命值2点对应1颗心。默认构造实例未执行真实生成钩子；离世界样本未强制推进装备同步tick，属性映射值不保证含未同步装备加成；实际捕获值只适用于当时状态。");}return out.toString();
+        else{for(var a:row.path("attributes"))out.append(label(a.path("attribute").asText())).append("（").append(a.path("attribute").asText()).append("）：基础值 ").append(a.path("base")).append("；此采样有效值 ").append(a.path("effective")).append('\n');out.append("难度：").append(row.path("difficulty").asText("未知")).append("；幼年：").append(row.path("baby")).append("。生命值2点对应1颗心。");
+            if(row.path("context").asText().equals("SERVER_INITIALIZED_TICK_SAMPLE"))out.append("已执行生成初始化并推进 ").append(row.path("sampleTicks").asInt()).append(" 个真实实体 tick；AI、重力和无敌等采样设置见原始记录。");
+            else if(row.path("defaultsOnly").asBoolean(false)||row.path("context").asText().equals("SERVER_DEFAULT_INSTANCE"))out.append("默认或离世界构造样本未完成真实生成生命周期，可能缺少装备同步与生成事件修正。");
+            out.append("属性映射值只适用于该采样状态，不等于最终伤害或完整战斗机制。");}return out.toString();
     }
     public static boolean requested(String question){return question.matches("(?s).*(属性|生命|血量|护甲|韧性|攻击力|攻击速度|移动速度|耐久|堆叠).*" );}
     public record Evidence(List<VectorStore.SearchResult> hits,Set<String> coveredIds) {
