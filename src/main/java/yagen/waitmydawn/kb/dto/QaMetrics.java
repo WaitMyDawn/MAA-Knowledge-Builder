@@ -72,6 +72,7 @@ public class QaMetrics {
     // ===== 成本指标 =====
     public int llmCallCount;               // 模型请求次数，包含未返回用量的失败请求
     public int unknownUsageCalls;
+    public PromptCost promptCost;
     public int tokenEstimateInput;         // 提供方返回的输入 Token；保留旧字段名以兼容历史记录
     public int tokenEstimateOutput;        // 提供方返回的输出 Token；未知用量另行记录
     public int tokenTotalCount;            // 输入+输出 token 合计（有真实用量时优先）
@@ -157,7 +158,7 @@ public class QaMetrics {
                 + "dataTier,hit,entityCount,entityResolved,subPageUrls,vecCount,vecRel,vecMaxScore,vecAvgScore,"
                 + "recipeCount,incChunks,contextUsed,contextUtil,"
                 + "llmCalls,tokIn,tokOut,dbQueries,fallback,"
-                + "category,source,answerLen,questionHash";
+                + "category,source,answerLen,questionHash,promptCostMethod,promptCostRequests,systemEst,evidenceEst,historyEst,toolResultsEst,questionEst,toolSchemaEst,toolCallsEst,otherEst";
     }
 
     /** Format as CSV row */
@@ -171,7 +172,14 @@ public class QaMetrics {
                 subPageUrlCount, vectorResultCount, vectorRelevantCount, vectorMaxScore, vectorAvgScore,
                 recipeResultCount, incrementalChunksAcquired, contextChunksUsed, contextUtilization,
                 llmCallCount, tokenEstimateInput, tokenEstimateOutput, dbQueryCount, fallbackUsed,
-                classifyCategory, classifySource, answerLength, questionHash);
+                classifyCategory, classifySource, answerLength, questionHash)+promptCostCsv();
+    }
+
+    private String promptCostCsv(){
+        if(promptCost==null)return ",,,,,,,,,,";
+        var values=new ArrayList<String>();values.add(promptCost.method());values.add(Long.toString(promptCost.requests()));
+        for(String key:List.of("system","evidence","history","tool_results","question","tool_schema","tool_calls","other"))values.add(Long.toString(promptCost.estimatedTokens().getOrDefault(key,0L)));
+        return ","+String.join(",",values);
     }
 
     /** Format as human-readable summary for UI */
@@ -264,6 +272,7 @@ public class QaMetrics {
                 llmCallCount, tokenEstimateInput, tokenEstimateOutput));
         sb.append(String.format("│ DB Queries (estimated): %d\n", dbQueryCount));
         sb.append(String.format("│ Unknown token usage calls: %d\n", unknownUsageCalls));
+        if(promptCost!=null)sb.append("│ 输入分段 Token（本地估算）：").append(promptCost.estimatedTokens()).append(" · ").append(promptCost.requests()).append(" 次请求；非文本部分未估算 ").append(promptCost.nonTextParts()).append('\n');
         sb.append(String.format("│ Tokens/char:  %.2f (efficiency)\n",
                 answerLength > 0 ? (double) (tokenEstimateInput + tokenEstimateOutput) / answerLength : 0));
         sb.append("└──────────────────────────────────────────────────┘\n\n");

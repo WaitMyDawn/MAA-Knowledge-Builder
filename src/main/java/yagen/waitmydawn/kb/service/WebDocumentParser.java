@@ -30,7 +30,7 @@ final class WebDocumentParser {
         if (main == null && !mcmod) main = doc.body();
         if (main == null) return new Parsed(name, "", "", List.of());
         main = main.clone();
-        main.select("script,style,nav,header,footer,aside,form,.comment,.comments,.common-comment-block,.post-cc,.toc,.navbox,.mw-editsection,.advertisement,.ads,[hidden]").remove();
+        main.select("script,style,nav,header,footer,aside,form,.comment,.comments,.common-comment-block,.post-cc,.toc,.navbox,.mw-editsection,.advertisement,.ads,[hidden],.uknowtoomuch,.uknow-too-much").remove();
         var parser = new WebDocumentParser();
         parser.walk(main, url);
         Element author = doc.selectFirst(mcmod ? ".post-user-name" : "meta[name=author], [rel=author]");

@@ -594,6 +594,7 @@ public final class EvalRunner {
         map.put("tokenIn", m.tokenEstimateInput);
         map.put("tokenOut", m.tokenEstimateOutput);
         map.put("unknownUsageCalls", m.unknownUsageCalls);
+        map.put("promptCost",m.promptCost);
         map.put("tokenUsageSource", m.unknownUsageCalls > 0 ? "partial-provider-usage" : "provider-usage");
         map.put("ttftObserved", false);
         map.put("fallbackUsed", m.fallbackUsed);

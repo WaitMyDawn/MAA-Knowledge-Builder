@@ -28,7 +28,7 @@ public final class WebPageMediaService {
         String location=WebUrlPolicy.normalize(url);long started=System.nanoTime();
         try {
             var snapshot=new PublicKnowledgeCache(db).snapshot(location);
-            String stamp=BuildRequest.fingerprint("structured-qa-v1\n"+embedder.profile()+"\n"+mod+"\n"+content+"\n"+(snapshot==null?0:snapshot.fetchedAt()));
+            String stamp=BuildRequest.fingerprint("structured-qa-v2-clean-body\n"+embedder.profile()+"\n"+mod+"\n"+content+"\n"+(snapshot==null?0:snapshot.fetchedAt()));
             String document=BuildRequest.fingerprint(location);boolean fresh=false;
             try(var c=db.getConnection();var s=c.createStatement()){s.execute("CREATE TABLE IF NOT EXISTS rag_qa_page_state(url VARCHAR(4000) PRIMARY KEY,stamp VARCHAR(64) NOT NULL)");}
             try(var c=db.getConnection();var p=c.prepareStatement("SELECT stamp FROM rag_qa_page_state WHERE url=?")){p.setString(1,location);try(var r=p.executeQuery()){fresh=r.next()&&stamp.equals(r.getString(1));}}
@@ -55,4 +55,64 @@ public final class WebPageMediaService {
         catch(java.util.concurrent.CancellationException cancelled){throw cancelled;}
         catch(Exception failed){throw new IllegalStateException("网页图片补全未完成",failed);}
     }
+
+    /**
+     * 把缺步骤或整轮零图时挑出的引用变成可显示插图。已有下载资产的直接复用；
+     * 只有来源章节确实没有尺寸合规图时，才补取小图标并在图注中明确标注。
+     */
+    public List<AnswerArtifacts.Picture> fallbackPictures(List<WebImagePolicy.Fallback> candidates,List<AnswerArtifacts.Source> sources) {
+        if(candidates==null||candidates.isEmpty())return List.of();
+        var store=new ImageAssetStore(directory);var pictures=new ArrayList<AnswerArtifacts.Picture>();
+        var assets=new HashSet<String>();var ids=new HashSet<String>();
+        for(var candidate:candidates) {
+            if(!ids.add(candidate.referenceId()))continue;
+            var source=sources.stream().filter(item->Objects.equals(documentId(item.documentId()),candidate.documentId())).findFirst().orElse(null);
+            if(source==null)continue;
+            String asset=candidate.assetId(),path=candidate.relativePath();
+            if(asset==null||path==null||!store.available(asset,path)) {
+                try(var cause=RetrievalTelemetry.resourceCause("ANSWER_FALLBACK_IMAGES")){
+                    var response=scraper.fetchBuildResource(candidate.url(),source.location(),true);
+                    if(response.status()!=200||response.bytes()==null)continue;
+                    var decoded=javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(response.bytes()));
+                    if(decoded==null)continue;
+                    var saved=store.put(response.bytes());asset=saved.id();path=saved.relativePath();
+                }catch(java.io.IOException|RuntimeException failed){continue;}
+            }
+            if(!assets.add(asset))continue;
+            String heading=Objects.toString(candidate.heading(),""),body=Objects.toString(candidate.blockText(),"");
+            String step=(heading.isBlank()?"":heading+"\n")+(body.isBlank()?Objects.toString(source.evidence(),""):body);
+            if(step.length()>1800)step=step.substring(0,1800);
+            String caption=fallbackCaption(candidate,source,heading);
+            if("EXCLUDED_SMALL".equals(candidate.status()))caption=caption+"（来源图标）";
+            String id="i"+BuildRequest.fingerprint(candidate.referenceId()).substring(0,20);
+            var grounding=new AnswerArtifacts.ImageGrounding("ILLUSTRATION","CONTEXT_INFERRED",candidate.blockId(),step,"INLINE_STEP","CONTEXT_ONLY");
+            pictures.add(new AnswerArtifacts.Picture(id,asset,path,caption,source.id(),"ILLUSTRATION",List.of(),step,
+                    candidate.url(),source.location(),grounding));
+            if(pictures.size()>=4)break;
+        }
+        if(!pictures.isEmpty())log.info("web images: fallback selected={} statuses={}",pictures.size(),
+                candidates.stream().map(WebImagePolicy.Fallback::status).distinct().toList());
+        return List.copyOf(pictures);
+    }
+    private static String documentId(String id){return id!=null&&id.startsWith("vector:")?id.substring("vector:".length()):id;}
+    /** 网页表格图沿用“第N张图片”生成名时，用该行说明或页面章节给出可读图注。 */
+    private static String fallbackCaption(WebImagePolicy.Fallback candidate,AnswerArtifacts.Source source,String heading) {
+        String caption=Objects.toString(candidate.caption(),"");
+        if(!caption.isBlank()&&!caption.matches("(?s).*-第[0-9]+张图片$"))return caption;
+        String text=Objects.toString(candidate.stepText(),"");
+        if(text.isBlank())text=Objects.toString(candidate.blockText(),"");
+        text=text.replaceFirst("^表格行：","").replaceFirst("^首行（原文）：","").strip();
+        String best="";
+        var parts=text.split("\\|");
+        for(int i=0;i<Math.min(3,parts.length);i++){String part=parts[i].strip();if(part.length()>best.length()&&!part.startsWith("表格行"))best=part;}
+        // 表格行常把“中文名 (English) 中文名”重复一遍，图注只保留第一次出现的名称。
+        int repeat=best.length()>8?best.indexOf(best.substring(0,8),1):-1;
+        if(repeat>0)best=best.substring(0,repeat).strip();
+        if(best.length()>60)best=best.substring(0,60);
+        if(!best.isBlank()&&!best.startsWith("表格行"))return best;
+        String ordinal=caption.matches("(?s).*-(第[0-9]+张图片)$")?caption.replaceFirst("(?s).*-(第[0-9]+张图片)$","$1"):"";
+        return Objects.toString(source.title(),"网页插图")+(heading==null||heading.isBlank()?"":" · "+heading)
+                +(ordinal.isBlank()?"":"（"+ordinal+"）");
+    }
+    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(WebPageMediaService.class);
 }

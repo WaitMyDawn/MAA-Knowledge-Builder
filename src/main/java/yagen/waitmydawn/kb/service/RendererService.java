@@ -122,7 +122,7 @@ public class RendererService {
     }
     private static RecipeCardRenderer.Visual visual(ItemIconService.Icon icon){return new RecipeCardRenderer.Visual(icon.itemId(),icon.name(),icon.image(),icon.source(),icon.detail());}
     private static IconEvidence proof(ItemIconService.Icon icon){return new IconEvidence(icon.itemId(),icon.assetId(),icon.source(),icon.detail());}
-    private static String origin(String value){return switch(value){case "NATIVE"->"实机";case "NATIVE_TRANSPARENT"->"实机透明";case "JAR_FLAT"->"JAR 平面";default->"缺失/动态";};}
+    private static String origin(String value){return switch(value){case "NATIVE"->"实机";case "NATIVE_TRANSPARENT"->"实机透明";case "DEFAULT_ENCHANTMENT_FALLBACK"->"默认外观（附魔未单独导出）";case "JAR_FLAT"->"JAR 平面";default->"缺失/动态";};}
     private static String cachedHash(Path file,Path sidecar,String fingerprint) {
         try {
             if(!Files.isRegularFile(file,LinkOption.NOFOLLOW_LINKS)||!Files.isRegularFile(sidecar,LinkOption.NOFOLLOW_LINKS)||Files.size(sidecar)>16*1024*1024)return null;

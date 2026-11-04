@@ -6,9 +6,25 @@ import java.util.*;
 
 /** 用物品及完整药水状态连接酿造步骤；容器转换只替换物品类型，不清空状态。 */
 final class BrewingChains {
+    record Step(JsonNode rule,boolean container){}
     private final Map<String,List<JsonNode>> outputs=new HashMap<>();
     private final List<JsonNode> containers=new ArrayList<>();
     BrewingChains(JsonNode payload){if(payload==null)return;for(var row:payload.path("records")){if(row.has("error"))continue;if(row.path("preservePotion").asBoolean())containers.add(row);else outputs.computeIfAbsent(key(row.path("output")),ignored->new ArrayList<>()).add(row);}}
+    /** 按“前置 → 最终”返回一条可绘制路线；同一状态只取一条，避免多路线把卡片撑长。 */
+    List<Step> route(JsonNode rule){
+        var steps=new ArrayList<Step>();collect(rule,steps,new HashSet<>());return List.copyOf(steps);
+    }
+    private void collect(JsonNode rule,List<Step> steps,Set<String> seen){
+        if(rule==null||!rule.isObject()||!seen.add(Objects.toString(rule.path("id").asText(),"")))return;
+        JsonNode parent=null;
+        for(var candidate:outputs.getOrDefault(key(rule.path("input")),List.of())){
+            if(key(candidate.path("input")).equals(key(rule.path("input"))))continue;
+            parent=candidate;break;
+        }
+        if(parent==null)for(var conversion:containers)if(item(conversion.path("output")).equals(item(rule.path("input")))){parent=conversion;break;}
+        if(parent!=null)collect(parent,steps,seen);
+        steps.add(new Step(rule,containers.contains(rule)));
+    }
     String prerequisites(JsonNode rule){
         var text=new StringBuilder("酿造前置转换（同一物品和药水状态；可能有替代路线）：\n");var queue=new ArrayDeque<JsonNode>();queue.add(rule.path("input"));var states=new HashSet<String>();var rules=new HashSet<String>();int steps=0;
         while(!queue.isEmpty()&&steps<64){var state=queue.remove();if(!state.isObject()||!states.add(key(state)))continue;

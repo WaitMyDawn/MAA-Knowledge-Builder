@@ -28,7 +28,9 @@ class RuntimeRulesTest {
           [{"id":"example:dynamic_ink","serializer":"example:custom","recipeType":"example:machine","runtimeLoaded":true,"normalizationStatus":"DYNAMIC","serialization":"CODEC_JSON","special":true,"definition":{"type":"example:custom","fluid":{"id":"example:ink","amount":250},"input":{"item":"minecraft:glass_bottle"}},"outputPreview":{"id":"irons_spellbooks:legendary_ink","count":1}}]
           """);
         category(pack,"brewing","""
-          [{"id":"mkb_export:brewing/strength","kind":"POTION_CONVERSION","input":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:strength'}"},"ingredient":{"item":"minecraft:glowstone_dust"},"output":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:strong_strength'}"},"outputPotionId":"minecraft:strong_strength","ticks":400},
+          [{"id":"mkb_export:brewing/strength","kind":"POTION_CONVERSION","input":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:strength'}"},"ingredient":{"item":"minecraft:glowstone_dust"},"output":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:strong_strength'}"},"inputPotionId":"minecraft:strength","outputPotionId":"minecraft:strong_strength","ticks":400},
+          {"id":"mkb_export:brewing/water_to_awkward","kind":"POTION_CONVERSION","input":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:water'}"},"ingredient":{"item":"minecraft:nether_wart"},"output":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:awkward'}"},"inputPotionId":"minecraft:water","outputPotionId":"minecraft:awkward","ticks":400},
+          {"id":"mkb_export:brewing/awkward_to_strength","kind":"POTION_CONVERSION","input":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:awkward'}"},"ingredient":{"item":"minecraft:blaze_powder"},"output":{"item":"minecraft:potion","nbt":"{Potion:'minecraft:strength'}"},"inputPotionId":"minecraft:awkward","outputPotionId":"minecraft:strength","ticks":400},
           {"id":"mkb_export:brewing/splash","kind":"CONTAINER_CONVERSION","input":{"item":"minecraft:potion"},"ingredient":{"item":"minecraft:gunpowder"},"output":{"item":"minecraft:splash_potion"},"preservePotion":true}]
           """);
         category(pack,"workstation_rules","""
@@ -45,7 +47,7 @@ class RuntimeRulesTest {
         try(var embedding=new EmbeddingService(null)){
             new KnowledgeBuilder(config,db,embedding).build(new BuildRequest(List.of(BuildRequest.Source.of(BuildRequest.Kind.DOCUMENT_DIRECTORY,pack.toString()))),null);
             String profile=RuntimeKnowledgeStore.active(db);try(var connection=db.getConnection();var statement=connection.createStatement();var counts=statement.executeQuery("SELECT (SELECT COUNT(*) FROM rag_vectors WHERE chunk_type='runtime_acquisition_index'),(SELECT COUNT(*) FROM rag_runtime_record WHERE category='acquisition_index')")){assertTrue(counts.next());assertEquals(0,counts.getInt(1));assertTrue(counts.getInt(2)>0,"获取关系保留在结构化索引");}try(var connection=db.getConnection();var statement=connection.createStatement();var records=statement.executeQuery("SELECT COUNT(*) FROM rag_vectors WHERE chunk_type='runtime_trades' AND mod_id='irons_spellbooks'")){records.next();assertEquals(0,records.getInt(1));assertFalse(AcquisitionIndex.evidence(db,List.of("irons_spellbooks:hither_thither_wand"),"获取来源").isEmpty());}var catalog=new RuntimeCatalog(db);
-            assertEquals(1,catalog.page(profile,RuntimeCatalog.Kind.TRADES,"wandering","",0,50).total());assertEquals(2,catalog.page(profile,RuntimeCatalog.Kind.BREWING,"","",0,50).total());assertEquals(1,catalog.page(profile,RuntimeCatalog.Kind.WORKSTATIONS,"","",0,50).total());
+            assertEquals(1,catalog.page(profile,RuntimeCatalog.Kind.TRADES,"wandering","",0,50).total());assertEquals(4,catalog.page(profile,RuntimeCatalog.Kind.BREWING,"","",0,50).total());assertEquals(1,catalog.page(profile,RuntimeCatalog.Kind.WORKSTATIONS,"","",0,50).total());
             String relations=AcquisitionIndex.relations(db,profile,"irons_spellbooks:betrayer_signet");assertTrue(relations.contains("example:parent"));assertTrue(relations.contains("example:boss"));assertFalse(relations.contains("truncated\" : true"));
             assertTrue(AcquisitionIndex.relations(db,profile,"irons_spellbooks:hither_thither_wand").contains("trades"));
             assertTrue(AcquisitionIndex.relations(db,profile,"irons_spellbooks:legendary_ink").contains("unverified"));
@@ -55,6 +57,9 @@ class RuntimeRulesTest {
             var cards=new RuleCardService(db,config.getDataDir());assertNull(cards.render(profile,"trades","mkb_export:trade/wandering/rare",true));var file=cards.render(profile,"trades","mkb_export:trade/wandering/rare",false);var modified=Files.getLastModifiedTime(file);assertEquals(file,cards.render(profile,"trades","mkb_export:trade/wandering/rare",false));assertEquals(modified,Files.getLastModifiedTime(file));
             Path previews=Path.of("target/e24-preview");Files.createDirectories(previews);Files.copy(file,previews.resolve("trade.png"),StandardCopyOption.REPLACE_EXISTING);
             for(String category:List.of("brewing","workstation_rules")){String id=category.equals("brewing")?"mkb_export:brewing/strength":"minecraft:anvil";var png=cards.render(profile,category,id,false);assertNotNull(javax.imageio.ImageIO.read(png.toFile()));Files.copy(png,previews.resolve(category+".png"),StandardCopyOption.REPLACE_EXISTING);}
+            var chain=cards.renderChain(profile,"mkb_export:brewing/strength",false);assertNotNull(javax.imageio.ImageIO.read(chain.toFile()));Files.copy(chain,previews.resolve("brewing-chain.png"),StandardCopyOption.REPLACE_EXISTING);
+            var chained=new QaPipeline.QaResult();chained.artifacts=AnswerArtifacts.empty();chained.vectorResults=List.of(new VectorStore.SearchResult("chain","",null,null,"runtime_brewing",1,"mkb-runtime:"+profile+"/brewing/mkb_export:brewing/strength"));
+            assertTrue(cards.attachBrewingChain(chained,"力量药水 II 怎么制作和获取"));assertEquals(1,chained.artifacts.pictures().size());assertTrue(chained.artifacts.pictures().getFirst().caption().contains("→"));
             var qa=new QaPipeline.QaResult();qa.vectorResults=AcquisitionIndex.evidence(db,List.of("irons_spellbooks:hither_thither_wand"),"交易获取");cards.attach(qa);assertEquals(1,qa.artifacts.pictures().size());assertTrue(qa.mediaWarnings.isEmpty());var media=new RuntimeEntityMedia(db,config.getDataDir());String imageId=qa.artifacts.pictures().getFirst().id();assertTrue(media.evidence(qa,"").contains("[[image:"+imageId+"]]"));qa.answer="此呼彼应法杖可以通过流浪商人交易获得。";media.finish(qa,"如何获取此呼彼应法杖");assertTrue(qa.answer.contains("kb-image:"+imageId));assertEquals(0,ImageGroundingAssessment.assess("交易获取",qa.answer,qa.artifacts).checks().size());var replay=json.readValue(json.writeValueAsString(qa.artifacts),AnswerArtifacts.class);assertEquals("RUNTIME_RULE",replay.pictures().getFirst().role());assertNotNull(AnswerMedia.resolveImage(config.getDataDir(),replay.pictures().getFirst()));
         }finally{db.shutdown();}
     }
@@ -70,6 +75,27 @@ class RuntimeRulesTest {
     }
     @Test void statefulCardsUseCanonicalIconStateInsteadOfWholeStack()throws Exception {
         var stack=(ObjectNode)tree("{\"id\":\"minecraft:potion\",\"count\":3,\"components\":{\"minecraft:potion_contents\":{\"potion\":\"minecraft:strong_strength\"}}}");var state=RuleCardService.exactState(stack);assertEquals(1,state.size());assertTrue(NativeIconPack.stateVariant(state).startsWith("state:"));stack.put("dynamicState",true);assertNull(RuleCardService.exactState(stack));
+    }
+    @Test void brewingRouteOrdersParentsBeforeFinalAndSkipsCycles()throws Exception {
+        var payload=tree("""
+          {"records":[
+          {"id":"water_to_awkward","input":{"item":"minecraft:potion","components":{"potion":"water"}},"ingredient":{"item":"minecraft:nether_wart"},"output":{"item":"minecraft:potion","components":{"potion":"awkward"}}},
+          {"id":"awkward_to_strength","input":{"item":"minecraft:potion","components":{"potion":"awkward"}},"ingredient":{"item":"minecraft:blaze_powder"},"output":{"item":"minecraft:potion","components":{"potion":"strength"}}},
+          {"id":"strength_to_strong","input":{"item":"minecraft:potion","components":{"potion":"strength"}},"ingredient":{"item":"minecraft:glowstone_dust"},"output":{"item":"minecraft:potion","components":{"potion":"strong_strength"}}},
+          {"id":"cycle","input":{"item":"minecraft:potion","components":{"potion":"water"}},"ingredient":{"item":"minecraft:stone"},"output":{"item":"minecraft:potion","components":{"potion":"water"}}}]}
+          """);
+        var route=new BrewingChains(payload).route(payload.path("records").get(2));
+        assertEquals(List.of("water_to_awkward","awkward_to_strength","strength_to_strong"),route.stream().map(step->step.rule().path("id").asText()).toList());
+    }
+    @Test void tradeCostSummarySumsRepeatedInputsAndSeparatesDifferentItems()throws Exception {
+        var entry=tree("""
+          {"status":"DECLARATIVE","inputs":[{"id":"minecraft:emerald","count":64},{"id":"minecraft:emerald","minCount":48,"maxCount":64},{"id":"minecraft:diamond","minCount":2,"maxCount":3}],"output":{"id":"irons_spellbooks:hither_thither_wand"}}
+          """);
+        String summary=RuntimeRules.costSummary(entry);
+        assertTrue(summary.contains("minecraft:emerald 112–128"),summary);
+        assertTrue(summary.contains("64 + 48–64"),summary);
+        assertTrue(summary.contains("minecraft:diamond 2–3"),summary);
+        assertEquals("",RuntimeRules.costSummary(tree("{\"status\":\"UNSUPPORTED\"}")));
     }
     @Test void rejectsInvalidTradePoolsRatherThanInventingProbabilities()throws Exception {
         assertThrows(java.io.IOException.class,()->RuntimeRules.validate("trades",tree("{\"entity\":\"minecraft:villager\",\"profession\":\"minecraft:librarian\",\"draws\":2,\"entries\":[]}")));

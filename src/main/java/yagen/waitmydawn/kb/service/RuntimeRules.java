@@ -38,6 +38,39 @@ public final class RuntimeRules {
     static Map<String,Set<String>> tradeOutputsByNamespace(JsonNode pool){var grouped=new TreeMap<String,Set<String>>();for(String collection:List.of("entries","verifiedGroupRules"))for(var entry:pool.path(collection)){addOutput(grouped,entry.path("output"));for(var output:entry.path("outputAlternatives"))addOutput(grouped,output);}return grouped;}
     private static void addOutput(Map<String,Set<String>> grouped,JsonNode stack){String id=stack.path("item").asText(stack.path("id").asText());if(id.matches("[a-z0-9_.-]+:[a-z0-9_./-]+"))grouped.computeIfAbsent(id.substring(0,id.indexOf(':')),ignored->new TreeSet<>()).add(id);}
     static String namespace(String id){int split=id.indexOf(':');return split>0?id.substring(0,split):"mkb_export";}
+    /**
+     * 交易条目有多个输入时，按物品合并总花费：同一物品的固定数量和随机区间相加。
+     * 只做算术聚合，不把工厂入选率、折扣或随机附魔混进价格。
+     */
+    public static String costSummary(JsonNode value) {
+        if(value==null||value.isMissingNode()||value.isNull())return "";
+        var entries=new ArrayList<JsonNode>();
+        if(value.isArray())value.forEach(entries::add);
+        else if(value.path("entries").isArray())value.path("entries").forEach(entries::add);
+        else entries.add(value);
+        var lines=new ArrayList<String>();
+        for(var entry:entries) {
+            if(entry.path("status").asText().equals("UNSUPPORTED"))continue;
+            var inputs=entry.path("inputs");if(!inputs.isArray()||inputs.isEmpty())continue;
+            var totals=new LinkedHashMap<String,long[]>();var parts=new LinkedHashMap<String,List<String>>();
+            for(var input:inputs) {
+                String id=input.path("id").asText(input.path("item").asText(""));if(id.isBlank())continue;
+                long min=input.has("minCount")?input.path("minCount").asLong():input.path("count").asLong(1);
+                long max=input.has("maxCount")?input.path("maxCount").asLong():min;
+                if(min<0||max<min)continue;
+                var total=totals.computeIfAbsent(id,ignored->new long[]{0,0});total[0]+=min;total[1]+=max;
+                parts.computeIfAbsent(id,ignored->new ArrayList<>()).add(min==max?Long.toString(min):min+"–"+max);
+            }
+            if(totals.isEmpty())continue;
+            var text=new StringBuilder("总花费：");
+            boolean first=true;
+            for(var total:totals.entrySet()){if(!first)text.append("；");first=false;long[] range=total.getValue();text.append(total.getKey()).append(' ').append(range[0]==range[1]?Long.toString(range[0]):range[0]+"–"+range[1]).append("（").append(String.join(" + ",parts.get(total.getKey()))).append("）");}
+            lines.add(text.toString());
+        }
+        if(lines.isEmpty())return "";
+        if(entries.size()==1)return lines.getFirst();
+        var out=new StringBuilder();for(int i=0;i<lines.size();i++){if(i>0)out.append('\n');out.append("条目 ").append(i+1).append('：').append(lines.get(i));}return out.toString();
+    }
     public static String focusedTrade(JsonNode pool,String item){return "按目标产物选择完整交易条目；候选数、抽取次数和覆盖情况仍指原池，未展示条目不代表不存在。\n"+describe("trades",focusedTradeRecord(pool,Set.of(item)));}
     static JsonNode focusedTradeRecord(JsonNode pool,Set<String> items){var view=((com.fasterxml.jackson.databind.node.ObjectNode)pool).deepCopy();var entries=new ObjectMapper().createArrayNode();for(var entry:pool.path("entries"))if(items.stream().anyMatch(item->outputMatches(entry,item)))entries.add(entry);var groups=new ObjectMapper().createArrayNode();for(var group:pool.path("verifiedGroupRules"))if(items.stream().anyMatch(item->outputMatches(group,item)))groups.add(group);view.set("entries",entries);view.set("verifiedGroupRules",groups);view.remove("identicalFixedOfferGroups");view.put("selectedView",true);return view;}
     private static boolean outputMatches(JsonNode entry,String item){if(item.equals(entry.path("output").path("item").asText(entry.path("output").path("id").asText())))return true;for(var output:entry.path("outputAlternatives"))if(item.equals(output.path("item").asText(output.path("id").asText())))return true;return false;}
@@ -45,7 +78,7 @@ public final class RuntimeRules {
         if(row.has("error"))return "导出失败："+row.path("error").asText();
         if(category.equals("trades")){
             var text=new StringBuilder("交易实体："+row.path("entity").asText()+"；职业："+row.path("profession").asText()+"；等级/池："+row.path("level")+"；候选数："+row.path("candidateCount")+"；选择次数："+row.path("draws")+"；覆盖："+row.path("coverage").asText()+"\n");
-            for(var entry:row.path("entries")){text.append("条目 ").append(entry.path("index").asInt()+1).append("；工厂入选概率 ").append(entry.path("selectionProbability")).append("；权重 ").append(entry.path("weight")).append("；状态 ").append(entry.path("status").asText()).append("\n");if(entry.path("status").asText().equals("UNSUPPORTED"))text.append(entry.path("factory").asText()).append("：").append(entry.path("reason").asText()).append('\n');else text.append("输入：").append(entry.path("inputs")).append(" → 输出：").append(entry.path("output")).append("\n补充随机参数：").append(entry).append('\n');}
+            for(var entry:row.path("entries")){text.append("条目 ").append(entry.path("index").asInt()+1).append("；工厂入选概率 ").append(entry.path("selectionProbability")).append("；权重 ").append(entry.path("weight")).append("；状态 ").append(entry.path("status").asText()).append("\n");if(entry.path("status").asText().equals("UNSUPPORTED"))text.append(entry.path("factory").asText()).append("：").append(entry.path("reason").asText()).append('\n');else{text.append("输入：").append(entry.path("inputs")).append(" → 输出：").append(entry.path("output")).append('\n');String cost=costSummary(entry);if(!cost.isBlank())text.append(cost).append('\n');text.append("补充随机参数：").append(entry).append('\n');}}
             if(row.has("verifiedGroupRules"))text.append("已验证工厂组规则（不映射到不透明lambda实例）：").append(row.path("verifiedGroupRules")).append('\n');
             return text.append("当前统一接口覆盖村民与流浪商人池；自定义商人系统可能需要额外适配。候选入选率不是具体随机附魔、等级或最终成功交易的概率。未解析条目不代表不存在交易。价格会受需求、折扣和上下文影响。\n").toString();
         }

@@ -118,14 +118,21 @@ public class AnswerAgent {
             - TIER A (rich data): Recipes + detailed vector chunks available → answer fully from data.
             - TIER B (sparse data): Only names/registry entries, no details → use the registry names as anchors,
               describe only traits explicitly supported by evidence; names alone do not prove mechanics.
-            - TIER C (minimal data): Only mod/entity names → state which requested facts are unknown,
-              include the disclaimer, and suggest: "如需更详细的信息，请尝试更具体地描述你的问题，
-              例如指定模组名称或询问特定方面（驯服、繁殖、掉落物等）。"
+            - TIER C (minimal data): Only mod/entity names → state the specific missing fact briefly.
+              Do not ask for a more specific question when the object and requested state are already explicit.
             - TIER D (ZERO data): No recipes, no relevant vectors, no entities →
               state the missing evidence with a clear disclaimer at the TOP:
               > ⚠️ 本地知识库未包含相关数据，无法确认所问的模组机制或配方。
               建议构建知识库以获得准确的模组特定信息。
-              Then suggest: "尝试更具体地描述问题，例如提及模组名称或物品英文名。"
+              Ask one targeted clarification only when a genuine unresolved object or scope ambiguity prevents an answer.
+
+            [Player-facing organization]
+            Start with the result and ordered actions. For an unavailable image state, give one concise reason;
+            omit unrelated attributes, a catalogue of other states and generic offers to ask again.
+            Separate the requested subject from related objects: prerequisites, limits, operation and result
+            must refer to the same subject. Do not describe a related object's upgrade as the requested upgrade.
+            List distinct members and acquisition routes when a question asks about an item family; do not
+            silently present two examples as the complete family. Preserve unresolved evidence gaps.
 
             [Sub-question grouping]
             If the retrieval context contains [Sub-question: ...] sections, the user's original
@@ -263,7 +270,15 @@ public class AnswerAgent {
             }
         }
 
-        // Always include ALL vector results (lower threshold to 0.1)
+        // 家族工具已分页并限制响应大小；完整传递成员，避免普通摘要窗口再次截断名单。
+        var familyEvidence=new java.util.LinkedHashMap<String,VectorStore.SearchResult>();
+        if(ctx.vectorResults()!=null)for(var hit:ctx.vectorResults())if(isFamilyEvidence(hit))familyEvidence.put(hit.sourcePath()+"\n"+hit.chunkId(),hit);
+        if(ctx.subQueryResults()!=null)for(var sub:ctx.subQueryResults())if(sub.chunks()!=null)for(var hit:sub.chunks())if(isFamilyEvidence(hit))familyEvidence.put(hit.sourcePath()+"\n"+hit.chunkId(),hit);
+        if(!familyEvidence.isEmpty()){
+            context.append("=== [Family discovery: catalog membership and unverified candidates] ===\n");
+            for(var hit:familyEvidence.values())context.append(String.format("[%s/%s source=%s]\n%s\n\n",hit.modName(),hit.type(),hit.sourcePath(),hit.chunkText()));
+        }
+
         if (ctx.subQueryResults() != null && !ctx.subQueryResults().isEmpty()) {
             context.append("=== [Sub-question Retrieval Results] ===\n");
             var includedEvidence=new java.util.HashSet<String>();
@@ -277,11 +292,12 @@ public class AnswerAgent {
                 if (sub.chunks() != null && !sub.chunks().isEmpty()) {
                     int included = 0;
                     for (var sr : sub.chunks()) {
+                        if(isFamilyEvidence(sr))continue;
                         if(!sr.type().startsWith("runtime_")&&importedEvidenceAlreadyProvided(ctx,sr)) continue;
                         if (sr.score() <= 0.1 || included >= 10) continue;
                         if(!includedEvidence.add(sr.sourcePath()+"\n"+sr.chunkId())) continue;
                         String snippet = sr.chunkText();
-                        int budget=sr.type().startsWith("runtime_")?16000:sr.type().equals("category_catalog")?16000:1800;
+                        int budget=sr.type().startsWith("runtime_")?16000:1800;
                         if (snippet.length() > budget) snippet = snippet.substring(0, budget);
                         context.append(String.format("[%s/%s score=%.3f source=%s]\n%s\n\n",
                                 sr.modName(), sr.type(), sr.score(), sr.sourcePath(), snippet));
@@ -293,6 +309,7 @@ public class AnswerAgent {
             context.append("=== [Knowledge Base Context] ===\n");
             int included = 0;
             for (var sr : ctx.vectorResults()) {
+                if(isFamilyEvidence(sr))continue;
                 if(!sr.type().startsWith("runtime_")&&importedEvidenceAlreadyProvided(ctx,sr)) continue;
                 if (sr.score() > 0.1 && included < 8) {
                     String snippet = sr.chunkText();
@@ -357,6 +374,8 @@ public class AnswerAgent {
     private static String abbreviate(String text,int limit) {
         return text==null?"":text.length()<=limit?text:text.substring(0,limit)+"…";
     }
+
+    private static boolean isFamilyEvidence(VectorStore.SearchResult hit){return "category_catalog".equals(hit.type())||"structured_family".equals(hit.type());}
 
     private static boolean importedEvidenceAlreadyProvided(AnswerContext ctx,VectorStore.SearchResult result) {
         // 受控导入正文已按预算组装，不能再次经通用向量窗口重复加入或绕过上下文预算。

@@ -77,6 +77,10 @@ public final class ItemIconService {
                     String variant=NativeIconPack.stateVariant(state);var asset=nativeIcons.get(id+"|"+variant);
                     if(asset!=null&&"TRANSPARENT".equals(asset.status()))return transparent(id,asset);
                     var image=load(asset,"OK");
+                    if(image==null&&ItemVisualState.enchantmentOnly(id,state)) {
+                        var fallback=enchantmentPreview(id);
+                        if(fallback.image()!=null)return fallback;
+                    }
                     return image==null?missing(id,"指定组件/NBT 状态尚未导出："+variant):new Icon(id,name(id),asset.id(),"NATIVE","实机精确状态 "+variant,image);
                 }catch(java.io.IOException invalid){return missing(id,"指定组件/NBT 状态格式无效");}
             }
@@ -91,6 +95,13 @@ public final class ItemIconService {
                 String reason=profile!=null && profile.compatibility().equals("CONFLICT") ? "图标环境冲突；未使用该实机包" : nativeIcon!=null ? "实机图标失败、丢失或校验不符" : "没有匹配的默认图标或可用平面模型";
                 return missing(key,reason);
             });
+        }
+        /** 调用方须已确认状态只由附魔决定；不为其他动态组件推断外观。 */
+        public Icon enchantmentPreview(String id) {
+            if(!ItemVisualState.fixedVanillaEquipment(id))return missing(id,"未知物品外观需要精确状态图");
+            var fallback=item(id,false,null);
+            return fallback.image()==null?fallback:new Icon(id,name(id),fallback.assetId(),"DEFAULT_ENCHANTMENT_FALLBACK",
+                    ItemVisualState.ENCHANTMENT_NOTE+"；使用默认物品外观，不显示附魔光效（"+fallback.detail()+"）",fallback.image());
         }
         public IngredientIcon ingredient(RecipePlan.Ingredient ingredient) {
             var candidates=new LinkedHashSet<String>(); var warnings=new ArrayList<String>();
@@ -108,7 +119,7 @@ public final class ItemIconService {
             if(ingredient.alternatives().stream().anyMatch(RecipePlan.Alternative::tag)&&tags.values().stream().flatMap(List::stream).noneMatch(file->file.source().equals("RUNTIME_SNAPSHOT")))warnings.add("标签候选来自 JAR 声明，未确认整合包运行时覆盖。");
             return new IngredientIcon(ingredient,selected,List.copyOf(candidates),List.copyOf(warnings));
         }
-        private static int rank(Icon icon) { return Set.of("NATIVE","NATIVE_TRANSPARENT").contains(icon.source())?0:icon.source().equals("JAR_FLAT")?1:2; }
+        private static int rank(Icon icon) { return Set.of("NATIVE","NATIVE_TRANSPARENT").contains(icon.source())?0:Set.of("JAR_FLAT","DEFAULT_ENCHANTMENT_FALLBACK").contains(icon.source())?1:2; }
         private Icon transparent(String id,Asset asset) {
             var image=load(asset,"TRANSPARENT");
             return image==null?missing(id,"完全透明图标缓存丢失或校验不符"):

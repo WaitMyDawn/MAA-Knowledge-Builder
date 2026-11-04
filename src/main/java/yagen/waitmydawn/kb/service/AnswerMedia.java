@@ -141,8 +141,13 @@ public final class AnswerMedia {
         // 无模型或未输出引用标记时仍提供可追溯的来源入口。
         if (usedSources.isEmpty() && !artifacts.sources().isEmpty() && !ModpackSources.applies(artifacts)) {
             var labels = new LinkedHashMap<String,String>();
-            for (var source : artifacts.sources()) labels.putIfAbsent(source.documentId() + "/" + source.pageNumber(), sourceMarkdown(source));
-            safe += "\n\n资料来源：" + String.join(" · ", labels.values().stream().limit(5).toList());
+            String affirmative=TaskEvidence.positiveText(safe);
+            for (var source : artifacts.sources()) {
+                String title=Objects.toString(source.title(),"");int separator=title.lastIndexOf(" — ");if(separator>=0)title=title.substring(separator+3);
+                if(KnowledgeSearchText.overlap(title,affirmative)>=0.5&&KnowledgeSearchText.overlap(affirmative,source.evidence())>=0.08)
+                    labels.putIfAbsent(source.documentId() + "/" + source.pageNumber(), sourceMarkdown(source));
+            }
+            if(!labels.isEmpty())safe += "\n\n资料来源：" + String.join(" · ", labels.values().stream().limit(5).toList());
         }
         return ModpackSources.format(safe,artifacts);
     }

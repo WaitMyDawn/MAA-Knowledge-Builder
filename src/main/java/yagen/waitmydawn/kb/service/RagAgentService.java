@@ -31,9 +31,10 @@ public class RagAgentService {
     public static final class UsageTrace {
         public int calls, inputTokens, outputTokens, unknownUsageCalls;
         public long latencyMs;
+        public yagen.waitmydawn.kb.dto.PromptCost promptCost=yagen.waitmydawn.kb.dto.PromptCost.empty();
         UsageTrace copy() {
             var copy = new UsageTrace(); copy.calls = calls; copy.inputTokens = inputTokens;
-            copy.outputTokens = outputTokens; copy.unknownUsageCalls = unknownUsageCalls; copy.latencyMs = latencyMs;
+            copy.outputTokens = outputTokens; copy.unknownUsageCalls = unknownUsageCalls; copy.latencyMs = latencyMs;copy.promptCost=promptCost;
             return copy;
         }
     }
@@ -44,24 +45,27 @@ public class RagAgentService {
 
     private final dev.langchain4j.model.chat.listener.ChatModelListener usageListener = new dev.langchain4j.model.chat.listener.ChatModelListener() {
         @Override public void onRequest(dev.langchain4j.model.chat.listener.ChatModelRequestContext context) {
-            trace.get().calls++;
+            var stats=trace.get();stats.calls++;
+            stats.promptCost=stats.promptCost.plus(PromptCostEstimator.measure(context.chatRequest()));
+            context.attributes().put("mkbTrace",stats);
             context.attributes().put("mkbStart", System.nanoTime());
         }
         @Override public void onResponse(dev.langchain4j.model.chat.listener.ChatModelResponseContext context) {
             var usage = context.chatResponse().tokenUsage();
-            var stats = trace.get();
+            var stats = owner(context.attributes());
             if (usage == null || usage.inputTokenCount() == null || usage.outputTokenCount() == null) stats.unknownUsageCalls++;
             else { stats.inputTokens += usage.inputTokenCount(); stats.outputTokens += usage.outputTokenCount(); }
             complete(context.attributes());
         }
         @Override public void onError(dev.langchain4j.model.chat.listener.ChatModelErrorContext context) {
-            trace.get().unknownUsageCalls++;
+            owner(context.attributes()).unknownUsageCalls++;
             complete(context.attributes());
         }
         private void complete(java.util.Map<Object, Object> attributes) {
             Object start = attributes.get("mkbStart");
-            if (start instanceof Long nanos) trace.get().latencyMs += (System.nanoTime() - nanos) / 1_000_000;
+            if (start instanceof Long nanos) owner(attributes).latencyMs += (System.nanoTime() - nanos) / 1_000_000;
         }
+        private UsageTrace owner(java.util.Map<Object,Object> attributes){return attributes.get("mkbTrace") instanceof UsageTrace owner?owner:trace.get();}
     };
 
     private static final String SYSTEM_PROMPT = """

@@ -32,4 +32,9 @@ class InstallationClaimsTest {
         for(String answer:List.of("当前环境未安装灾变。","已安装 20 个模组。","已安装 minecraft 与 neoforge。","已安装 Java 21。"))
             assertTrue(InstallationClaims.conflicts(answer,INSTALLED).isEmpty(),answer);
     }
+
+    @Test void possessiveDisplayNameIsNotMistakenForANamespace(){
+        assertTrue(InstallationClaims.conflicts("已安装 Alex's Mobs。",List.of("alexsmobs")).isEmpty());
+        assertTrue(InstallationClaims.conflicts("当前未安装 Alex's Mobs。",List.of("alexsmobs")).isEmpty());
+    }
 }

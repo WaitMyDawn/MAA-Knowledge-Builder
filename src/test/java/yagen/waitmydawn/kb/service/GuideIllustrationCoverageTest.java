@@ -21,6 +21,13 @@ class GuideIllustrationCoverageTest {
         String answer=chosen.stream().map(p->"![图](kb-image:"+p.id()+")").collect(java.util.stream.Collectors.joining("\n\n"));
         assertTrue(GuideIllustrationCoverage.audit("如何组装、升级并更换核心",answer,artifacts(chosen)).missing().isEmpty());
     }
+    @Test void missingFacetsExposeOnlyUncoveredSteps() {
+        var assembly=picture("a","组装示意","把核心组装到底座。");
+        assertEquals(List.of("组装","升级"),GuideIllustrationCoverage.requested("如何组装并升级傀儡"));
+        assertEquals(List.of("升级"),GuideIllustrationCoverage.missing("如何组装并升级傀儡",List.of(assembly)));
+        var upgrade=picture("u","升级界面","在菜单中安装升级模块。");
+        assertTrue(GuideIllustrationCoverage.missing("如何组装并升级傀儡",List.of(assembly,upgrade)).isEmpty());
+    }
     @Test void sharedHeadingCannotMakeAssemblyPicturesCountAsUpgradeEvidence() {
         var image=picture("a","组装和升级教程图","把核心组装到底座。");var result=new QaPipeline.QaResult();result.artifacts=artifacts(List.of(image));result.answer="先组装核心。![组装](kb-image:a)";
         var audit=GuideIllustrationCoverage.finish(result,"如何组装并升级傀儡");assertEquals(List.of("升级"),audit.missing());assertTrue(result.answer.contains("本轮未选到“升级”"));

@@ -23,6 +23,16 @@ public final class RuntimeNameIndex {
             try(var rows=p.executeQuery()){if(!rows.next())return null;return rows.getString(2);}
         }
     }
+    /** 一次取回页内名称，避免查询工具为每个候选单独打开连接。 */
+    public Map<String,String> namesOf(Collection<String> ids)throws Exception {
+        if(profile==null||ids==null||ids.isEmpty())return Map.of();
+        var wanted=new HashSet<>(ids);var names=new LinkedHashMap<String,String>();
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT registry_id,display_name FROM rag_runtime_object_name WHERE profile_id=? ORDER BY CASE WHEN language='zh_cn' THEN 0 WHEN language='current' THEN 1 ELSE 2 END")){
+            p.setString(1,profile);try(var rows=p.executeQuery()){while(rows.next()){String id=rows.getString(1);if(wanted.contains(id))names.putIfAbsent(id,rows.getString(2));}}
+        }
+        return names;
+    }
+
     /** 翻译键；与中文名一起返回，便于核对本地化来源。 */
     public String translationKeyOf(String id)throws Exception {
         if(profile==null||id==null||!id.contains(":"))return null;

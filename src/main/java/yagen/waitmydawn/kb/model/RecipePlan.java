@@ -93,7 +93,7 @@ public record RecipePlan(Kind kind, List<Slot> slots, Output output, int width, 
             if (!dynamic) id = resourceId(id);
             int count = dynamic ? 1 : result.isObject() ? positiveCount(result.path("count"), 1) : positiveCount(root.path("count"), 1);
             boolean stateful = hasState(result);
-            if (stateful) notes.add("产物带指定组件或 NBT，默认状态图标不能代替该状态。");
+            if (stateful) notes.add("产物带指定组件或 NBT；图标需标明精确状态或可用的外观回退。");
             Integer ticks = null; Double xp = null;
             if (Set.of(Kind.SMELTING, Kind.BLASTING, Kind.SMOKING, Kind.CAMPFIRE).contains(kind)) {
                 ticks = positiveCount(root.path("cookingtime"), kind == Kind.CAMPFIRE ? 600 : kind == Kind.SMELTING ? 200 : 100);

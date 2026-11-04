@@ -102,6 +102,7 @@ public final class EvalReport {
         s.put("avgAnswerLength", total > 0 ? Math.round(ansLen.stream().mapToInt(Integer::intValue).average().orElse(0)) : 0);
         s.put("totalTokenIn", tokIn.stream().mapToInt(Integer::intValue).sum());
         s.put("totalTokenOut", tokOut.stream().mapToInt(Integer::intValue).sum());
+        s.put("promptCost",promptCostSummary(records));
         s.put("byStage", byStage(records));
         long observed=records.stream().filter(r->mapOf(r.get("metrics")).containsKey("httpRequestCount")).count();
         s.put("ioObservedTurns",observed);
@@ -116,6 +117,20 @@ public final class EvalReport {
         s.put("disagreementTurnIds", disagreementsOf(records).stream()
                 .map(m -> stringOf(m.get("turnId"))).toList());
         return s;
+    }
+
+    static Map<String,Object> promptCostSummary(List<Map<String,Object>> records){
+        int observed=0;var methods=new LinkedHashMap<String,Object>();
+        for(var record:records){var cost=mapOf(mapOf(record.get("metrics")).get("promptCost"));if(cost.isEmpty())continue;observed++;
+            String method=stringOf(cost.get("method"));var group=mapOf(methods.get(method));if(group.isEmpty())group=new LinkedHashMap<>();
+            group.put("requests",longOf(group.get("requests"))+longOf(cost.get("requests")));
+            group.put("nonTextParts",longOf(group.get("nonTextParts"))+longOf(cost.get("nonTextParts")));
+            var tokens=mapOf(group.get("estimatedTokens"));if(tokens.isEmpty())tokens=new LinkedHashMap<>();
+            var totals=tokens;
+            mapOf(cost.get("estimatedTokens")).forEach((key,value)->totals.put(key,longOf(totals.get(key))+longOf(value)));
+            group.put("estimatedTokens",totals);methods.put(method,group);
+        }
+        return Map.of("observedTurns",observed,"unobservedTurns",records.size()-observed,"methodGroups",methods,"source","local-estimate-not-provider-usage");
     }
 
     private static Map<String, Object> groupBy(List<Map<String, Object>> records, String field) {
@@ -310,6 +325,7 @@ public final class EvalReport {
                 .append(s.get("p95EvalTotalMs")).append(" ms；渲染 ").append(s.get("avgRenderMs"))
                 .append(" ms / 裁判 ").append(s.get("avgJudgeMs")).append(" ms）|\n");
         sb.append("| 平均 Token | in ").append(s.get("avgTokenIn")).append(" / out ").append(s.get("avgTokenOut")).append(" |\n");
+        var cost=mapOf(s.get("promptCost"));if(longOf(cost.get("observedTurns"))>0)sb.append("| 输入分段 Token（本地估算，按方法分组） | ").append(cost.get("methodGroups")).append("；未观测轮次 ").append(cost.get("unobservedTurns")).append(" |\n");
         sb.append("| 平均答案长度 | ").append(s.get("avgAnswerLength")).append(" 字符 |\n");
         if (!((Map<String, Object>) s.get("stability")).isEmpty()) {
             sb.append("| 稳定性 pass@N | ").append(pct(s.get("stabilityPassAtN"))).append(" |\n");

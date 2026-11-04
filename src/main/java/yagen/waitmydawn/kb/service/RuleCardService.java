@@ -19,23 +19,135 @@ public final class RuleCardService {
         if(!Objects.equals(profile,RuntimeKnowledgeStore.active(db)))throw new IllegalArgumentException("请先选择匹配的快照图标环境");String raw;
         try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE profile_id=? AND category=? AND record_id=?")){p.setString(1,profile);p.setString(2,category);p.setString(3,id);try(var r=p.executeQuery()){if(!r.next())throw new IllegalArgumentException("规则记录不存在");raw=r.getString(1);}}
         if(category.equals("trades")&&!outputs.isEmpty()){var selected=RuntimeRules.focusedTradeRecord(JSON.readTree(raw),outputs);if(!selected.path("entries").isEmpty()||!selected.path("verifiedGroupRules").isEmpty())raw=selected.toString();}
-        var icons=new ItemIconService(db,directory).snapshot();String fingerprint=BuildRequest.fingerprint("rules-card-v5\n"+profile+"\n"+icons.revision()+"\n"+category+"\n"+raw);Path folder=directory.resolve("generated/rules"),file=folder.resolve(fingerprint+".png"),meta=folder.resolve(fingerprint+".json");
+        var icons=new ItemIconService(db,directory).snapshot();String fingerprint=BuildRequest.fingerprint("rules-card-v8\n"+profile+"\n"+icons.revision()+"\n"+category+"\n"+raw);Path folder=directory.resolve("generated/rules"),file=folder.resolve(fingerprint+".png"),meta=folder.resolve(fingerprint+".json");
         if(Files.isRegularFile(file)&&Files.isRegularFile(meta))try{if(JSON.readTree(meta.toFile()).path("sha256").asText().equals(ArtifactFingerprint.sha256(file)))return file;}catch(java.io.IOException invalid){}
         if(cacheOnly)return null;var row=JSON.readTree(raw);if(row.has("error"))throw new IllegalArgumentException("此规则导出失败，不能绘制确定结果");
         if(category.equals("workstation_rules")&&!row.path("station").asText().equals("minecraft:anvil"))throw new IllegalArgumentException("此工作站尚无对应GUI布局，请查看规则JSON");var image=draw(category,row,icons);Files.createDirectories(folder);Path tmp=Files.createTempFile(folder,"rule-",".png");try{javax.imageio.ImageIO.write(image,"png",tmp.toFile());Files.move(tmp,file,StandardCopyOption.REPLACE_EXISTING);}finally{Files.deleteIfExists(tmp);}Files.writeString(meta,JSON.createObjectNode().put("sha256",ArtifactFingerprint.sha256(file)).put("fingerprint",fingerprint).toPrettyString());return file;
     }
+    /** 把一条完整酿造路线画成一张链卡；单步转换仍由原规则卡处理。 */
+    public Path renderChain(String profile,String finalRuleId,boolean cacheOnly)throws Exception {
+        if(!Objects.equals(profile,RuntimeKnowledgeStore.active(db)))throw new IllegalArgumentException("请先选择匹配的快照图标环境");
+        var payload=brewingPayload(profile);var finalRule=brewingRule(profile,finalRuleId);
+        var route=new BrewingChains(payload).route(finalRule);
+        if(route.size()<2)throw new IllegalArgumentException("该酿造规则没有多步前置链");
+        var icons=new ItemIconService(db,directory).snapshot();
+        String fingerprint=BuildRequest.fingerprint("brewing-chain-v2\n"+profile+"\n"+icons.revision()+"\n"+route.stream().map(step->step.rule().path("id").asText()).collect(java.util.stream.Collectors.joining(">")));
+        Path folder=directory.resolve("generated/rules"),file=folder.resolve(fingerprint+".png"),meta=folder.resolve(fingerprint+".json");
+        if(Files.isRegularFile(file)&&Files.isRegularFile(meta))try{if(JSON.readTree(meta.toFile()).path("sha256").asText().equals(ArtifactFingerprint.sha256(file)))return file;}catch(java.io.IOException invalid){}
+        if(cacheOnly)return null;
+        var image=drawBrewingChain(route,icons);Files.createDirectories(folder);Path tmp=Files.createTempFile(folder,"chain-",".png");
+        try{javax.imageio.ImageIO.write(image,"png",tmp.toFile());Files.move(tmp,file,StandardCopyOption.REPLACE_EXISTING);}finally{Files.deleteIfExists(tmp);}
+        Files.writeString(meta,JSON.createObjectNode().put("sha256",ArtifactFingerprint.sha256(file)).put("fingerprint",fingerprint).toPrettyString());return file;
+    }
+
+    /** 酿造题在回答前直接补一张完整链卡，不依赖工具是否先命中酿造规则。 */
+    public boolean attachBrewingChain(QaPipeline.QaResult result,String question)throws Exception {
+        String profile=RuntimeKnowledgeStore.active(db);if(profile==null||result==null||result.artifacts==null)return false;
+        var payload=brewingPayload(profile);var finalRule=chooseBrewingRule(profile,payload,result,question);if(finalRule==null)return false;
+        var route=new BrewingChains(payload).route(finalRule);if(route.size()<2)return false;
+        String reference="mkb-runtime:"+profile+"/brewing/"+finalRule.path("id").asText();
+        String pictureId="i"+BuildRequest.fingerprint("brewing-chain:"+reference).substring(0,20);
+        if(result.artifacts.pictures().stream().anyMatch(picture->picture.id().equals(pictureId)))return false;
+        var file=renderChain(profile,finalRule.path("id").asText(),false);
+        var asset=new ImageAssetStore(directory).put(Files.readAllBytes(file));
+        String source="s"+BuildRequest.fingerprint(reference).substring(0,20);
+        String caption="酿造链："+route.stream().map(step->potionLabel(profile,step.rule())).collect(java.util.stream.Collectors.joining(" → "));
+        String summary="酿造链（"+route.size()+" 步）："+caption+"；每步使用酿造台，燃料烈焰粉，一次最多3瓶，基准400 tick（20秒）。仅声明规则，模组钩子可能覆盖。";
+        var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<>(result.artifacts.pictures());
+        sources.add(new AnswerArtifacts.Source(source,reference,finalRule.path("id").asText(),reference,"实机酿造链",null,"RUNTIME_SNAPSHOT",summary));
+        pictures.add(new AnswerArtifacts.Picture(pictureId,asset.id(),asset.relativePath(),caption,source,"RUNTIME_RULE",java.util.List.of(),summary,reference,null,null));
+        result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());
+        return true;
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode brewingPayload(String profile)throws Exception {
+        var payload=JSON.createObjectNode();var records=payload.putArray("records");
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE profile_id=? AND category='brewing' ORDER BY record_id")){
+            p.setString(1,profile);try(var rows=p.executeQuery()){while(rows.next())records.add(JSON.readTree(rows.getString(1)));}
+        }return payload;
+    }
+    private JsonNode brewingRule(String profile,String id)throws Exception {
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE profile_id=? AND category='brewing' AND record_id=?")){
+            p.setString(1,profile);p.setString(2,id);try(var rows=p.executeQuery()){if(!rows.next())throw new IllegalArgumentException("酿造规则不存在");return JSON.readTree(rows.getString(1));}
+        }
+    }
+    private JsonNode chooseBrewingRule(String profile,JsonNode payload,QaPipeline.QaResult result,String question)throws Exception {
+        var records=new LinkedHashSet<String>();var potions=new LinkedHashSet<String>();
+        if(result!=null&&result.vectorResults!=null)for(var hit:result.vectorResults)if("runtime_brewing".equals(hit.type())){
+            String path=Objects.toString(hit.sourcePath(),""),marker="/brewing/";int at=path.indexOf(marker);if(at>=0)records.add(path.substring(at+marker.length()));
+        }
+        if(question!=null)try{for(var resolution:new RuntimeNameIndex(db,profile).mentions(question,"ITEM"))for(var candidate:resolution.candidates())if("potions".equals(candidate.category()))potions.add(candidate.recordId());}catch(Exception ignored){}
+        String container=question!=null&&question.contains("喷溅")?"minecraft:splash_potion":question!=null&&question.contains("滞留")?"minecraft:lingering_potion":"minecraft:potion";
+        int wanted=requestedLevel(question),preferred=wanted>0?wanted:1;
+        // 先按题面解析出的药水本体选，工具顺带返回的其他药水规则只能作次选。
+        JsonNode potionFallback=null;
+        for(var row:payload.path("records")){
+            String output=row.path("outputPotionId").asText("");
+            if(!potions.contains(output))continue;
+            if(!container.equals(row.path("input").path("item").asText(row.path("input").path("id").asText())))continue;
+            if(effectLevel(row)==preferred)return row;
+            if(potionFallback==null)potionFallback=row;
+        }
+        if(potionFallback!=null)return potionFallback;
+        JsonNode hitFallback=null;
+        for(var row:payload.path("records")){
+            String id=row.path("id").asText("");
+            if(!records.contains(id))continue;
+            if(!container.equals(row.path("input").path("item").asText(row.path("input").path("id").asText())))continue;
+            if(effectLevel(row)==preferred)return row;
+            if(hitFallback==null)hitFallback=row;
+        }
+        return hitFallback;
+    }
+    private static int requestedLevel(String question){
+        if(question==null)return 0;
+        var matcher=java.util.regex.Pattern.compile("(?i)(?:药水|potion)\\s*(II|III|IV|V|[1-5])").matcher(question);
+        if(!matcher.find())return 0;
+        return switch(matcher.group(1).toUpperCase(Locale.ROOT)){case "II"->2;case "III"->3;case "IV"->4;case "V"->5;default->Integer.parseInt(matcher.group(1));};
+    }
+    private static int effectLevel(JsonNode rule){int level=0;for(var effect:rule.path("outputEffects"))level=Math.max(level,effect.path("amplifier").asInt()+1);return level;}
+    private static final Map<String,String> BASE_POTION_NAMES=Map.of("minecraft:water","水瓶","minecraft:awkward","粗制的药水","minecraft:thick","浓稠的药水","minecraft:mundane","平凡的药水");
+    private String potionLabel(String profile,JsonNode rule){
+        String id=rule.path("outputPotionId").asText(rule.path("output").path("id").asText(""));
+        String effects=RuntimeRules.effectNames(rule.path("outputEffects"));
+        if(!effects.isBlank())return effects.replaceFirst("（[^）]*）","");
+        String base=BASE_POTION_NAMES.get(id);if(base!=null)return base;
+        try{String name=new RuntimeNameIndex(db,profile).nameOf(id);if(name!=null&&!name.isBlank())return name;}catch(Exception ignored){}
+        return id;
+    }
+    private static BufferedImage drawBrewingChain(java.util.List<BrewingChains.Step> route,ItemIconService.Snapshot icons){
+        int row=180,header=86,footer=70,height=header+route.size()*row+footer;
+        var image=new BufferedImage(1080,height,BufferedImage.TYPE_INT_ARGB);var g=image.createGraphics();
+        try{g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+            g.setColor(new Color(198,198,198));g.fillRect(0,0,1080,height);g.setColor(new Color(55,55,55));g.setFont(CardFont.at(Font.BOLD,27));
+            g.drawString("酿造链 · "+route.size()+" 步",24,42);g.setFont(CardFont.at(Font.PLAIN,18));
+            for(int i=0;i<route.size();i++){var step=route.get(i);var rule=step.rule();int y=header+i*row;
+                g.setColor(new Color(139,139,139));g.fillRect(16,y,1048,row-12);g.setColor(Color.WHITE);g.setFont(CardFont.at(Font.BOLD,20));
+                g.drawString("第 "+(i+1)+" 步"+(step.container()?" · 容器转换":" · 药水转换"),28,y+28);g.setFont(CardFont.at(Font.PLAIN,18));
+                slot(g,rule.path("input"),60,y+48,icons);slot(g,rule.path("ingredient"),292,y+48,icons);slot(g,rule.path("output"),548,y+48,icons);
+                g.setColor(new Color(55,55,55));g.drawString("+",262,y+90);g.drawString("→",516,y+90);
+                String in=effectText(rule,"inputEffects",rule.path("inputPotionId").asText(rule.path("input").path("id").asText()));
+                String out=effectText(rule,"outputEffects",rule.path("outputPotionId").asText(rule.path("output").path("id").asText()));
+                text(g,"投入："+stackLabel(rule.path("input"),icons)+" "+in,60,y+150,470);
+                text(g,"产出："+stackLabel(rule.path("output"),icons)+" "+out,548,y+150,480);
+            }
+            g.setColor(new Color(55,55,55));g.setFont(CardFont.at(Font.PLAIN,17));g.drawString("每步在酿造台进行；燃料烈焰粉，一次最多3瓶，基准400 tick（20秒）。仅声明规则，模组钩子可能覆盖。",24,height-28);
+        }finally{g.dispose();}return image;
+    }
+    private static String effectText(JsonNode rule,String field,String fallback){String text=RuntimeRules.effectNames(rule.path(field));if(!text.isBlank())return text;return BASE_POTION_NAMES.getOrDefault(fallback,fallback);}
     public static BufferedImage draw(String category,JsonNode row,ItemIconService.Snapshot icons){
-        var displayed=new ArrayList<JsonNode>();row.path("entries").forEach(displayed::add);row.path("verifiedGroupRules").forEach(displayed::add);int count=category.equals("trades")?Math.min(80,displayed.size()):0;int height=category.equals("trades")?220+count*100:620;
+        var displayed=new ArrayList<JsonNode>();row.path("entries").forEach(displayed::add);row.path("verifiedGroupRules").forEach(displayed::add);int count=category.equals("trades")?Math.min(80,displayed.size()):0;boolean enchantmentFallback=category.equals("trades")&&displayed.stream().limit(count).anyMatch(entry->usesEnchantmentFallback(entry,icons));int height=category.equals("trades")?220+count*100+(enchantmentFallback?30:0):620;
         var image=new BufferedImage(1080,height,BufferedImage.TYPE_INT_ARGB);var g=image.createGraphics();
         try{g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);g.setColor(new Color(198,198,198));g.fillRect(0,0,1080,height);g.setColor(new Color(55,55,55));g.setFont(CardFont.at(Font.BOLD,27));g.drawString(category.equals("trades")?"交易表 · "+row.path("entity").asText():category.equals("brewing")?"酿造台 · 状态转换":"铁砧 · 操作规则",24,40);g.setFont(CardFont.at(Font.PLAIN,19));
             if(category.equals("trades")){
                 g.drawString("职业 "+row.path("profession").asText()+" · 等级/池 "+row.path("level")+" · 候选 "+row.path("candidateCount")+" · 抽取 "+row.path("draws"),24,74);g.drawString((row.path("selectedView").asBoolean()?"仅展示目标产物条目；候选数和抽取次数仍为完整原池。覆盖：":"入选率指工厂被抽取；随机附魔、折扣及条件另计。覆盖：")+row.path("coverage").asText(),24,103);
-                for(int i=0;i<count;i++){var entry=displayed.get(i);int y=130+i*100;g.setColor(new Color(139,139,139));g.fillRect(18,y,1044,94);g.setColor(Color.WHITE);g.drawString((entry.has("scope")?"已验证工厂组规则 ":"条目 ")+(i+1)+" · "+entry.path("status").asText(),28,y+25);String chance=String.format(Locale.ROOT,"工厂入选 %.3g%%",100*entry.path("selectionProbability").asDouble());g.drawString(chance,28,y+54);
+                for(int i=0;i<count;i++){var entry=displayed.get(i);int y=130+i*100;g.setColor(new Color(139,139,139));g.fillRect(18,y,1044,94);g.setColor(Color.WHITE);g.drawString((entry.has("scope")?"已验证工厂组规则 ":"条目 ")+(i+1)+" · "+entry.path("status").asText(),28,y+25);String chance=String.format(Locale.ROOT,"工厂入选 %.3g%%",100*entry.path("selectionProbability").asDouble());g.drawString(chance,28,y+54);String cost=RuntimeRules.costSummary(entry);if(!cost.isBlank())text(g,cost.replace("minecraft:","").replaceAll("（[^）]*）",""),28,y+80,320);
                     if(entry.path("status").asText().equals("UNSUPPORTED")){text(g,"未解析程序式规则；候选已保留，不能据此判断无交易",350,y+45,680);continue;}
                     var inputs=entry.path("inputs");for(int slot=0;slot<2;slot++)slot(g,slot<inputs.size()?inputs.get(slot):JSON.createObjectNode(),350+slot*120,y+9,icons);
-                    g.setColor(new Color(55,55,55));if(inputs.size()>1)g.drawString("+",440,y+51);g.drawString("→",605,y+51);slot(g,entry.path("output"),665,y+9,icons);g.setColor(Color.WHITE);text(g,entry.has("priceRule")?"随机附魔/价格：详见规则正文":entry.has("enchantmentProvider")?"随机附魔提供器：详见JSON":"最大交易次数 "+entry.path("maxUses"),770,y+40,280);
+                    g.setColor(new Color(55,55,55));if(inputs.size()>1)g.drawString("+",440,y+51);g.drawString("→",605,y+51);slot(g,entry.path("output"),665,y+9,icons,randomEnchantmentOutput(entry));g.setColor(Color.WHITE);text(g,entry.has("priceRule")||randomEnchantmentOutput(entry)?"随机附魔/价格：详见规则正文":entry.has("enchantmentProvider")?"随机附魔提供器：详见JSON":"最大交易次数 "+entry.path("maxUses"),770,y+40,280);
                 }
-                g.setColor(new Color(55,55,55));g.drawString(count<row.path("entries").size()?"图片仅展示前80条；完整候选请查看目录JSON。":"需求、折扣、职业等级及条目条件会影响实际交易。",24,height-28);
+                g.setColor(new Color(55,55,55));g.drawString(count<row.path("entries").size()?"图片仅展示前80条；完整候选请查看目录JSON。":"需求、折扣、职业等级及条目条件会影响实际交易。",24,height-(enchantmentFallback?58:28));
+                if(enchantmentFallback)g.drawString(ItemVisualState.ENCHANTMENT_NOTE+"；对应槽位使用默认物品外观，不显示附魔光效。",24,height-28);
             }else if(category.equals("brewing")){
                 text(g,"原药水："+stackLabel(row.path("input"),icons)+" "+RuntimeRules.effectNames(row.path("inputEffects")),24,88,1010);slot(g,first(row.path("ingredient")),480,135,icons);g.setColor(new Color(55,55,55));g.drawString("材料",485,125);g.setColor(new Color(85,85,85));g.drawLine(516,208,516,332);g.drawLine(396,286,636,286);g.drawLine(396,286,396,310);g.drawLine(636,286,636,310);
                 var displayedOutput=row.path("output").deepCopy();if(row.path("preservePotion").asBoolean()&&displayedOutput instanceof com.fasterxml.jackson.databind.node.ObjectNode mutable)mutable.put("dynamicState",true);for(int i=0;i<3;i++)slot(g,displayedOutput,360+i*120,310+(i==1?22:0),icons);slot(g,JSON.createObjectNode().put("item","minecraft:blaze_powder").put("count",1),135,195,icons);g.setColor(new Color(55,55,55));g.drawString("燃料",144,184);g.drawString("一次可同时处理最多3瓶；基准20秒，烈焰粉支持20次。",24,460);
@@ -46,10 +158,23 @@ public final class RuleCardService {
         }finally{g.dispose();}return image;
     }
     static JsonNode exactState(JsonNode stack){if(stack.path("dynamicState").asBoolean())return null;if(stack.path("components").isObject()&&!stack.path("components").isEmpty())return JSON.createObjectNode().set("components",stack.path("components"));if(stack.path("nbt").isTextual()&&!stack.path("nbt").asText().isBlank())return JSON.createObjectNode().set("nbt",stack.path("nbt"));return null;}
+    static boolean usesEnchantmentFallback(JsonNode node,ItemIconService.Snapshot icons){
+        if(randomEnchantmentOutput(node)&&icons.enchantmentPreview(node.path("output").path("item").asText(node.path("output").path("id").asText())).source().equals("DEFAULT_ENCHANTMENT_FALLBACK"))return true;
+        if(node.isObject()&&(node.has("item")||node.has("id"))){var state=exactState(node);if(state!=null&&icons.item(node.path("item").asText(node.path("id").asText()),true,state).source().equals("DEFAULT_ENCHANTMENT_FALLBACK"))return true;}
+        if(node.isContainerNode())for(var child:node)if(usesEnchantmentFallback(child,icons))return true;
+        return false;
+    }
+    static boolean randomEnchantmentOutput(JsonNode entry){
+        if(!entry.path("status").asText().equals("RANDOM_RULE")||!entry.path("factory").asText().equals("net.minecraft.world.entity.npc.VillagerTrades$EnchantedItemForEmeralds"))return false;
+        var output=entry.path("output");if(!output.path("dynamicState").asBoolean()||!ItemVisualState.fixedVanillaEquipment(output.path("item").asText(output.path("id").asText())))return false;
+        for(var fields=output.fieldNames();fields.hasNext();)if(!Set.of("id","item","count","dynamicState").contains(fields.next()))return false;
+        return true;
+    }
     private static String stackLabel(JsonNode stack,ItemIconService.Snapshot icons){String id=stack.path("item").asText(stack.path("id").asText("未解析物品"));String name=switch(id){case "minecraft:potion"->"药水";case "minecraft:splash_potion"->"喷溅药水";case "minecraft:lingering_potion"->"滞留药水";default->icons.item(id,false,null).name();};return name+(stack.has("components")||stack.has("nbt")?"（指定状态）":"");}
     private static JsonNode first(JsonNode value){return value.isArray()&&!value.isEmpty()?value.get(0):value;}
     private static void text(Graphics2D g,String value,int x,int y,int width){while(value.length()>1&&g.getFontMetrics().stringWidth(value)>width)value=value.substring(0,value.length()-2)+"…";g.drawString(value,x,y);}
-    private static void slot(Graphics2D g,JsonNode stack,int x,int y,ItemIconService.Snapshot icons){MinecraftSlot.draw(g,x,y,4);String id=stack.path("item").asText(stack.path("id").asText(""));boolean state=stack.has("components")||stack.has("nbt")||stack.path("dynamicState").asBoolean();JsonNode exact=exactState(stack);if(!id.isBlank()){var icon=icons.item(id,state,exact);if(icon.image()!=null)g.drawImage(icon.image(),x+4,y+4,64,64,null);else{g.setColor(Color.WHITE);g.drawString("?",x+28,y+44);}String quantity=stack.path("dynamicCount").asBoolean()?"随机":stack.has("minCount")?stack.path("minCount").asInt()+"–"+stack.path("maxCount").asInt():stack.path("count").asInt(1)>1?stack.path("count").asText():"";g.setColor(Color.BLACK);g.drawString(quantity,x+68-g.getFontMetrics().stringWidth(quantity)+1,y+65);g.setColor(Color.WHITE);g.drawString(quantity,x+68-g.getFontMetrics().stringWidth(quantity),y+64);}}
+    private static void slot(Graphics2D g,JsonNode stack,int x,int y,ItemIconService.Snapshot icons){slot(g,stack,x,y,icons,false);}
+    private static void slot(Graphics2D g,JsonNode stack,int x,int y,ItemIconService.Snapshot icons,boolean enchantmentPreview){MinecraftSlot.draw(g,x,y,4);String id=stack.path("item").asText(stack.path("id").asText(""));boolean state=stack.has("components")||stack.has("nbt")||stack.path("dynamicState").asBoolean();JsonNode exact=exactState(stack);if(!id.isBlank()){var icon=enchantmentPreview?icons.enchantmentPreview(id):icons.item(id,state,exact);if(icon.image()!=null)g.drawImage(icon.image(),x+4,y+4,64,64,null);else{g.setColor(Color.WHITE);g.drawString("?",x+28,y+44);}String quantity=stack.path("dynamicCount").asBoolean()?"随机":stack.has("minCount")?stack.path("minCount").asInt()+"–"+stack.path("maxCount").asInt():stack.path("count").asInt(1)>1?stack.path("count").asText():"";g.setColor(Color.BLACK);g.drawString(quantity,x+68-g.getFontMetrics().stringWidth(quantity)+1,y+65);g.setColor(Color.WHITE);g.drawString(quantity,x+68-g.getFontMetrics().stringWidth(quantity),y+64);}}
     /** 结构化查询已定位到交易记录时直接出卡，不依赖向量命中。 */
     public void attachTrade(QaPipeline.QaResult result,String id)throws Exception {
         String profile=RuntimeKnowledgeStore.active(db);if(profile==null||id==null||id.isBlank())return;
@@ -76,5 +201,5 @@ public final class RuleCardService {
         return 0;
     }
 
-    public void attach(QaPipeline.QaResult result,String question){if(question!=null&&!question.matches("(?s).*(交易|购买|出售|商人|酿造|药水|铁砧|修复|附魔|重命名|获取|获得|怎么做|如何做|制作|合成|加工).*"))return;String profile=RuntimeKnowledgeStore.active(db);if(profile==null)return;var seen=new HashSet<String>();for(var hit:result.vectorResults){if(seen.size()>=6)break;if(hit.score()<=0.3)continue;String type=hit.type();if(!type.startsWith("runtime_"))continue;String category=type.substring(8);if(!RuntimeRules.CATEGORIES.contains(category))continue;String prefix="mkb-runtime:"+profile+"/"+category+"/";if(!hit.sourcePath().startsWith(prefix))continue;String id=hit.sourcePath().substring(prefix.length());if(category.equals("trades")&&wantedLevel(question)>0&&!id.endsWith("/"+wantedLevel(question)))continue;if(!seen.add(category+id))continue;try{var requested=new HashSet<String>();result.resolvedEntities.forEach(entity->requested.add(entity.registry()));var file=render(profile,category,id,false,requested);var asset=new ImageAssetStore(directory).put(Files.readAllBytes(file));String source="s"+BuildRequest.fingerprint(prefix+id).substring(0,20);var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<>(result.artifacts.pictures());sources.add(new AnswerArtifacts.Source(source,prefix+id,id,prefix+id,"实机规则",null,"RUNTIME_SNAPSHOT",hit.chunkText()));pictures.add(new AnswerArtifacts.Picture("i"+asset.id().substring(0,20),asset.id(),asset.relativePath(),category+"："+id,source,"RUNTIME_RULE",java.util.List.of(hit.chunkId()),hit.chunkText()));result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());}catch(Exception failure){result.mediaWarnings.add("规则图："+id+" · "+failure.getMessage());}}}
+    public void attach(QaPipeline.QaResult result,String question){if(question!=null&&!question.matches("(?s).*(交易|购买|出售|商人|酿造|药水|铁砧|修复|附魔|重命名|获取|获得|怎么做|如何做|制作|合成|加工).*"))return;String profile=RuntimeKnowledgeStore.active(db);if(profile==null)return;boolean chain=false;try{chain=attachBrewingChain(result,question);}catch(Exception failure){result.mediaWarnings.add("酿造链图："+failure.getMessage());}var seen=new HashSet<String>();for(var hit:result.vectorResults){if(seen.size()>=6)break;if(hit.score()<=0.3)continue;String type=hit.type();if(!type.startsWith("runtime_"))continue;String category=type.substring(8);if(!RuntimeRules.CATEGORIES.contains(category))continue;if(category.equals("brewing")&&chain)continue;String prefix="mkb-runtime:"+profile+"/"+category+"/";if(!hit.sourcePath().startsWith(prefix))continue;String id=hit.sourcePath().substring(prefix.length());if(category.equals("trades")&&wantedLevel(question)>0&&!id.endsWith("/"+wantedLevel(question)))continue;if(!seen.add(category+id))continue;try{var requested=new HashSet<String>();result.resolvedEntities.forEach(entity->requested.add(entity.registry()));var file=render(profile,category,id,false,requested);var asset=new ImageAssetStore(directory).put(Files.readAllBytes(file));String source="s"+BuildRequest.fingerprint(prefix+id).substring(0,20);var sources=new ArrayList<>(result.artifacts.sources());var pictures=new ArrayList<>(result.artifacts.pictures());sources.add(new AnswerArtifacts.Source(source,prefix+id,id,prefix+id,"实机规则",null,"RUNTIME_SNAPSHOT",hit.chunkText()));pictures.add(new AnswerArtifacts.Picture("i"+asset.id().substring(0,20),asset.id(),asset.relativePath(),category+"："+id,source,"RUNTIME_RULE",java.util.List.of(hit.chunkId()),hit.chunkText()));result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());}catch(Exception failure){result.mediaWarnings.add("规则图："+id+" · "+failure.getMessage());}}}
 }

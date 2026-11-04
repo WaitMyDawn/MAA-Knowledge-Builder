@@ -84,6 +84,11 @@ public final class KnowledgeRetrievalService {
             var scope = scopes.stream().filter(s -> s.id().equals(selectedScope)).findFirst();
             return scope.map(this::selectedResolution).orElseGet(() -> new Resolution(null, null, "所选资料来源已不在当前知识库中，请重新选择范围。", true));
         }
+        // “原版/vanilla”是当前游戏快照的语义，不是同名网页来源的歧义；网页标题恰好叫 Minecraft 时不能要求用户先选网页。
+        if (question != null && question.matches("(?is).*(原版|vanilla).*")) {
+            var runtime = scopes.stream().filter(s -> s.id().startsWith("runtime:")).toList();
+            if (runtime.size() == 1) return selectedResolution(runtime.getFirst());
+        }
         String normalized = KnowledgeSearchText.normalize(question);
         var matches = scopes.stream().filter(s -> {
             String name = KnowledgeSearchText.normalize(s.label());
@@ -300,9 +305,21 @@ public final class KnowledgeRetrievalService {
         completedImages.repairs().stream().filter(p -> present.stream().noneMatch(i -> i.id().equals(p.id()))).forEach(present::add);
         var completion=pageMedia.lastResult();
         var hydration=new KnowledgeImageHydrator.Audit(completion.webImageAttempts,completion.webImageAttempts,completion.webImages,completion.deferredWebImages,completion.deferredWebImages>0?"SELECTED_CACHE_INCOMPLETE":"SELECTED_CACHE_COMPLETE",completion.webOcrAttempts,0);
-        var pictures=GuideIllustrationCoverage.select(question,present.stream().filter(p->imageAssets.available(p.assetId(),p.relativePath())).toList(),4);
+        // 复合步骤题先按缺失维度反向补图；回答阶段仍用同一 audit 复核。
+        var missingFacets=GuideIllustrationCoverage.missing(question,available(present));
+        if(!missingFacets.isEmpty()) {
+            var fallbacks=WebImagePolicy.facetFallbacks(db,retrieval.artifacts(),question,missingFacets,missingFacets.size());
+            appendPictures(present,pageMedia.fallbackPictures(fallbacks,retrieval.artifacts().sources()));
+        }
+        var pictures=GuideIllustrationCoverage.select(question,available(present),4);
         // 已按“图片所属段落已出现在本轮证据里”选过的引用，不再被第二次文本相关性打分丢掉。
-        if(pictures.isEmpty()&&!references.isEmpty())pictures=selectedWebPictures(references,retrieval.artifacts().sources());
+        if(pictures.isEmpty()&&!references.isEmpty())pictures=selectedWebPictures(references,retrieval.artifacts().sources(),question.contains("插图"));
+        // 三步之后仍无图且本轮有网页证据时，用该页最大/最相关的一张正文图保底，不用相关性阈值筛掉。
+        if(pictures.isEmpty()) {
+            var fallbacks=WebImagePolicy.pageFallbacks(db,retrieval.artifacts(),question,2);
+            appendPictures(present,pageMedia.fallbackPictures(fallbacks,retrieval.artifacts().sources()));
+            pictures=GuideIllustrationCoverage.select(question,available(present),4);
+        }
         var artifacts=retrieval.artifacts();
         var expanded=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),pictures);
         var d=retrieval.diagnostics();
@@ -312,17 +329,26 @@ public final class KnowledgeRetrievalService {
         return new Retrieval(retrieval.hits(),expanded,evidence(expanded,d),retrieval.bestLexical(),d);
     }
 
+    private List<AnswerArtifacts.Picture> available(List<AnswerArtifacts.Picture> pictures) {
+        return pictures.stream().filter(p->imageAssets.available(p.assetId(),p.relativePath())).toList();
+    }
+    private static void appendPictures(List<AnswerArtifacts.Picture> target,List<AnswerArtifacts.Picture> additions) {
+        for(var picture:additions) if(target.stream().noneMatch(existing->existing.id().equals(picture.id()))) target.add(picture);
+    }
+
     /** 把已选中的网页图片引用直接转成插图；只接受已下载且校验可用的资产。 */
-    private List<AnswerArtifacts.Picture> selectedWebPictures(Set<String> references,List<AnswerArtifacts.Source> sources) {
+    private List<AnswerArtifacts.Picture> selectedWebPictures(Set<String> references,List<AnswerArtifacts.Source> sources,boolean preferPageIllustration) {
         if(references==null||references.isEmpty()||sources.isEmpty())return List.of();
         var byDocument=new LinkedHashMap<String,AnswerArtifacts.Source>();
         for(var source:sources){String id=source.documentId();if(id==null)continue;if(id.startsWith("vector:"))id=id.substring("vector:".length());byDocument.putIfAbsent(id,source);}
         var placeholders=String.join(",",java.util.Collections.nCopies(references.size(),"?"));
         var pictures=new ArrayList<AnswerArtifacts.Picture>();
-        try(var c=db.getConnection();var p=c.prepareStatement("SELECT r.id,r.document_id,r.caption,o.image_id,a.relative_path FROM rag_web_image_reference r JOIN rag_image_occurrence o ON o.id=r.id JOIN rag_image_asset a ON a.id=o.image_id WHERE r.id IN ("+placeholders+") AND r.status='AVAILABLE'")){
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT r.id,r.document_id,r.caption,o.image_id,a.relative_path,a.width,a.height FROM rag_web_image_reference r JOIN rag_image_occurrence o ON o.id=r.id JOIN rag_image_asset a ON a.id=o.image_id WHERE r.id IN ("+placeholders+") AND r.status='AVAILABLE'")){
             int index=1;for(String reference:references)p.setString(index++,reference);
             try(var rows=p.executeQuery()){while(rows.next()&&pictures.size()<4){
                 var source=byDocument.get(rows.getString(2));if(source==null)continue;
+                // 题面明确要“插图”时，表格里的小图标不能冒充页面插图；让位给页面级大图兜底。
+                if(preferPageIllustration&&(rows.getInt(6)<400||rows.getInt(7)<300))continue;
                 String asset=rows.getString(4),path=rows.getString(5);if(asset==null||path==null||!imageAssets.available(asset,path))continue;
                 String caption=Objects.toString(rows.getString(3),"");if(caption.isBlank())caption=source.title()==null?"网页插图":source.title();
                 pictures.add(new AnswerArtifacts.Picture("w"+BuildRequest.fingerprint(rows.getString(1)).substring(0,20),asset,path,caption,source.id(),"ILLUSTRATION",List.of(),source.evidence(),null,null,null));

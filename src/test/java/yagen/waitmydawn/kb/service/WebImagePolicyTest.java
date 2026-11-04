@@ -69,6 +69,93 @@ class WebImagePolicyTest {
             assertEquals(1,FullWebMediaTest.count(db,"SELECT COUNT(*) FROM rag_web_image_reference WHERE status='EXCLUDED_SMALL'"));
         }finally{db.shutdown();}
     }
+    @Test void facetFallbackPrefersSectionAndCaptionOverUnrelatedLargeImages()throws Exception {
+        var db=DatabaseBuilder.atPath(temp.resolve("facet"));db.initDatabase();
+        try(var c=db.getConnection()) {
+            block(c,"b10","d1",10,"傀儡的升级与装备","番外篇 > 傀儡使者 > 傀儡的升级与装备","升级：在铁砧上打出升级，并用扩充模版增加槽位。");
+            reference(c,"d1/image/1","d1","https://example.com/upgrade.png","辅助升级：多才多艺","辅助升级：多才多艺","EXCLUDED_SMALL",10);
+            reference(c,"d1/image/2","d1","https://example.com/armor.png","铁木傀儡护甲","","AVAILABLE",10);
+            asset(c,"a2","256",256,256);occurrence(c,"d1/image/2","d1","a2","铁木傀儡护甲",10);
+        }
+        var artifacts=new AnswerArtifacts(null,null,List.of(new AnswerArtifacts.Source("s1","d1","指南","https://example.com/guide","傀儡的升级与装备",null,"NATIVE","先组装，再升级。")),List.of());
+        var fallbacks=WebImagePolicy.facetFallbacks(db,artifacts,"龙之冒险如何组装并升级傀儡",List.of("升级"),1);
+        assertEquals(1,fallbacks.size());assertEquals("d1/image/1",fallbacks.getFirst().referenceId());assertFalse(fallbacks.getFirst().cached());
+        assertTrue(fallbacks.getFirst().score()>3.0,Double.toString(fallbacks.getFirst().score()));
+        db.shutdown();
+    }
+    @Test void pageFallbackUsesLargestCachedPageImageWhenNoTextMatches()throws Exception {
+        var db=DatabaseBuilder.atPath(temp.resolve("page"));db.initDatabase();
+        try(var c=db.getConnection()) {
+            block(c,"b5","d2",5,"画廊","画廊","表格行：");
+            reference(c,"d2/image/1","d2","https://example.com/icon.png","","","AVAILABLE",5);
+            reference(c,"d2/image/2","d2","https://example.com/shot.png","","","AVAILABLE",5);
+            asset(c,"a1","11",256,256);occurrence(c,"d2/image/1","d2","a1","",5);
+            asset(c,"a2","22",1000,520);occurrence(c,"d2/image/2","d2","a2","",5);
+        }
+        var artifacts=new AnswerArtifacts(null,null,List.of(new AnswerArtifacts.Source("s1","d2","灾变","https://example.com/mod","模组总览",null,"NATIVE","灾变是一个Boss模组。")),List.of());
+        var fallbacks=WebImagePolicy.pageFallbacks(db,artifacts,"灾变模组有哪些主要 BOSS？请结合网页资料的相关插图介绍。",1);
+        assertEquals(1,fallbacks.size());assertEquals("d2/image/2",fallbacks.getFirst().referenceId());
+        assertTrue(WebImagePolicy.pageFallbacks(db,artifacts,"灾变有哪些 BOSS",1).isEmpty());
+        db.shutdown();
+    }
+    @Test void facetFallbackReservesOneCandidatePerMissingStep()throws Exception {
+        var db=DatabaseBuilder.atPath(temp.resolve("twofacet"));db.initDatabase();
+        try(var c=db.getConnection()) {
+            block(c,"b1","d1",10,"如何组装一个傀儡？","番外篇 > 傀儡使者 > 如何组装一个傀儡？","把胚料切成部件，再按图组装。");
+            block(c,"b2","d1",20,"傀儡的升级与装备","番外篇 > 傀儡使者 > 傀儡的升级与装备","辅助升级：多才多艺，升级后第一次不消耗槽位。");
+            reference(c,"d1/image/1","d1","https://example.com/assembly.png","组装步骤","","AVAILABLE",10);
+            reference(c,"d1/image/2","d1","https://example.com/upgrade.png","辅助升级：多才多艺","辅助升级：多才多艺","EXCLUDED_SMALL",20);
+            asset(c,"a1","11",640,360);occurrence(c,"d1/image/1","d1","a1","组装步骤",10);
+        }
+        var artifacts=new AnswerArtifacts(null,null,List.of(new AnswerArtifacts.Source("s1","d1","指南","https://example.com/guide","傀儡",null,"NATIVE","先组装，再升级。")),List.of());
+        var fallbacks=WebImagePolicy.facetFallbacks(db,artifacts,"如何组装并升级傀儡",List.of("组装","升级"),2);
+        assertEquals(2,fallbacks.size());
+        assertEquals(java.util.Set.of("d1/image/1","d1/image/2"),fallbacks.stream().map(WebImagePolicy.Fallback::referenceId).collect(java.util.stream.Collectors.toSet()));
+        db.shutdown();
+    }
+
+    @Test void fallbackPictureFetchesSourceIconWithoutPromotingReferenceStatus()throws Exception {
+        var db=DatabaseBuilder.atPath(temp.resolve("icon"));db.initDatabase();
+        try(var c=db.getConnection()) {
+            block(c,"b10","d1",10,"傀儡的升级与装备","番外篇 > 傀儡使者 > 傀儡的升级与装备","辅助升级：多才多艺，升级后第一次不消耗槽位。");
+            reference(c,"d1/image/1","d1","https://example.com/upgrade.png","辅助升级：多才多艺","辅助升级：多才多艺","EXCLUDED_SMALL",10);
+        }
+        final byte[] png=FullWebMediaTest.image(1,32,32);
+        var web=new WikiScraperService(){@Override public Resource fetchResource(String url,String referer,boolean image,Map<String,String> headers){
+            return new Resource(200,png,"image/png",url,null,null);
+        }};web.setResourceDatabase(db);
+        try(var embedding=new EmbeddingService(null)) {
+            var service=new WebPageMediaService(db,embedding,temp,web);
+            var artifacts=new AnswerArtifacts(null,null,List.of(new AnswerArtifacts.Source("s1","d1","指南","https://example.com/guide","傀儡的升级与装备",null,"NATIVE","先组装，再升级。")),List.of());
+            var fallbacks=WebImagePolicy.facetFallbacks(db,artifacts,"如何组装并升级傀儡",List.of("升级"),1);
+            var pictures=service.fallbackPictures(fallbacks,artifacts.sources());
+            assertEquals(1,pictures.size());assertTrue(pictures.getFirst().caption().contains("来源图标"));
+            assertTrue(new ImageAssetStore(temp).available(pictures.getFirst().assetId(),pictures.getFirst().relativePath()));
+            assertEquals(1,FullWebMediaTest.count(db,"SELECT COUNT(*) FROM rag_web_image_reference WHERE status='EXCLUDED_SMALL'"));
+        }finally{db.shutdown();}
+    }
+
+    private static void block(java.sql.Connection c,String id,String doc,int ordinal,String heading,String path,String body)throws Exception {
+        try(var p=c.prepareStatement("INSERT INTO rag_content_block(id,document_id,heading_path,lineage,ordinal,kind,content,extraction_method) VALUES(?,?,?,?,?,?,?,?)")) {
+            p.setString(1,id);p.setString(2,doc);p.setString(3,heading);p.setString(4,path);p.setInt(5,ordinal);p.setString(6,"PARAGRAPH");p.setString(7,body);p.setString(8,"NATIVE");p.executeUpdate();
+        }
+    }
+    private static void reference(java.sql.Connection c,String id,String doc,String url,String caption,String step,String status,int ordinal)throws Exception {
+        try(var p=c.prepareStatement("INSERT INTO rag_web_image_reference(id,document_id,url,caption,heading,block_ordinal,status,step_text) VALUES(?,?,?,?,?,?,?,?)")) {
+            p.setString(1,id);p.setString(2,doc);p.setString(3,url);p.setString(4,caption);p.setString(5,"");p.setInt(6,ordinal);p.setString(7,status);p.setString(8,step);p.executeUpdate();
+        }
+    }
+    private static void asset(java.sql.Connection c,String id,String path,int width,int height)throws Exception {
+        try(var p=c.prepareStatement("INSERT INTO rag_image_asset(id,relative_path,media_type,width,height) VALUES(?,?,?,?,?)")) {
+            p.setString(1,id);p.setString(2,path+".png");p.setString(3,"image/png");p.setInt(4,width);p.setInt(5,height);p.executeUpdate();
+        }
+    }
+    private static void occurrence(java.sql.Connection c,String id,String doc,String image,String caption,int ordinal)throws Exception {
+        try(var p=c.prepareStatement("INSERT INTO rag_image_occurrence(id,document_id,image_id,caption,ordinal,role,analysis_status) VALUES(?,?,?,?,?,?,?)")) {
+            p.setString(1,id);p.setString(2,doc);p.setString(3,image);p.setString(4,caption);p.setInt(5,ordinal);p.setString(6,"ILLUSTRATION");p.setString(7,"CONTEXT_ONLY");p.executeUpdate();
+        }
+    }
+
     @Test void urlOverviewUsesRetrievedPageTitleButStillRequiresBoundContext()throws Exception {
         var db=DatabaseBuilder.atPath(temp.resolve("overview"));db.initDatabase();
         var web=new WikiScraperService(){@Override public Resource fetchResource(String url,String referer,boolean image,Map<String,String> headers){if(image)throw new AssertionError("Selection must not download");return new Resource(200,"<article><p>模组概览<img src='/overview.png' alt='示例模组-第1张图片'></p></article>".getBytes(java.nio.charset.StandardCharsets.UTF_8),"text/html",url,null,null);}};web.setResourceDatabase(db);

@@ -5,7 +5,7 @@ import java.util.*;
 /**
  * 回答的确定性整理：只删除“没有信息量”的内容，不改写事实。
  *
- * <p>当前处理两类：与问题无关的“没有装备槽位”式说明；整列为空（—、-、无、空）的表格列。
+ * <p>删除无关空槽位说明、空表格列和固定客套模板；事实与具体澄清保持原样。
  * 其余排版问题交给生成规则和人工评审，避免误删玩家需要的信息。
  */
 final class AnswerPostProcess {
@@ -13,8 +13,14 @@ final class AnswerPostProcess {
 
     static String apply(String answer,String question){
         if(answer==null||answer.isBlank())return answer;
+        var fenced=java.util.regex.Pattern.compile("(?s)```.*?(?:```|\\z)|~~~.*?(?:~~~|\\z)").matcher(answer);var result=new StringBuilder();int offset=0;
+        while(fenced.find()){result.append(applyPlain(answer.substring(offset,fenced.start()),question)).append(fenced.group());offset=fenced.end();}
+        return result.append(applyPlain(answer.substring(offset),question)).toString();
+    }
+    private static String applyPlain(String answer,String question){
         String text=dropEmptyEquipmentRemarks(answer,question);
         text=dropEmptyTableColumns(text);
+        text=text.replaceAll("(?m)^\\s*(?:如需更详细的信息，请尝试更具体地描述你的问题[^\\n]*|尝试更具体地描述问题，例如提及模组名称或物品英文名[。.]?)\\s*$", "");
         return text;
     }
 
@@ -38,7 +44,7 @@ final class AnswerPostProcess {
             int start=index;while(index<lines.size()&&isTableRow(lines.get(index)))index++;
             var block=new ArrayList<>(lines.subList(start,index));
             var fixed=dropEmptyColumns(block);
-            if(fixed.size()!=block.size()){lines.subList(start,index).clear();lines.addAll(start,fixed);index=start+fixed.size();}
+            if(!fixed.equals(block)){lines.subList(start,index).clear();lines.addAll(start,fixed);index=start+fixed.size();}
         }
         return String.join("\n",lines);
     }
@@ -48,17 +54,17 @@ final class AnswerPostProcess {
     private static List<String> dropEmptyColumns(List<String> rows){
         var cells=rows.stream().map(AnswerPostProcess::splitCells).toList();
         int width=cells.stream().mapToInt(List::size).min().orElse(0);
-        if(width<2)return rows;
+        if(width<2||rows.size()<3||cells.stream().anyMatch(row->row.size()!=width)||!cells.get(1).stream().allMatch(cell->cell.matches(":?-{3,}:?")))return rows;
         var empty=new boolean[width];
         for(int column=0;column<width;column++){
             boolean blank=true;
-            for(int row=0;row<rows.size();row++){
-                if(row==1)continue; // 分隔行
+            for(int row=2;row<rows.size();row++){
                 String value=cells.get(row).get(column);
                 if(!value.isBlank()&&!value.matches("[—-]{1,3}|无|空|N/A|—")){blank=false;break;}
             }
             empty[column]=blank;
         }
+        boolean allEmpty=true;for(boolean column:empty)allEmpty&=column;if(allEmpty)return rows;
         return rows.stream().map(row->{
             var parts=splitCells(row);var kept=new ArrayList<String>();
             for(int column=0;column<parts.size();column++)if(column>=width||!empty[column])kept.add(parts.get(column));

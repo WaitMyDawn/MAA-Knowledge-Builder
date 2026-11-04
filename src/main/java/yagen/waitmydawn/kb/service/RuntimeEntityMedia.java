@@ -239,6 +239,8 @@ final class RuntimeEntityMedia {
         String caption=picture.caption();
         int paren=caption.indexOf('（');String title=paren>0?caption.substring(0,paren):caption;
         if(title.length()>=2)keys.add(title);
+        // 酿造链卡没有单一注册名，用“酿造”定位到酿造台/流程段落，避免只落到末尾“参考配图”。
+        if("RUNTIME_RULE".equals(picture.role())&&caption.contains("酿造链"))keys.add("酿造");
         if(caption.contains("成长阶段：")){var matcher=java.util.regex.Pattern.compile("成长阶段：(\\d+)").matcher(caption);if(matcher.find())keys.add(matcher.group(1)+"阶");}
         return keys;
     }    /** 问题点名了装备状态：只有无装备图时不要用无装备图顶替。 */

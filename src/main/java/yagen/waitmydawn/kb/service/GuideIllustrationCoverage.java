@@ -12,6 +12,16 @@ public final class GuideIllustrationCoverage {
     private GuideIllustrationCoverage(){}
     private static List<Facet> facets(String question){return FACETS.stream().filter(f->matches(question,f.pattern())).toList();}
     private static boolean matches(String text,String regex){return Pattern.compile(regex,Pattern.CASE_INSENSITIVE).matcher(Objects.toString(text,"")).find();}
+    /** 复合操作题要求的图文维度；用于检索侧提前为缺失步骤补图。 */
+    public static List<String> requested(String question){return facets(question).stream().map(Facet::name).toList();}
+    /** 维度名对应的通用匹配式；供网页图片引用按图注/步骤/段落反向挑选。 */
+    public static String pattern(String facet){return FACETS.stream().filter(item->item.name().equals(facet)).map(Facet::pattern).findFirst().orElse("");}
+    public static boolean supports(String facet,AnswerArtifacts.Picture image){return FACETS.stream().filter(item->item.name().equals(facet)).findFirst().map(item->supports(image,item)).orElse(false);}
+    /** 已选图片尚未覆盖的复合步骤。回答已生成时与 {@link #audit} 使用同一判定。 */
+    public static List<String> missing(String question,List<AnswerArtifacts.Picture> pictures) {
+        var images=pictures==null?List.<AnswerArtifacts.Picture>of():pictures;
+        return facets(question).stream().filter(facet->images.stream().noneMatch(image->supports(image,facet))).map(Facet::name).toList();
+    }
     private static boolean supports(AnswerArtifacts.Picture image,Facet facet) {
         if(image.grounding()==null||image.grounding().blockId()==null)return false;
         String step=Objects.toString(image.grounding().stepText(),"");int newline=step.indexOf('\n');if(newline>=0)step=step.substring(newline+1);

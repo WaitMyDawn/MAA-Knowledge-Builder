@@ -327,6 +327,8 @@ public class MetricsHistoryService {
         map.put("questionHash", m.questionHash);
         map.put("knowledgeRetrieval",m.knowledgeRetrieval);
         map.put("mediaAudit",m.mediaAudit);
+        map.put("promptCost",m.promptCost);
+        map.put("unknownUsageCalls",m.unknownUsageCalls);
         map.put("answerGeneration",m.answerGeneration);
         map.put("knowledgeContextChunkIds",m.knowledgeContextChunkIds);
         map.put("knowledgeCitedSourceIds",m.knowledgeCitedSourceIds);
@@ -378,6 +380,8 @@ public class MetricsHistoryService {
         m.answerLength = i(map, "answerLength");
         m.questionHash = str(map, "questionHash");
         if(map.get("mediaAudit")!=null)m.mediaAudit=mapper.convertValue(map.get("mediaAudit"),MediaAudit.Report.class);
+        if(map.get("promptCost")!=null)m.promptCost=mapper.convertValue(map.get("promptCost"),yagen.waitmydawn.kb.dto.PromptCost.class);
+        if(map.get("unknownUsageCalls") instanceof Number calls)m.unknownUsageCalls=calls.intValue();
         if(map.get("knowledgeRetrieval")!=null) m.knowledgeRetrieval=mapper.convertValue(map.get("knowledgeRetrieval"),KnowledgeRetrievalService.Diagnostics.class);
         if(map.get("answerGeneration") instanceof String mode) m.answerGeneration=mode;
         if(map.get("knowledgeContextChunkIds") instanceof List<?> ids) m.knowledgeContextChunkIds=ids.stream().map(Object::toString).toList();

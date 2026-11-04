@@ -19,7 +19,7 @@ public final class InstallationClaims {
             "mcmod","modrinth","curseforge","forge","neoforge","fabric","quilt","minecraft","deepseek","onnx",
             "sql","tts","ocr","gpu","cpu","dlc","net","org","com","version","registry","spawn","loot"));
     private static final Pattern CLAIM=Pattern.compile(
-            "(已安装|未安装|没有安装|尚未安装|没装|未装|安装了|安装有)([\\s`\"']*)([a-z][a-z0-9_]{2,})(?![a-z0-9_:/])",
+            "(已安装|未安装|没有安装|尚未安装|没装|未装|安装了|安装有)([\\s`\"']*)([a-z][a-z0-9_]{2,})(?![a-z0-9_:/'])",
             Pattern.CASE_INSENSITIVE);
 
     private InstallationClaims(){}
@@ -47,7 +47,7 @@ public final class InstallationClaims {
         String fixed=answer;
         for(var conflict:conflicts){
             var pattern=Pattern.compile("(已安装|未安装|没有安装|尚未安装|没装|未装|安装了|安装有)([\\s`\"']*)"+
-                    Pattern.quote(conflict.token())+"(?![a-z0-9_:/])",Pattern.CASE_INSENSITIVE);
+                    Pattern.quote(conflict.token())+"(?![a-z0-9_:/'])",Pattern.CASE_INSENSITIVE);
             fixed=pattern.matcher(fixed).replaceAll(conflict.truth()+"$2"+Matcher.quoteReplacement(conflict.token()));
         }
         var notes=new LinkedHashSet<String>();
