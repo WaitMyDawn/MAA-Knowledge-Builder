@@ -37,13 +37,22 @@ public final class WebPageMediaService {
             try(var c=db.getConnection();var p=c.prepareStatement("SELECT stamp FROM rag_qa_page_state WHERE url=?")){p.setString(1,location);try(var r=p.executeQuery()){fresh=r.next()&&stamp.equals(r.getString(1));}}
             var stored=pageChunks(location);
             if(fresh&&!stored.isEmpty()){RetrievalTelemetry.operation("page.index.reused",System.nanoTime()-started,stored.size());return stored;}
-            var source=BuildRequest.Source.of(BuildRequest.Kind.URL,location);var original=context();var context=new BuildSourceProcessor.Context(original.database(),original.content(),original.images(),original.vectors(),original.embedder(),original.progress(),original.result(),true,stored.isEmpty(),original.visitedDocuments());context.content().saveSource(source);context.content().setSourceScope(source.id(),location,"WEB",name,mod);
+            var source=BuildRequest.Source.of(BuildRequest.Kind.URL,location);var original=context();var context=new BuildSourceProcessor.Context(original.database(),original.content(),original.images(),original.vectors(),original.embedder(),original.progress(),original.result(),true,stored.isEmpty(),original.visitedDocuments());
+            // 已登记来源的 scope 属于构建期身份；问答补检只更新正文/图片，不能把 MOD/MODPACK 降级成页面级 WEB。
+            boolean scoped=currentScope(source.id())!=null;
+            context.content().saveSource(source);
+            if(!scoped)context.content().setSourceScope(source.id(),location,"WEB",name,mod);
             new UrlBuildProcessor(scraper).withoutImageDownloads().processDocument(source,location,context,mod,name);
             if(mod!=null)try(var c=db.getConnection();var p=c.prepareStatement("UPDATE rag_vectors SET mod_id=?,mod_name=? WHERE chunk_id IN (SELECT id FROM rag_content_chunk WHERE document_id=?)")){p.setString(1,mod);p.setString(2,name);p.setString(3,document);p.executeUpdate();}
             stored=pageChunks(location);if(stored.isEmpty())throw new IllegalStateException("网页未生成可检索正文");
             try(var c=db.getConnection();var p=c.prepareStatement("MERGE INTO rag_qa_page_state KEY(url) VALUES(?,?)")){p.setString(1,location);p.setString(2,stamp);p.executeUpdate();}
             RetrievalTelemetry.operation("page.index.imported",System.nanoTime()-started,stored.size());return stored;
         }catch(Exception e){throw new IllegalStateException("公共网页知识同步失败："+location,e);}
+    }
+    /** 来源已登记过 scope 时保持原身份；只有新页面才建立页面级 WEB scope。 */
+    private String currentScope(String sourceId){
+        try(var c=db.getConnection();var p=c.prepareStatement("SELECT scope_id FROM rag_knowledge_source WHERE id=?")){p.setString(1,sourceId);try(var r=p.executeQuery()){return r.next()?r.getString(1):null;}}
+        catch(java.sql.SQLException failed){throw new IllegalStateException("资料来源身份读取失败",failed);}
     }
     private List<TextChunker.TextChunk> pageChunks(String location)throws Exception {
         var list=new ArrayList<TextChunker.TextChunk>();try(var c=db.getConnection();var p=c.prepareStatement("SELECT v.chunk_id,v.chunk_text,v.mod_id,v.mod_name,v.chunk_type,v.source_path FROM rag_vectors v JOIN rag_content_chunk k ON k.id=v.chunk_id JOIN rag_document d ON d.id=k.document_id WHERE d.location=? ORDER BY k.ordinal")){p.setString(1,location);try(var r=p.executeQuery()){while(r.next())list.add(new TextChunker.TextChunk(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getString(5),r.getString(6)));}}return list;

@@ -443,7 +443,13 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
                 result.mediaStateKey = targets.size() == 1 && stateKey.matches("[0-9a-fA-F]{8,64}") ? stateKey : null;
                 String state = args.path("state").asText("");
                 String modality=question.contains("实体")&&!question.contains("物品")?"实体":question.contains("物品")&&!question.contains("实体")?"物品":"";
-                result.mediaQuestion = String.join(" ", targets) + " " + (state.isBlank() ? String.join(" ", MediaRequestPlanner.selectors(question).values()) : state) + " 展示"+modality+"图片";
+                var mediaQuestion=new StringBuilder();
+                for(String target : targets){
+                    mediaQuestion.append(target).append(' ');
+                    var perTarget=MediaRequestPlanner.selectorsFor(target,question,rawQuestion);
+                    if(!perTarget.isEmpty())mediaQuestion.append(String.join(" ",perTarget.values())).append(' ');
+                }
+                result.mediaQuestion = mediaQuestion + (state.isBlank()? "" : state+" ") + "展示"+modality+"图片";
                 prepared = false;
                 result.runtimeMediaPrepared = false;
             }
@@ -539,6 +545,10 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         }
         if (tool.equals("query_loot")) acquisitionCoverage.resolvedAll();
         String category = tool.equals("query_attributes") ? args.has("state_key") || args.has("baby") || args.has("equipped") || args.has("origin") || args.has("filters_json") ? "entity_state_attributes" : "entity_attributes" : tool.equals("query_trades") ? "trades" : tool.equals("query_loot") ? "loot_tables" : text(args, "category");
+        if (tool.equals("query_world_rules") && "multiblocks".equals(category)) {
+            String listed = multiblockCatalog(query, id, args.path("subject").asText(""), args.path("mod").asText(""));
+            if (listed != null) return listed;
+        }
         if(Set.of("registries","entity_attributes","entity_state_attributes","item_attributes","entity_icons").contains(category))checkObject(id);
         RuntimeStructuredQuery.Page page;
         var typedFilters = new TreeMap<String, String>();
@@ -682,6 +692,74 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
      */
     static boolean defaultsOnly(JsonNode data) {
         return data.path("defaultsOnly").asBoolean(false);
+    }
+
+    /**
+     * 多方块目录的发现入口：未给 id 时按 subject/mod 列候选；id 不精确时返回建议；精确命中交给通用读取并出分层卡。
+     */
+    private String multiblockCatalog(RuntimeStructuredQuery query,String id,String subject,String mod) throws Exception {
+        var page=query.page("multiblocks",null,RuntimeStructuredQuery.State.any(),0,100);
+        if(page.rows().isEmpty())return null;
+        var rows=page.rows();
+        if(!id.isBlank()){
+            if(rows.stream().anyMatch(row->row.key().id().equals(id)))return null;
+            var suggestions=rows.stream().filter(row->multiblockMatches(row,subject,mod)||row.key().id().contains(id)).toList();
+            return multiblockList(suggestions.isEmpty()?"NOT_FOUND_ALL_CANDIDATES":"NOT_FOUND_SUGGESTIONS",suggestions.isEmpty()?rows:suggestions);
+        }
+        var candidates=rows.stream().filter(row->multiblockMatches(row,subject,mod)).toList();
+        if(candidates.isEmpty())return multiblockList("NO_NAME_MATCH_ALL_CANDIDATES",rows);
+        if(candidates.size()==1)
+            return JSON.writeValueAsString(Map.of("status","SINGLE_MATCH","total",1,"nextOffset",-1,
+                    "records",JSON.createArrayNode().add(recordView(query,candidates.getFirst(),""))));
+        return multiblockList("LIST",candidates);
+    }
+
+    private String multiblockList(String status,List<RuntimeStructuredQuery.Row> rows) throws Exception {
+        var candidates=JSON.createArrayNode();
+        for(var row:rows){
+            var data=row.data();
+            candidates.addObject().put("id",row.key().id())
+                    .put("name",data.path("name").asText(row.key().id()))
+                    .put("controller",data.path("controller").asText(""))
+                    .put("adapter",data.path("adapter").asText(""))
+                    .put("size",data.path("size").toString())
+                    .put("coverage",data.path("coverage").asText(""))
+                    .put("limitation",data.path("limitation").asText(""));
+        }
+        return JSON.writeValueAsString(Map.of("status",status,"total",candidates.size(),"nextOffset",-1,"candidates",candidates,
+                "hint","Read one with query_world_rules(category=multiblocks, id=...). The layered layout card renders automatically; web text cannot replace a stored declaration."));
+    }
+
+    private static boolean multiblockMatches(RuntimeStructuredQuery.Row row,String subject,String mod){
+        String id=row.key().id().toLowerCase(Locale.ROOT);
+        var data=row.data();
+        String label=(data.path("name").asText("")+" "+data.path("controller").asText("")+" "+data.path("adapter").asText("")).toLowerCase(Locale.ROOT);
+        if(mod!=null&&!mod.isBlank()&&id.startsWith(mod.toLowerCase(Locale.ROOT)+":"))return true;
+        if(subject!=null&&!subject.isBlank()){
+            String wanted=subject.toLowerCase(Locale.ROOT).strip();
+            if(id.contains(wanted)||label.contains(wanted))return true;
+        }
+        return false;
+    }
+
+    /** 搭建类问题在未读取可渲染声明前保持缺口，避免预算被配方查询耗尽。 */
+    private List<String> multiblockCandidatesForQuestion(){
+        try{
+            var page=runtime().page("multiblocks",null,RuntimeStructuredQuery.State.any(),0,100);
+            var mods=new LinkedHashSet<String>();
+            focus.values().forEach(object->{if(object.modId()!=null&&!object.modId().isBlank())mods.add(object.modId());});
+            result.resolvedEntities.forEach(entity->{if(entity.modId()!=null&&!entity.modId().isBlank())mods.add(entity.modId());});
+            if(boundNamespace!=null&&!boundNamespace.isBlank())mods.add(boundNamespace);
+            var ids=new ArrayList<String>();
+            for(var row:page.rows()){
+                String id=row.key().id();
+                boolean modMatch=mods.stream().anyMatch(mod->id.startsWith(mod+":"));
+                String name=row.data().path("name").asText("");
+                boolean textMatch=question!=null&&(question.contains(id)||(!name.isBlank()&&question.contains(name)));
+                if(modMatch||textMatch)ids.add(id);
+            }
+            return ids;
+        }catch(Exception failure){return List.of();}
     }
 
     /**
@@ -1266,6 +1344,12 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
 
     public String readinessGap() {
         if (clarification != null || localOnly()) return null;
+        if (result.multiblockId == null && question != null && question.matches("(?s).*(搭建|如何搭|怎么搭|怎么建|如何建|建造|多方块).*")) {
+            var candidates = multiblockCandidatesForQuestion();
+            if (!candidates.isEmpty())
+                return "该问题要求说明搭建或多方块结构，但本轮尚未读取可渲染的多方块声明：" + candidates
+                        + "。先 query_world_rules(category=multiblocks, subject=<对象名称> 或 mod=<命名空间>) 列出候选，再按返回的 id 读取；布局、控制器、材料与步骤以该声明为准，网页只能补充。";
+        }
         if(familySelectionPending)return "find_family returned category choices, not family members. Select justified category ids or an advertised structured fallback before claiming a family inventory; unavailable membership must remain unconfirmed.";
         var unread=familyPredicatePages.stream().filter(url->result.vectorResults.stream().noneMatch(hit->url.equals(hit.sourcePath())&&!"category_catalog".equals(hit.type())&&!Objects.toString(hit.type(),"").startsWith("structured_"))).toList();
         if(!unread.isEmpty())return "Family candidates still lack member-page evidence for the requested predicate: "+unread+". Read the relevant pages or keep those members explicitly unconfirmed; catalog membership alone does not prove the predicate.";

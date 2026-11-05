@@ -39,4 +39,39 @@ class AnswerImageSelectionTest {
         AnswerImageSelection.apply(result, "展示幼年牛图片");
         assertTrue(result.artifacts.pictures().isEmpty());
     }
+
+    @Test void crossSentenceAdmissionDoesNotDropIllustrations() {
+        var artifacts = new AnswerArtifacts("scope", "scope",
+                List.of(new AnswerArtifacts.Source("s1", "d1", "利维坦", "https://example.com/leviathan", "属性", null, "NATIVE", "利维坦 生命值")),
+                List.of(picture("i1", "a1", "s1", "利维坦-第1张图片", "ILLUSTRATION")), List.of("s1"));
+        var result = new QaPipeline.QaResult();
+        result.artifacts = artifacts;
+        result.answer = "利维坦打法。\n\n本轮材料未提供。\n\n图片参考见下。";
+        AnswerImageSelection.apply(result, "灾变的利维坦怎么打？");
+        assertEquals(1, result.artifacts.pictures().size());
+    }
+
+    @Test void pictureReferencePreventsDropping() {
+        var artifacts = new AnswerArtifacts("scope", "scope",
+                List.of(new AnswerArtifacts.Source("s1", "d1", "利维坦", "https://example.com/leviathan", "属性", null, "NATIVE", "利维坦 生命值")),
+                List.of(picture("i1", "a1", "s1", "利维坦-第1张图片", "ILLUSTRATION")), List.of("s1"));
+        var result = new QaPipeline.QaResult();
+        result.artifacts = artifacts;
+        result.answer = "本轮未提供图片，见 ![利维坦](kb-image:i1)。";
+        AnswerImageSelection.apply(result, "灾变的利维坦怎么打？");
+        assertEquals(1, result.artifacts.pictures().size());
+    }
+
+    @Test void citedSamePageDifferentSourceRowKeepsIllustration() {
+        var sources = List.of(
+                new AnswerArtifacts.Source("s1", "d1", "利维坦", "https://example.com/leviathan", "属性", null, "NATIVE", "利维坦 生命值"),
+                new AnswerArtifacts.Source("s2", "d1", "利维坦", "https://example.com/leviathan", "技能", null, "NATIVE", "利维坦 技能"));
+        var artifacts = new AnswerArtifacts("scope", "scope", sources,
+                List.of(picture("i1", "a1", "s2", "利维坦-第1张图片", "ILLUSTRATION")), List.of("s1"));
+        var result = new QaPipeline.QaResult();
+        result.artifacts = artifacts;
+        result.answer = "利维坦打法。";
+        AnswerImageSelection.apply(result, "灾变的利维坦怎么打？");
+        assertEquals(1, result.artifacts.pictures().size());
+    }
 }

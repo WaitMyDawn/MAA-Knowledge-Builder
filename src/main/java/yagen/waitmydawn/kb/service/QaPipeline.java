@@ -692,7 +692,7 @@ public class QaPipeline {
         PlayerMediaPresentation.captions(result);
         if (turn.clarification != null) result.answer = turn.clarification;
         else if(PlayerMediaPresentation.pure(effectiveQuestion)){
-            entityMedia.finish(result,effectiveQuestion);
+            // 纯外观任务不调用最终组织模型；正文与配图来自同一份 prepare 选择结果，缺口说明在下沉阶段补齐。
             result.presentationOnly=true;
             result.answer=PlayerMediaPresentation.render(result);
             m.answerGeneration=result.artifacts.pictures().isEmpty()?"LOCAL_MEDIA_LIMITATION":"LOCAL_MEDIA_RESULT";
@@ -704,7 +704,7 @@ public class QaPipeline {
             } else
                 result.answer = outcome.reason().startsWith("MODEL_ERROR") ? "工具决策模型未成功返回，本轮尚未完成取证。请检查模型服务或稍后重试。" : "本轮没有取得足够证据，无法确认。工具执行状态：" + outcome.reason();
         } else {
-            var context = new AnswerContext(question, QuestionType.GENERAL, result.resolvedEntities, result.recipeResults.stream().map(recipe -> new AnswerAgent.RecipeMatch(recipe.recipeJson(), recipe.outputItem(), recipe.sourceMod(), recipe.sourceType())).toList(), result.vectorResults, null, List.of(), null, result.sourceScope, RuntimeEvidencePolicy.context(m.runtimeEvidence, turn.documentScope()) + "\nCurrent task: " + effectiveQuestion + "\n" + turn.coverageContext() + "\n名称口径：物品、方块与工作站的中文名必须使用证据里的 name 字段，不要自行改写或换成俗称。" + "\n面向玩家的组织规则：谈获取途径时覆盖证据里出现的每一类（自然生成/合成/修复/掉落/交易），写出具体地点或容器，不要只写其中一类；先给结论与可执行做法，再补机制和数值；不写内部字段名、状态键、哈希或 appearanceHash/FULL_CARTESIAN/SAFE_DETACHED_SETUP 这类导出元数据；表格没有来源就去掉来源列，不留空列；没有证据的“材料准备（一跳）”不写；对象没有装备槽位时不必说明；不要整段写“本轮无法确认的部分”，只在确实缺关键事实时用一句话点明。" + "\n属性口径：先检查 context、sampleOrigin、defaultsOnly 和采样条件；真实已加载或显式捕获实体的属性优先于离世界工厂样本。base 是基础值，effective 包含采样时修饰符，攻击属性不等于最终命中伤害。不能仅凭 1.0 判断采错，也不能用源码构建器或网页数值覆盖已确认的真实实例；来源冲突需要保留条件与差异。" + entityMedia.evidence(result, KnowledgeRetrievalService.evidence(result.artifacts, null)));
+            var context = new AnswerContext(question, QuestionType.GENERAL, result.resolvedEntities, result.recipeResults.stream().map(recipe -> new AnswerAgent.RecipeMatch(recipe.recipeJson(), recipe.outputItem(), recipe.sourceMod(), recipe.sourceType())).toList(), result.vectorResults, null, List.of(), null, result.sourceScope, RuntimeEvidencePolicy.context(m.runtimeEvidence, turn.documentScope()) + "\nCurrent task: " + effectiveQuestion + "\n" + turn.coverageContext() + "\n名称口径：物品、方块与工作站的中文名必须使用证据里的 name 字段，不要自行改写或换成俗称。" + "\n面向玩家的组织规则：谈获取途径时覆盖证据里出现的每一类（自然生成/合成/修复/掉落/交易），写出具体地点或容器，不要只写其中一类；先给结论与可执行做法，再补机制和数值；不写内部字段名、状态键、哈希或 appearanceHash/FULL_CARTESIAN/SAFE_DETACHED_SETUP 这类导出元数据；表格没有来源就去掉来源列，不留空列；没有证据的“材料准备（一跳）”不写；对象没有装备槽位时不必说明；不要整段写“本轮无法确认的部分”，只在确实缺关键事实时用一句话点明；交互、使用、召唤、建造、升级这类操作题必须写出可执行动作与材料或按键，只写用途和效果不算回答；搭建或多方块题必须以本轮读取的多方块声明为准（分层布局、控制器、材料计数），未读取时明确指出缺口，不能拿网页文字或配方代替结构布局。" + "\n属性口径：先检查 context、sampleOrigin、defaultsOnly 和采样条件；真实已加载或显式捕获实体的属性优先于离世界工厂样本。base 是基础值，effective 包含采样时修饰符，攻击属性不等于最终命中伤害。不能仅凭 1.0 判断采错，也不能用源码构建器或网页数值覆盖已确认的真实实例；来源冲突需要保留条件与差异。" + entityMedia.evidence(result, KnowledgeRetrievalService.evidence(result.artifacts, null)));
             long answerStarted = System.nanoTime();
             result.answer = answerAgent.composeSinglePass(context);
             m.answerGeneration = answerAgent.lastGenerationMode();
@@ -1824,6 +1824,8 @@ public class QaPipeline {
         public MediaAudit.EntityTrace entityImageAudit;
         public boolean runtimeMediaPrepared;
         final Map<String, com.fasterxml.jackson.databind.JsonNode> runtimeMediaStates = new HashMap<>();
+        /** 配图请求明文 → 实际生成的图片 id；纯外观展示按同一份选择结果写正文。 */
+        public final Map<String, String> mediaRequestPictures = new LinkedHashMap<>();
         public final List<String> mediaWarnings = new ArrayList<>();
         public MediaRequestPlanner.Plan mediaPlan;
         public RendererService.RenderBatch recipeRenderBatch;

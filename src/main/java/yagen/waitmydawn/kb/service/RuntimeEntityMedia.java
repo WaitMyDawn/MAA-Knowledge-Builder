@@ -124,7 +124,8 @@ final class RuntimeEntityMedia {
                     if(pictures.stream().anyMatch(p->p.id().equals(key)))continue;
                     String proof="注册名："+id+"；实机默认物品图；不代表指定组件/NBT状态；环境："+profile;
                     addSource(sources,new AnswerArtifacts.Source(sourceId,"runtime-item:"+profile+":"+id,icon.name(),"mkb-runtime:"+profile+"/item_icons/"+id,"物品默认外观",null,"GAME_GUI",proof));
-                    pictures.add(new AnswerArtifacts.Picture(key,icon.assetId(),relative,icon.name()+"（"+id+"；实机默认物品外观）",sourceId,"ITEM",List.of(),proof,null,null,null,new AnswerArtifacts.RuntimeIdentity(id,"default",Map.of())));continue;
+                    pictures.add(new AnswerArtifacts.Picture(key,icon.assetId(),relative,icon.name()+"（"+id+"；实机默认物品外观）",sourceId,"ITEM",List.of(),proof,null,null,null,new AnswerArtifacts.RuntimeIdentity(id,"default",Map.of())));
+                    result.mediaRequestPictures.put(request.query(),key);continue;
                 }
                 var candidates=new ArrayList<JsonNode>();var equipment=equipment(request.query());
                 String exactState=(result.mediaTargets.isEmpty()||result.mediaTargets.contains(id))?result.mediaStateKey:null;
@@ -148,7 +149,7 @@ final class RuntimeEntityMedia {
                 String proof="注册名："+id+"；请求："+request.label()+"；状态键："+state+"；"+label;
                 addSource(sources,new AnswerArtifacts.Source(sourceId,"runtime-entity:"+profile+":"+id+":"+state,request.label(),"mkb-runtime:"+profile+"/entity_icons/"+id+"/"+state,"导出实体状态",null,"GAME_GUI",proof));
                 result.runtimeMediaStates.put(key,row);
-                pictures.add(new AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),request.label()+"（"+id+"；"+label+"）",sourceId,"ENTITY",List.of(),proof,null,null,null,identity(row,state)));trail.selected++;trail.record(row,"SELECTED","REGISTRY_AND_STATE_MATCH");
+                pictures.add(new AnswerArtifacts.Picture(key,asset.id(),asset.relativePath(),request.label()+"（"+id+"；"+label+"）",sourceId,"ENTITY",List.of(),proof,null,null,null,identity(row,state)));result.mediaRequestPictures.put(request.query(),key);trail.selected++;trail.record(row,"SELECTED","REGISTRY_AND_STATE_MATCH");
             }catch(Exception failure){missing(result,request,"图片不可用："+failure.getClass().getSimpleName());}
         }
         result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),sources,pictures,result.artifacts.citedSourceIds());result.entityImageAudit=trail.snapshot();
@@ -221,7 +222,7 @@ final class RuntimeEntityMedia {
         if(!leftovers.isEmpty())answer+="\n\n"+(result.mediaPlan!=null&&result.mediaPlan.comparison()?"外观对照：":"参考配图：")+"\n\n"+String.join("\n\n",leftovers);
         if(!illustrations.isEmpty())answer+="\n\n相关插图：\n\n"+String.join("\n\n",illustrations);
         if(result.mediaPlan!=null&&result.mediaPlan.comparison()&&kept.stream().filter(p->p.role().equals("ENTITY")).count()>1)answer+="\n\n各图独立缩放，画面占比不代表实际体型比例；外观相同的状态可能共用图像。";
-        if(!result.presentationOnly&&!result.mediaWarnings.isEmpty())answer+="\n\n配图说明：\n"+result.mediaWarnings.stream().distinct().map(w->"- "+w).collect(java.util.stream.Collectors.joining("\n"));
+        if(!result.mediaWarnings.isEmpty())answer+="\n\n配图说明：\n"+result.mediaWarnings.stream().distinct().map(w->"- "+w).collect(java.util.stream.Collectors.joining("\n"));
         result.answer=answer;result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),result.artifacts.sources(),kept,result.artifacts.citedSourceIds());
     }
     /** 图片插到提到该对象/状态的段落之后；找不到合适段落时留给末尾的参考配图。 */

@@ -4,7 +4,7 @@
 
 ## 1. 当前状态
 
-- `golden-set-modEnv1.json`：61轮、11个会话，当前version=2。v1题目和原始结果冻结在2026-11-01的完整run内，不能直接跨版本比较通过率。
+- `golden-set-modEnv1.json`：61轮、11个会话，当前version=3（2026-11-05 由 v2 升级：仅 Gameplay-04 题面去掉龙尸交互提示，其余 60 题、断言与会话结构不变；SHA-256 `435faa59…4488`）。v1/v2 题目和原始结果冻结在各自 run 内，不能直接跨版本比较通过率；第三轮为首次 v3 运行，与旧版比较时 Gameplay-04 单列。
 - Crafting 9轮、Entity 8轮、Gameplay 15轮、Webpage 10轮、Error 7轮，各类别一个连续会话；MultiStep 12轮，分成6个独立的双轮会话。
 - 问题编号各类别从01连续递增，MultiStep按01–12递增；会话ID与轮次ID是不同层级。
 - 旧四题集位于 `old/`，不修改旧题使其迁就新结果。
@@ -16,6 +16,10 @@
 第二轮执行与归档（2026-11-03 执行，2026-11-05 正式归档）：第一轮原始记录、61 份人工评级及复核结果已核对并另存收尾副本；11 个会话、38 个图片的导入与重复导入验证通过。见 [第一轮收尾](golden-set-modEnv1/round1-closeout.md) 和 [第二轮准备](golden-set-modEnv1/round2-readiness.md)。新 0.16.3 数据库及独立副本已检查快照、ONNX profile 和必需网页来源。第二轮执行身份为 `run-20261103-141943-1365e87d-round2`（61 轮/11 会话，隔离库 `target/round2-run1-db`，无裁判，488 请求上限）；正式 `result.md` 已生成，61/61 执行、0 错误、0 未记录，原始规则 50/61，人工 D 否决后复核 47/61；人工 S/A/B/C/D 为 30/14/8/2/7，S+A=72.13%。根 `result.md` 与 `history/run-20261103-141943-1365e87d-round2/result.md` SHA-256 均为 `88a0e52705279f74b6f03cd934806101baae77e1010ffe95048ab9acd5a32382`；history 下保留 `eval.md`、`human-review.json`、`reviewed-rule-decisions.json`。2026-11-03 晚仅对 Webpage-02/06 做隔离库定向复跑（Spec §15.10），不代表其他题复测。`active-run.json` 指向第二轮；第三轮开始前仍需 `-ArchivePreviousReview` 和新的凭据/题量/请求上限授权。
 
 - 第二轮后的修复（不等同于新一轮全量验收）：P4 卡面/显示已收尾，P5 剩余题定向 11/11，全量自动测试 575 项、0 失败、11 条件跳过。P4/P5 定向结果不能替代完整 61 题第三轮；第三轮尚未启动。
+- 基础库代次（2026-11-05）：实际库已用 MKB-Export **0.16.4** 导出包在 15:55–16:04 完成 REBUILD（`build-tasks/b0d1742c…`，状态 PUBLISHED）；Build 沿用旧 scan 标记，但运行快照实际记录 `mkb_export=0.16.4`（第三轮 manifest 已确认），六法师/Boss 均有 `*_spawn_adult_equipped.png`。
+- 第三轮已执行（2026-11-05 20:54–21:13）：`run-20261105-205429-7fef481e-modEnv1`，题集 v3（SHA `435faa59…4488`），隔离库 `target/round3-run1-db`（源库哈希 `9a2b8936…` 未变），488 上限，`--repeat 1 --no-judge`；manifest COMPLETED、61/61、0 错误、0 归档错误，墙钟 1128 秒。原始规则 50/61（82.0%）。`eval.md` 已生成 61 题空白模板，`result.md` 尚未生成。与第二轮同为 50/61 但构成不同：6 道真实转 PASS（Crafting-03、Entity-03、Gameplay-11、Webpage-02/06、Error-05），8 道新 FAIL（Entity-07/08、Gameplay-05/07/10、Webpage-08/09/10），另有 8 轮未走模型作答（Error-01～04、MultiStep-03/04/05/11），其中 Error-04、MultiStep-04 的规则 PASS 是本地模板造成的假通过。详见 Spec §15.21“第三轮执行结果”。
+- 第三轮修复与定向验证（2026-11-05 晚）：已按通用规则修复 4 类缺陷并另开定向批次，第三轮答案与 `eval.md` 未改。①`PlayerMediaPresentation` 增加“解释/说明/比较”门槛，正文与 `prepare` 选图共用同一结果；②`WebPageMediaService` 补检已登记来源时不再覆盖 `scope_id/scope_kind`；③`query_images` 的状态条件按对象绑定，村民职业不再泄漏给 BOSS；④`TaskEvidence` 交互/获取词表补“喂食/投喂、烧炼/熔炼/锻造/加工/制作”，人工 D 复核守卫保持通过（旧答案复核仍 29/61）。全量自动测试 **584 项、0 失败、11 条件跳过**。定向 `run-20261105-fix18-verify`（18 轮/7 会话，隔离库 `target/round3b-fix-db`，上限 160，无裁判）：108 次模型调用、输入 1,542,094/输出 31,858 Token、57 HTTP、0 错误；当场规则 13/18，最终规则离线重判 14/18。已修好 8 道本地模板题、Entity-07/08 双 BOSS 图、Webpage-08/09/10 的 scope；Gameplay-05/07/10 与 Webpage-08/10 的残余问题由第二批处理（见下条）。第四轮完整 61 题尚未开始。
+- 第二批修复与 6 轮定向验证（2026-11-05 晚）：①`query_world_rules` 的 `multiblocks` 支持 `subject`/`mod` 列表与 id 前缀建议，命中后读取分层视图并自动出分层卡；`readinessGap` 对搭建类问题在未读声明前保持缺口。②`AnswerImageSelection` 的“没有可用图片”改为按句判断且已引用图片时不清理，来源引用改为同页文档级比较，并为每张被丢弃的插图记录原因。③`TaskEvidence` 的肯定文本改为分句保留，同一行“已确认步骤（细节未确认）”不再整行丢弃；标题行不计入搭建布局覆盖。全量自动测试 **588 项、0 失败、11 条件跳过**。定向 `run-20261105-fix6-verify`（6 轮/2 会话，隔离库 `target/round3c-fix2-db`，上限 80，无裁判）：6 次模型作答、50 HTTP、0 错误；Gameplay-05 读到 `iceandfire:dragonforge/fire`、控制器 `dragonforge_fire_core_disabled` 并出 `多方块分层工作示例` 卡，当场 5/6，按最终规则对同一批答案离线重判 **6/6**（Gameplay-10 转 PASS，未新增模型调用）。Webpage-08/10 分别保留 3/4 张有效插图，无空引用残留。
 
 运行索引 `node scripts/summarize-runs.js` 按冻结题集版本、摘要及题数分组，不能仅因同为 61 题直接比较 v1/v2。未分类及 invalid 运行不默认计入趋势；表中逐轮累计秒不是进程总墙钟，环境、模型及缓存仍需另核对。
 

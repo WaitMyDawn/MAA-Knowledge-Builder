@@ -47,7 +47,23 @@ final class MediaRequestPlanner {
     }
     private static String kind(String branch,String full,String registered){boolean entity=branch.matches("(?is).*(实体|生物|怪物|entity).*"),item=branch.matches("(?is).*(物品|道具|item).*" );if(entity&&!item)return "ENTITY";if(item&&!entity)return "ITEM";if(full.contains("实体")&&!full.contains("物品"))return "ENTITY";return registered.equals("ENTITY")?"ENTITY":"ITEM";}
     private static String equipment(String branch){var m=Pattern.compile("(?:穿着|穿戴|戴着|戴|手持|装备了|装备着)([^，。；和与]{1,70})").matcher(branch);return m.find()?m.group():"";}
-    static Map<String,String> selectors(String question){var values=new LinkedHashMap<String,String>();var matcher=CONDITION.matcher(question);while(matcher.find()){var v=value(matcher.group());values.put(v.axis().equals("color")?"variant":v.axis(),v.query());}String gear=equipment(question);if(!gear.isBlank())values.put("equipment",gear);return values;}
+    static Map<String,String> selectors(String question){String q=Objects.toString(question,"");var values=new LinkedHashMap<String,String>();var matcher=CONDITION.matcher(q);while(matcher.find()){var v=value(matcher.group());values.put(v.axis().equals("color")?"variant":v.axis(),v.query());}String gear=equipment(q);if(!gear.isBlank())values.put("equipment",gear);return values;}
+    /**
+     * 逐对象取状态条件：优先使用该对象在展开文本中的相邻条件，未出现在展开文本的新对象只用用户原话。
+     * 避免把上一轮其他对象（例如村民的职业）的条件套到本轮新解析的对象上。
+     */
+    static Map<String,String> selectorsFor(String target,String expanded,String raw){
+        if(target!=null&&expanded!=null&&!expanded.isBlank()){
+            int at=expanded.indexOf(target);
+            if(at>=0){
+                int from=at+target.length(),end=expanded.length();
+                var ids=ID.matcher(expanded);
+                while(ids.find())if(ids.start()>=from){end=ids.start();break;}
+                return selectors(expanded.substring(from,Math.min(end,expanded.length())));
+            }
+        }
+        return selectors(raw);
+    }
     private static Value value(String word){if(word.contains("="))return new Value(word.substring(0,word.indexOf('=')),word);
         if(word.matches("第?[一二三四五六七八九十百0-9]+(?:阶段|阶)")){String v=word.replaceAll("第|阶段|阶","");String[] n={"一","二","三","四","五","六","七","八","九","十"};for(int i=0;i<n.length;i++)if(v.equals(n[i]))v=Integer.toString(i+1);return new Value("growth_stage","growth_stage="+v);}
         return switch(word){case "成年","adult"->new Value("age","age=adult");case "幼年","幼体","宝宝","baby"->new Value("age","age=baby");case "雌性","母龙"->new Value("sex","sex=female");case "雄性","公龙"->new Value("sex","sex=male");case "驯服"->new Value("tamed","tamed=true");case "未驯服"->new Value("tamed","tamed=false");case "剪毛"->new Value("sheared","sheared=true");case "未剪毛"->new Value("sheared","sheared=false");case "带电","闪电苦力怕","充能"->new Value("charged","charged=true");case "未充能"->new Value("charged","charged=false");case "宝石蓝","蓝宝石"->new Value("color","variant=sapphire");default->{String axis=word.matches(".*色")?"color":word.matches(".*(实例|样本|捕获|初始化)")?"origin":word.matches(".*(装备|裸装|空手)")?"equipment":Set.of("沙漠","丛林","平原","热带草原","雪地","沼泽","针叶林").contains(word)?"biome":Set.of("虎斑","狸花","暹罗","布偶","波斯","英国短毛","三花","白猫","纯黑","红蓝","黄蓝").contains(word)?"variant":word.equals("大师")||word.matches("[1-5]级")?"level":"profession";yield new Value(axis,word);}};

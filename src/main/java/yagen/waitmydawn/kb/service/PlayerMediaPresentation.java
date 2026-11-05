@@ -5,8 +5,14 @@ import java.util.*;
 
 /** 纯外观任务按最终可用图片生成展示块，介绍文字与图片共用同一选择结果。 */
 final class PlayerMediaPresentation {
+    /**
+     * 题面要求解释、比较或说明缺失状态时，答案必须经过组织模型；
+     * 纯外观展示只适用于“只要图”的请求。
+     */
+    private static final java.util.regex.Pattern EXPLAIN=java.util.regex.Pattern.compile("说明|解释|为何|为什么|是否存在|不存在|可用状态|没有对应|原因|区别|差异|对比|比较|\\bexplain\\b",java.util.regex.Pattern.CASE_INSENSITIVE);
     static boolean requested(String question){return LocalQuestionPolicy.decide(question).appearance()||Objects.toString(question,"").matches("(?s).*(插图|步骤图|结构图|示意图|截图).*");}
-    static boolean pure(String question){var policy=LocalQuestionPolicy.decide(question);return requested(question)&&!policy.externalKnowledge()&&!policy.recipe();}
+    static boolean explains(String question){return question!=null&&EXPLAIN.matcher(question).find();}
+    static boolean pure(String question){var policy=LocalQuestionPolicy.decide(question);return requested(question)&&!policy.externalKnowledge()&&!policy.recipe()&&!explains(question);}
     static void captions(QaPipeline.QaResult result){
         var pictures=new ArrayList<AnswerArtifacts.Picture>();
         var states=new HashSet<AnswerArtifacts.RuntimeIdentity>();
@@ -31,15 +37,14 @@ final class PlayerMediaPresentation {
     static String render(QaPipeline.QaResult result){
         var text=new ArrayList<String>();var used=new HashSet<String>();
         if(result.mediaPlan!=null)for(var request:result.mediaPlan.requests()){
-            var picture=result.artifacts.pictures().stream().filter(value->{
-                if(!Set.of("ENTITY","ITEM").contains(value.role()))return false;
-                if(value.runtimeIdentity()!=null&&!request.subject().registry().equals(value.runtimeIdentity().registry()))return false;
-                if(value.runtimeIdentity()==null&&!value.context().contains(request.subject().registry()))return false;
-                var state=result.runtimeMediaStates.get(value.id());try{return state==null||EntityAppearanceState.matches(state,request.query());}catch(java.io.IOException invalid){return false;}
-            }).findFirst();
-            if(picture.isPresent()){
-                var value=picture.get();if(used.add(value.id()))text.add("[[image:"+value.id()+"]]");
-            }else text.add("本次快照没有与“"+request.label()+"”匹配的可用图片。");
+            // 直接消费 prepare 阶段的请求→图片映射：正文与图片出自同一次选择，避免“无图”与配图并存。
+            String pictureId=result.mediaRequestPictures.get(request.query());
+            if(pictureId==null)pictureId=result.artifacts.pictures().stream()
+                    .filter(value->Set.of("ENTITY","ITEM").contains(value.role()))
+                    .filter(value->value.caption()!=null&&value.caption().startsWith(request.label()+"（"))
+                    .map(AnswerArtifacts.Picture::id).findFirst().orElse(null);
+            if(pictureId!=null&&used.add(pictureId))text.add("[[image:"+pictureId+"]]");
+            else if(pictureId==null)text.add("本次快照没有与“"+request.label()+"”匹配的可用图片。");
         }
         if(text.isEmpty())text.add("本次未取得符合指定对象和状态的可用图片。");
         return String.join("\n\n",new LinkedHashSet<>(text));

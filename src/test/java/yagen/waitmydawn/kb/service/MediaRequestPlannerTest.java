@@ -15,4 +15,18 @@ class MediaRequestPlannerTest {
  @Test void itemKindDoesNotBecomeDroppedItemEntity(){var arrow=new MediaRequestPlanner.Subject("minecraft:arrow","BOTH",List.of("箭"));var item=new MediaRequestPlanner.Subject("minecraft:item","ENTITY",List.of("物品","Item"));var p=MediaRequestPlanner.plan("对比箭实体和箭物品的图片；缺少实体图时请说明。",List.of(arrow,item),Set.of("minecraft:arrow"));assertEquals(2,p.requests().size());assertEquals("ENTITY",p.requests().get(0).kind());assertEquals("ITEM",p.requests().get(1).kind());assertTrue(p.requests().stream().allMatch(r->r.subject().registry().equals("minecraft:arrow")));}
  @Test void namespacedVariantIsNotAnotherObject(){var cat=new MediaRequestPlanner.Subject("minecraft:cat","ENTITY",List.of("猫","Cat"));var p=MediaRequestPlanner.plan("展示 minecraft:cat variant=minecraft:tabby 实体外观",List.of(cat),Set.of());assertEquals(1,p.requests().size());assertTrue(p.requests().getFirst().query().contains("variant=minecraft:tabby"));}
  @Test void nativeBreedAndBiomeNamesRemainSeparateAxes(){var cat=new MediaRequestPlanner.Subject("minecraft:cat","ENTITY",List.of("猫"));var p=MediaRequestPlanner.plan("对比虎斑和暹罗猫的外观",List.of(cat),Set.of());assertEquals(2,p.requests().size());assertTrue(p.requests().get(0).query().contains("虎斑"));assertTrue(p.requests().get(1).query().contains("暹罗"));var villager=new MediaRequestPlanner.Subject("minecraft:villager","ENTITY",List.of("村民"));var v=MediaRequestPlanner.plan("展示沙漠的图书管理员村民",List.of(villager),Set.of());assertEquals(1,v.requests().size());assertFalse(v.requests().getFirst().query().contains("unsupported_conflict"));assertTrue(v.requests().getFirst().query().contains("沙漠"));assertTrue(v.requests().getFirst().query().contains("图书管理员"));}
+ @Test void selectorsFromAnotherObjectDoNotLeakToNewSubject(){
+  String raw="铁魔法有哪些 BOSS？请图文介绍它们的基本信息和属性。";
+  String expanded="minecraft:villager 图书管理员 minecraft:enchanted_book "+raw;
+  assertTrue(MediaRequestPlanner.selectorsFor("irons_spellbooks:fire_boss",expanded,raw).isEmpty(),"villager profession must not attach to a new subject");
+  assertEquals("图书管理员",MediaRequestPlanner.selectorsFor("minecraft:villager",expanded,raw).get("profession"));
+ }
+ @Test void inheritedAxesOfTheSameSubjectSurviveExpansion(){
+  String raw="改成绿色，其他条件不变。";
+  String expanded="iceandfire:fire_dragon sex=male growth_stage=5 variant=red "+raw;
+  var selectors=MediaRequestPlanner.selectorsFor("iceandfire:fire_dragon",expanded,raw);
+  assertEquals("sex=male",selectors.get("sex"));
+  assertEquals("growth_stage=5",selectors.get("growth_stage"));
+  assertNotEquals("variant=red",selectors.get("variant"),"the new colour must override the previous one");
+ }
 }
