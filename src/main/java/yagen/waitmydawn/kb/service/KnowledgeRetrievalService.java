@@ -143,7 +143,7 @@ public final class KnowledgeRetrievalService {
             for(int i=0;i<scope.sourceIds().size();i++) p.setString(i+1,scope.sourceIds().get(i));
             try(var r=p.executeQuery()) {while(r.next()) ids.add(r.getString(1));}
         } catch(SQLException e) {throw new IllegalStateException("模组来源绑定读取失败",e);}
-        return ids.size()==1?ids.iterator().next():null;
+        return ids.size()==1&&ids.iterator().next().matches("[a-z0-9_.-]+")?ids.iterator().next():null;
     }
 
     public Retrieval retrieve(String question, Resolution resolution) {
@@ -198,8 +198,13 @@ public final class KnowledgeRetrievalService {
         if(scope==null && resolution.documentId()==null)sql+=" AND NOT EXISTS(SELECT 1 FROM rag_knowledge_source ks WHERE ks.id=d.source_id AND ks.scope_kind='MODPACK')";
         if (scope != null) {
             String marks = String.join(",", Collections.nCopies(scope.sourceIds().size(), "?"));
-            sql += " AND (d.source_id IN (" + marks + ") OR EXISTS(SELECT 1 FROM rag_document_source l WHERE l.document_id=d.id AND l.source_id IN (" + marks + ")))";
+            sql += " AND (d.source_id IN (" + marks + ") OR EXISTS(SELECT 1 FROM rag_document_source l WHERE l.document_id=d.id AND l.source_id IN (" + marks + "))";
             params.addAll(scope.sourceIds()); params.addAll(scope.sourceIds());
+            if("MOD".equals(scope.kind())){
+                sql+=" OR d.location IN (SELECT m.item_url FROM rag_web_category_member m JOIN rag_web_category wc ON wc.category_id=m.category_id WHERE wc.mod_id=? OR wc.mod_id=?)";
+                params.add(scope.id());params.add(Objects.toString(boundModId(scope),scope.id()));
+            }
+            sql+=")";
         }
         if (resolution.documentId() != null) { sql += " AND d.id=?"; params.add(resolution.documentId()); }
         if (page != null) { sql += " AND c.page_number=?"; params.add(page.toString()); }
@@ -239,9 +244,10 @@ public final class KnowledgeRetrievalService {
                     new RankingSignals(signals.keyword(),signals.sectionKeyword(),signals.fusion(),signals.quality(),signals.heading(),signals.section(),signals.phase(),signals.intent(),
                             signals.keywordRank(),signals.semanticRank(),signals.sectionRank(),signals.matchedTerms())));
         }
+        var webIdentity=new WebSourceIdentity(db);
         var selected=ranking.selected().stream().map(candidate -> {
             var hit=rows.get(candidate.chunk().id());var old=hit.result();
-            return new Hit(new VectorStore.SearchResult(old.chunkId(),old.chunkText(),old.modId(),old.modName(),old.type(),candidate.score(),old.sourcePath()),
+            return new Hit(webIdentity.canonicalize(new VectorStore.SearchResult(old.chunkId(),old.chunkText(),old.modId(),old.modName(),old.type(),candidate.score(),old.sourcePath())),
                     hit.documentId(),hit.title(),hit.heading(),hit.page(),hit.method(),candidate.lexical());
         }).toList();
         var totals=new TreeMap<String,Integer>();decisions.values().forEach(d -> totals.merge(d.decision(),1,Integer::sum));

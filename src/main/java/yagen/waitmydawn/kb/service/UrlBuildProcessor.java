@@ -150,7 +150,7 @@ public final class UrlBuildProcessor implements BuildSourceProcessor {
         String fullText = parsed.blocks().stream().map(b -> b.headingPath() + "\n" + b.text() + "\n" + b.images())
                 .collect(java.util.stream.Collectors.joining("\n"));
         if (context.content().hasDocument(documentId)) {
-            if(new SourceLifecycleStore(context.database()).strings("SELECT parser_version FROM rag_document_parser WHERE id=?",documentId).isEmpty() || context.refresh()&&(context.reparse()||!BuildRequest.fingerprint(fullText).equals(context.content().documentHash(documentId)))) {
+            if(!new SourceLifecycleStore(context.database()).strings("SELECT parser_version FROM rag_document_parser WHERE id=?",documentId).equals(List.of(SourceLifecycleStore.parserVersion(source.kind()))) || context.refresh()&&(context.reparse()||!BuildRequest.fingerprint(fullText).equals(context.content().documentHash(documentId)))) {
                 new SourceLifecycleStore(context.database()).clearDocumentContent(documentId);
             } else {
             context.result().reusedDocuments++;

@@ -42,6 +42,30 @@ public final class WebCatalogStore {
 
     public record Entry(String categoryId, String categoryUrl, int topCategory, List<String> path,
                         String url, String label, String chineseName, String englishName, String role) {}
+    /** 按目录成员的中英文名精确查找；用于把答案中的英文别名还原为目录中文名。 */
+    public List<Entry> findByName(String name, Collection<String> mods) {
+        if (name == null || name.isBlank()) return List.of();
+        var result = new ArrayList<Entry>();
+        String filter = mods == null || mods.isEmpty() ? ""
+                : " AND c.mod_id IN (" + String.join(",", Collections.nCopies(mods.size(), "?")) + ")";
+        String sql = "SELECT c.*,m.* FROM rag_web_category c JOIN rag_web_category_member m ON c.category_id=m.category_id"
+                + " WHERE (LOWER(m.english_name)=LOWER(?) OR LOWER(m.chinese_name)=LOWER(?))" + filter
+                + " ORDER BY c.mod_id,c.path_json,m.label,m.item_url";
+        try (var c=db.getConnection(); var p=c.prepareStatement(sql)) {
+            p.setString(1,name.strip()); p.setString(2,name.strip());
+            int index=3;
+            if(mods!=null) for(String mod:mods) p.setString(index++,mod);
+            try (var r=p.executeQuery()) {
+                while(r.next()) result.add(new Entry(r.getString("category_id"),r.getString("category_url"),r.getInt("top_category"),
+                        List.of(JSON.readValue(r.getString("path_json"),String[].class)),r.getString("item_url"),r.getString("label"),
+                        r.getString("chinese_name"),r.getString("english_name"),r.getString("role")));
+            }
+        } catch (SQLException e) {
+            if(e.getErrorCode()!=42102) throw new IllegalStateException("Catalog name query failed",e);
+        } catch (Exception e) { throw new IllegalStateException("Invalid catalog path",e); }
+        return result;
+    }
+
     public List<Entry> entries(String modId, int topCategory) {
         var result = new ArrayList<Entry>();
         String sql = "SELECT c.*,m.* FROM rag_web_category c JOIN rag_web_category_member m ON c.category_id=m.category_id WHERE c.mod_id=? AND c.top_category=? ORDER BY c.path_json,m.label,m.item_url";

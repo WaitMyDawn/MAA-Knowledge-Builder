@@ -185,6 +185,15 @@ final class RuntimeEntityMedia {
         for(String warning:result.mediaWarnings)text.append("Media limitation: ").append(warning).append('\n');
         text.append("Insert each image only next to its matching object/state/recipe. For comparisons keep every state distinct, even when images share pixels. Never claim an unavailable state exists. Images are independently scaled; do not infer actual size, stats, recipes or drops from appearance.\n");return text.toString();
     }
+    static void pruneUnavailable(QaPipeline.QaResult result,String question){
+        String asked=result.rawQuestion!=null&&!result.rawQuestion.isBlank()?result.rawQuestion:question;
+        var old=result.artifacts;
+        result.artifacts=new AnswerArtifacts(old.scopeId(),old.scopeLabel(),old.sources(),old.pictures().stream().filter(picture->eligible(picture,asked)).toList(),old.citedSourceIds(),old.turnState());
+    }
+    private static boolean eligible(AnswerArtifacts.Picture picture,String asked){
+        if(picture.role().equals("ENTITY")&&wantsEquipment(asked)&&isUnequipped(picture))return false;
+        return !picture.role().equals("RECIPE")||asked.matches("(?s).*(合成|配方|制作|烧炼|锻造|加工|怎么做|如何做|如何获得|怎么获得|craft|recipe).*");
+    }
     void finish(QaPipeline.QaResult result,String question){String asked=result.rawQuestion!=null&&!result.rawQuestion.isBlank()?result.rawQuestion:question;
         String answer=Objects.toString(result.answer,"");var used=new HashSet<String>();var matcher=java.util.regex.Pattern.compile("!\\[[^\\]\\r\\n]*]\\(kb-image:([a-zA-Z0-9]+)\\)").matcher(AnswerMedia.referenceText(answer));while(matcher.find())used.add(matcher.group(1));
         var kept=new ArrayList<AnswerArtifacts.Picture>();var additions=new ArrayList<String>();boolean visual=question.matches("(?is).*(展示|外观|图片|配图|长什么样|比较|对比|区别|分别|介绍|show|look).*" );
@@ -196,13 +205,12 @@ final class RuntimeEntityMedia {
             if(used.contains(picture.id())&&!picture.role().equals("RUNTIME_RULE")&&request!=null&&!associated(answer,picture,request,result.runtimeMediaStates.get(picture.id()))){
                 answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");used.remove(picture.id());
             }
-            if(picture.role().equals("ENTITY")&&wantsEquipment(asked)&&isUnequipped(picture))show=false;
-            if(picture.role().equals("RECIPE")&&!asked.matches("(?s).*(合成|配方|制作|烧炼|锻造|加工|怎么做|如何做|如何获得|怎么获得|craft|recipe).*"))show=false;
+            if(!eligible(picture,asked))show=false;
             if(!show){answer=answer.replaceAll("!\\[[^\\]\\r\\n]*]\\(kb-image:"+java.util.regex.Pattern.quote(picture.id())+"\\)","");continue;}kept.add(picture);
             if(!used.contains(picture.id()))additions.add(marker);
         }
         var illustrations=new ArrayList<String>();
-        for(var picture:result.artifacts.pictures())if(!Set.of("ENTITY","ITEM","RECIPE","LOOT","RUNTIME_RULE").contains(picture.role())&&!used.contains(picture.id()))illustrations.add("!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")");
+        for(var picture:result.artifacts.pictures())if(PlayerMediaPresentation.requested(question)&&!Set.of("ENTITY","ITEM","RECIPE","LOOT","RUNTIME_RULE").contains(picture.role())&&!used.contains(picture.id()))illustrations.add("!["+picture.caption().replaceAll("[\\[\\]\\r\\n]"," ")+"](kb-image:"+picture.id()+")");
         var leftovers=new ArrayList<String>();
         for(String marker:additions){
             final String current=marker;var picture=result.artifacts.pictures().stream().filter(p->current.contains("kb-image:"+p.id()+")")).findFirst().orElse(null);
@@ -213,7 +221,7 @@ final class RuntimeEntityMedia {
         if(!leftovers.isEmpty())answer+="\n\n"+(result.mediaPlan!=null&&result.mediaPlan.comparison()?"外观对照：":"参考配图：")+"\n\n"+String.join("\n\n",leftovers);
         if(!illustrations.isEmpty())answer+="\n\n相关插图：\n\n"+String.join("\n\n",illustrations);
         if(result.mediaPlan!=null&&result.mediaPlan.comparison()&&kept.stream().filter(p->p.role().equals("ENTITY")).count()>1)answer+="\n\n各图独立缩放，画面占比不代表实际体型比例；外观相同的状态可能共用图像。";
-        if(!result.mediaWarnings.isEmpty())answer+="\n\n配图说明：\n"+result.mediaWarnings.stream().distinct().map(w->"- "+w).collect(java.util.stream.Collectors.joining("\n"));
+        if(!result.presentationOnly&&!result.mediaWarnings.isEmpty())answer+="\n\n配图说明：\n"+result.mediaWarnings.stream().distinct().map(w->"- "+w).collect(java.util.stream.Collectors.joining("\n"));
         result.answer=answer;result.artifacts=new AnswerArtifacts(result.artifacts.scopeId(),result.artifacts.scopeLabel(),result.artifacts.sources(),kept,result.artifacts.citedSourceIds());
     }
     /** 图片插到提到该对象/状态的段落之后；找不到合适段落时留给末尾的参考配图。 */
@@ -246,7 +254,11 @@ final class RuntimeEntityMedia {
     }    /** 问题点名了装备状态：只有无装备图时不要用无装备图顶替。 */
     private static boolean wantsEquipment(String question){return question!=null&&question.matches("(?is).*(戴着|穿着|戴上|穿上|手持|拿着|装备着|装备了|装备着\\S{0,6}的).*");}
 
-    private static boolean isUnequipped(AnswerArtifacts.Picture picture){String caption=picture.caption()==null?"":picture.caption();return caption.contains("无装备")||caption.contains("无槽位装备")||caption.contains("未装备");}
+    private static boolean isUnequipped(AnswerArtifacts.Picture picture){
+        if(picture.runtimeIdentity()!=null&&"false".equals(picture.runtimeIdentity().attributes().get("equipped")))return true;
+        String evidence=Objects.toString(picture.caption(),"")+" "+Objects.toString(picture.context(),"");
+        return evidence.contains("无装备")||evidence.contains("无槽位装备")||evidence.contains("未装备");
+    }
 
     private static boolean associated(String answer,AnswerArtifacts.Picture picture,MediaRequestPlanner.Request request,JsonNode state){
         var paragraphs=answer.split("\\n\\s*\\n");String text="";

@@ -35,7 +35,6 @@ final class WebImagePolicy {
         return question;
     }
     static Set<String> select(DatabaseBuilder db,AnswerArtifacts artifacts,String question) {
-        if(!imageIntent(question)){log.info("web images: question has no image intent");return Set.of();}
         var candidates=new ArrayList<Candidate>();
         try(var c=db.getConnection();var p=c.prepareStatement("SELECT r.*,b.content AS block_content FROM rag_web_image_reference r LEFT JOIN rag_content_block b ON b.document_id=r.document_id AND b.ordinal=r.block_ordinal WHERE r.document_id=? AND r.status<>'EXCLUDED_SMALL'")) {
             for(var source:artifacts.sources()) {
@@ -99,7 +98,7 @@ final class WebImagePolicy {
      * 以题面相关度为先，其次取更大的正文图；没有文本命中时也会留下该页最大的一张。
      */
     static List<Fallback> pageFallbacks(DatabaseBuilder db,AnswerArtifacts artifacts,String question,int limit) {
-        if(artifacts==null||!imageIntent(question))return List.of();
+        if(artifacts==null)return List.of();
         var scored=new ArrayList<Fallback>();
         for(var row:rows(db,artifacts)) {
             if("PAGE_PREVIEW".equals(row.role()))continue;

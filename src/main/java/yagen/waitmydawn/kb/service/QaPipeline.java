@@ -1,5 +1,7 @@
 package yagen.waitmydawn.kb.service;
 
+import yagen.waitmydawn.kb.model.AnswerArtifacts;
+
 import dev.langchain4j.model.output.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,6 +78,7 @@ public class QaPipeline {
      * 上一轮是否请求过图片，用于“改成绿色/只看…”这类跟进问题继承配图意图。
      */
     private boolean lastTurnImages;
+    private List<RecipeDependencies.Group> lastRecipeDependencies=List.of();
     private final KnowledgeRetrievalService knowledge;
     private final Path mediaDirectory;
 
@@ -645,6 +648,7 @@ public class QaPipeline {
         urlAgent.setIncrementalDB(dbManager.getCurrentIncDB());
         String effectiveQuestion = DialogueFocus.expand(question, dialogueFocus, m.runtimeEvidence == null ? null : m.runtimeEvidence.profile(), selectedScope);
         result.mediaQuestion = effectiveQuestion;
+        if(!effectiveQuestion.equals(question)&&question.matches("(?s).*材料.*(?:获取|获得|来源).*"))result.acquisitionTargets=lastRecipeDependencies;
         if (!effectiveQuestion.equals(question) && question.matches("(?s).*(介绍|展示|改成|只看|外观).*")) {
             var ids = java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+").matcher(effectiveQuestion.substring(0, effectiveQuestion.length() - question.length()));
             while (ids.find()) if (ids.start() == 0 || effectiveQuestion.charAt(ids.start() - 1) != '=')
@@ -653,9 +657,19 @@ public class QaPipeline {
         var turn = new QaAgentTurn(baseDb, baseVectorStore, knowledge, urlAgent, result, effectiveQuestion, selectedScope, lastKnowledgeScope, () -> prepareMedia(result, result.mediaQuestion),question);
         turn.inheritImages = lastTurnImages;
         turn.rawQuestion = question;
-        String toolContext = "Selected scope: " + result.sourceScope + RuntimeEvidencePolicy.context(m.runtimeEvidence, turn.documentScope()) + "\nCurrent object/state task: " + effectiveQuestion + "\n[MKB_HISTORY]\n" + buildConversationContext()+"\n[MKB_END_HISTORY]\n";
+        String toolContext = "Selected scope: " + result.sourceScope + RuntimeEvidencePolicy.context(m.runtimeEvidence, turn.documentScope()) + "\nCurrent object/state task: " + effectiveQuestion + "\n"+turn.coverageContext()+"\n[MKB_HISTORY]\n" + buildConversationContext()+"\n[MKB_END_HISTORY]\n";
         var outcome = new AgentToolLoop().run(llm::toolChat, turn, effectiveQuestion, toolContext);
         result.toolTrace = outcome;
+        var toolUsage = new ArrayList<Map<String, Object>>();
+        for (var event : outcome.events()) {
+            var row = new LinkedHashMap<String, Object>();
+            row.put("tool", event.tool());
+            row.put("status", event.status());
+            row.put("elapsedMs", event.elapsedMs());
+            row.put("returnedChars", event.returnedChars());
+            toolUsage.add(row);
+        }
+        m.toolUsage = List.copyOf(toolUsage);
         m.answerGeneration = outcome.reason().startsWith("MODEL_ERROR") ? "MODEL_ERROR" : "NO_EVIDENCE";
         m.fallbackUsed = outcome.reason().startsWith("MODEL_ERROR");
         for (var decision : outcome.decisions())
@@ -674,7 +688,15 @@ public class QaPipeline {
         AnswerMedia.attachVectorSources(result, result.vectorResults);
         turn.hydrateImages();
         turn.prepareFinalMedia();
+        RuntimeEntityMedia.pruneUnavailable(result,effectiveQuestion);
+        PlayerMediaPresentation.captions(result);
         if (turn.clarification != null) result.answer = turn.clarification;
+        else if(PlayerMediaPresentation.pure(effectiveQuestion)){
+            entityMedia.finish(result,effectiveQuestion);
+            result.presentationOnly=true;
+            result.answer=PlayerMediaPresentation.render(result);
+            m.answerGeneration=result.artifacts.pictures().isEmpty()?"LOCAL_MEDIA_LIMITATION":"LOCAL_MEDIA_RESULT";
+        }
         else if (result.vectorResults.isEmpty() && result.recipeResults.isEmpty() && result.artifacts.pictures().isEmpty()) {
             if (turn.imagesRequested && !result.mediaWarnings.isEmpty()) {
                 result.answer = "本轮没有找到符合指定对象与状态的可用图片，不能用默认外观或其他对象的图替代。";
@@ -688,7 +710,9 @@ public class QaPipeline {
             m.answerGeneration = answerAgent.lastGenerationMode();
             m.addTrace("ToolAnswer", (System.nanoTime() - answerStarted) / 1_000_000, m.answerGeneration);
             guardInstallationClaims(result, m);
-            result.answer = NameNormalizer.apply(baseDb, m.runtimeEvidence == null ? null : m.runtimeEvidence.profile(), result.answer);
+            result.answer=turn.constrainEnvironment(result.answer,m.runtimeEvidence);
+            result.answer = NameNormalizer.apply(baseDb, m.runtimeEvidence == null ? null : m.runtimeEvidence.profile(), result.answer,
+                    turn.nameNormalizationMods(), m.runtimeEvidence == null ? Set.of() : m.runtimeEvidence.mods().keySet());
             result.answer = AnswerPostProcess.apply(result.answer, question);
             String deterministicMerge = turn.deterministicMerge();
             if (!deterministicMerge.isBlank())
@@ -698,6 +722,7 @@ public class QaPipeline {
         }
         BuildCancellation.check();
         result.artifacts = AnswerMedia.snapshotCitations(result.answer, result.artifacts);
+        AnswerImageSelection.apply(result, question);
         result.answer = AnswerMedia.stripUnresolvedPlaceholders(AnswerMedia.bind(result.answer, result.artifacts));
         entityMedia.finish(result, Objects.toString(result.mediaQuestion, question));
         m.guideIllustrations = GuideIllustrationCoverage.finish(result, question);
@@ -714,7 +739,35 @@ public class QaPipeline {
         m.embeddingTimeMs = io.embeddingNanos / 1_000_000;
         m.dataTier = !result.recipeResults.isEmpty() ? "TIER A" : result.vectorResults.isEmpty() ? "TIER D" : "TIER C";
         m.contextChunksUsed = result.vectorResults.size();
+        var citedSourceIds = new LinkedHashSet<>(result.artifacts.citedSourceIds());
+        var sourceIdByLocation = new HashMap<String, String>();
+        for (var source : result.artifacts.sources())
+            sourceIdByLocation.putIfAbsent(source.location(), source.id());
+        var contextChunks = new ArrayList<String>();
+        var contextSources = new LinkedHashSet<String>();
+        var chunkUsage = new ArrayList<Map<String, Object>>();
+        for (var hit : result.vectorResults) {
+            String chunkId = Objects.toString(hit.chunkId(), "");
+            String sourcePath = Objects.toString(hit.sourcePath(), "");
+            String sourceId = sourceIdByLocation.getOrDefault(sourcePath, "");
+            contextChunks.add(sourcePath + "#" + chunkId);
+            if (!sourceId.isBlank()) contextSources.add(sourceId);
+            var row = new LinkedHashMap<String, Object>();
+            row.put("chunkId", chunkId);
+            row.put("sourceId", sourceId);
+            row.put("sourcePath", sourcePath);
+            row.put("type", hit.type());
+            row.put("score", hit.score());
+            row.put("cited", citedSourceIds.contains(sourceId));
+            chunkUsage.add(row);
+        }
+        m.knowledgeContextChunkIds = List.copyOf(contextChunks);
+        m.knowledgeContextSourceIds = List.copyOf(contextSources);
+        m.knowledgeChunkUsage = List.copyOf(chunkUsage);
         m.knowledgeCitedSourceIds = result.artifacts.citedSourceIds();
+        m.knowledgeUnusedSourceIds = result.artifacts.sources().stream()
+                .map(yagen.waitmydawn.kb.model.AnswerArtifacts.Source::id)
+                .filter(id -> !citedSourceIds.contains(id)).distinct().toList();
         var usage = llm.usageTrace();
         m.llmCallCount = usage.calls;
         m.tokenEstimateInput = usage.inputTokens;
@@ -737,8 +790,10 @@ public class QaPipeline {
         if (!outcome.reason().startsWith("MODEL_ERROR")) {
             lastKnowledgeScope = turn.scopeId();
             dialogueFocus = DialogueFocus.capture(m.runtimeEvidence == null ? null : m.runtimeEvidence.profile(), lastKnowledgeScope, result.mediaPlan, turn.focusObjects());
+            lastRecipeDependencies=!result.acquisitionTargets.isEmpty()?result.acquisitionTargets:result.recipeResults.isEmpty()?List.of():RecipeDependencies.capture(baseDb,result.recipesToRender.isEmpty()?result.recipeResults:result.recipesToRender);
         }
         lastTurnImages = turn.imagesRequested || !result.artifacts.pictures().isEmpty();
+        if(dialogueFocus!=null)dialogueFocus=new AnswerArtifacts.TurnState(dialogueFocus.profile(),dialogueFocus.scopeId(),dialogueFocus.objects(),lastRecipeDependencies.stream().map(group->new AnswerArtifacts.AcquisitionRequirement(group.key(),group.kind(),group.alternatives(),group.recipeId())).toList());
         result.artifacts = new yagen.waitmydawn.kb.model.AnswerArtifacts(result.artifacts.scopeId(), result.artifacts.scopeLabel(), result.artifacts.sources(), result.artifacts.pictures(), result.artifacts.citedSourceIds(), dialogueFocus);
         conversationHistory.add(new QAPair(question, result.answer));
         while (conversationHistory.size() > MAX_CONTEXT_PAIRS) conversationHistory.remove(0);
@@ -1594,6 +1649,7 @@ public class QaPipeline {
         conversationHistory.clear();
         dialogueFocus = null;
         lastKnowledgeScope = null;
+        lastRecipeDependencies=List.of();
         conversationTurn = 0;
         classifyAgent.reset();
         answerAgent.clearMemory();
@@ -1609,6 +1665,7 @@ public class QaPipeline {
                 conversationHistory.add(new QAPair(question, message.content()));
                 lastKnowledgeScope = message.artifacts() == null ? null : message.artifacts().scopeId();
                 dialogueFocus = message.artifacts() == null ? null : message.artifacts().turnState();
+                lastRecipeDependencies=dialogueFocus==null?List.of():dialogueFocus.prerequisites().stream().map(group->new RecipeDependencies.Group(group.key(),group.kind(),group.alternatives(),group.recipeId())).toList();
                 conversationTurn++;
                 question = null;
             }
@@ -1717,6 +1774,9 @@ public class QaPipeline {
 
     public static class QaResult {
         public AgentToolLoop.Outcome toolTrace;
+        boolean presentationOnly;
+        boolean explicitImageSelection;
+        List<RecipeDependencies.Group> acquisitionTargets=List.of();
         String mediaQuestion;
         /**
          * 明确要求的状态键；只用于单对象选图，命中不了就报缺图，不回退到代表图。

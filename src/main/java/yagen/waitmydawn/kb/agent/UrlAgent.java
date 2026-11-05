@@ -1,5 +1,7 @@
 package yagen.waitmydawn.kb.agent;
 
+import yagen.waitmydawn.kb.service.WebSourceIdentity;
+
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.AiServices;
@@ -227,8 +229,11 @@ public class UrlAgent {
             log.info("UrlAgent: alias '{}' -> {} registries {}", hit.label(),
                     fetched.registries().size(), fetched.registries());
             String modName = resolveModName(hit.modId());
+            var owners=new WebSourceIdentity(db).owners(fetched.page().url());
+            String pageMod=owners.size()==1?owners.getFirst().id():hit.modId();
+            if(owners.size()==1)modName=owners.getFirst().label();
             List<TextChunker.TextChunk> stored = pageMedia==null?incremental.acquireFetchedPage(
-                    hit.label(), hit.url(), fetched.page().content(), pageSource,hit.modId(), modName, embedder):pageMedia.acquirePage(fetched.page().url(),hit.modId(),modName,fetched.page().content());
+                    hit.label(), hit.url(), fetched.page().content(), pageSource,pageMod, modName, embedder):pageMedia.acquirePage(fetched.page().url(),pageMod,modName,fetched.page().content());
             visitedUrls.add(hit.url());
             fetchedPageCache.put(hit.url(), new CachedPage(hit.label(), hit.subQuery(),
                     toSearchResults(stored), fetched.registries()));

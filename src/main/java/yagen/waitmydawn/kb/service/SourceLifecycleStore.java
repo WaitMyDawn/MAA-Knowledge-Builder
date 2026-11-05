@@ -19,7 +19,7 @@ public final class SourceLifecycleStore {
             s.execute("CREATE TABLE IF NOT EXISTS rag_jar_parser(id VARCHAR(255) PRIMARY KEY,parser_version VARCHAR(200) NOT NULL)");
         }
     }
-    public static String parserVersion(BuildRequest.Kind kind){return switch(kind){case URL->"web-r6.1/images-v1";case DOCUMENT_DIRECTORY->"documents-r6.1/native-v4/runtime-v2";case JAR_DIRECTORY->"scan-identities-v1/wiki-bindings-v1";};}
+    public static String parserVersion(BuildRequest.Kind kind){return switch(kind){case URL->"web-r6.2/"+WebBodySanitizer.VERSION+"/images-v1";case DOCUMENT_DIRECTORY->"documents-r6.1/native-v4/runtime-v2";case JAR_DIRECTORY->"scan-identities-v1/wiki-bindings-v1";};}
     public record State(String logicalId,String parserVersion,String hash,String indexedAt,long revision) {}
     public State state(String id){try(var c=db.getConnection();var p=c.prepareStatement("SELECT * FROM rag_source_state WHERE id=?")){p.setString(1,id);try(var r=p.executeQuery()){return r.next()?new State(r.getString("logical_id"),r.getString("parser_version"),r.getString("content_hash"),r.getString("indexed_at"),r.getLong("revision")):null;}}catch(SQLException e){throw new IllegalStateException(e);}}
     public List<BuildRequest.Source> sources(){return new KnowledgeContentStore(db).publishedRequest().map(BuildRequest::sources).orElse(List.of());}

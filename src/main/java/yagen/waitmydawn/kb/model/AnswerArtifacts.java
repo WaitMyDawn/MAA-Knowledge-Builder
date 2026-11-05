@@ -12,8 +12,13 @@ public record AnswerArtifacts(String scopeId, String scopeLabel, List<Source> so
     public record FocusedObject(String registry,String kind,String label,java.util.Map<String,String> selectors) {
         public FocusedObject {selectors=selectors==null?java.util.Map.of():java.util.Map.copyOf(selectors);}
     }
-    public record TurnState(String profile,String scopeId,List<FocusedObject> objects) {
-        public TurnState {objects=objects==null?List.of():List.copyOf(objects);}
+    public record AcquisitionRequirement(String key,String kind,List<String> alternatives,String recipeId){
+        public AcquisitionRequirement{alternatives=alternatives==null?List.of():List.copyOf(alternatives);}
+    }
+    public record TurnState(String profile,String scopeId,List<FocusedObject> objects,
+                            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY) List<AcquisitionRequirement> prerequisites) {
+        public TurnState(String profile,String scopeId,List<FocusedObject> objects){this(profile,scopeId,objects,List.of());}
+        public TurnState {objects=objects==null?List.of():List.copyOf(objects);prerequisites=prerequisites==null?List.of():List.copyOf(prerequisites);}
     }
     public AnswerArtifacts(String scopeId,String scopeLabel,List<Source> sources,List<Picture> pictures) {
         this(scopeId,scopeLabel,sources,pictures,List.of());

@@ -23,7 +23,7 @@ final class MediaRequestPlanner {
             if(mentions.stream().anyMatch(m->from<m.end()&&to>m.start()))continue;
             if(name.matches("[a-zA-Z ]+")&&((from>0&&String.valueOf(q.charAt(from-1)).matches("[a-zA-Z0-9_]"))||(to<q.length()&&String.valueOf(q.charAt(to)).matches("[a-zA-Z0-9_]"))))continue;
             var candidates=aliases.get(name).stream().distinct().toList();if(candidates.size()>1){var preferred=candidates.stream().filter(s->resolved.contains(s.registry())).toList();if(preferred.size()==1)candidates=preferred;else{warnings.add("名称“"+name+"”对应多个对象，请指定注册名。");continue;}}
-            var candidate=candidates.getFirst();if(name.length()==1&&!resolved.isEmpty()&&!resolved.contains(candidate.registry()))continue;mentions.add(new Mention(candidate,from,to));
+            var candidate=candidates.getFirst();if(name.length()==1&&!resolved.contains(candidate.registry())&&(!resolved.isEmpty()||candidate.kind().equals("ITEM")&&!q.strip().equals(name)))continue;mentions.add(new Mention(candidate,from,to));
         }}
         if(mentions.isEmpty()&&(q.matches("(?is).*(它|这个|上述|刚才|介绍|展示|外观|长什么样|比较|对比|图片|分别|show|look).*"))&&resolved.size()==1){var subject=byId.get(resolved.iterator().next());if(subject!=null)mentions.add(new Mention(subject,0,0));}
         mentions.removeIf(m->!m.subject().kind().equals("ENTITY")&&q.substring(Math.max(0,m.start()-12),m.start()).matches("(?s).*(穿着|穿戴|戴着|戴|手持|装备了|装备着)\\s*$"));

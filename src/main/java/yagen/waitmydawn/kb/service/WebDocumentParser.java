@@ -1,5 +1,6 @@
 package yagen.waitmydawn.kb.service;
 
+import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import java.net.URI;
@@ -23,16 +24,16 @@ final class WebDocumentParser {
         boolean mcmod = isMcmod(url);
         Element title = doc.selectFirst(mcmod ? ".class-title h3, .postname h1, .postname, .itemname .name h5" : "article h1, main h1, h1");
         String name = title == null ? doc.title() : title.text().strip();
-        Element main = !mcmod?doc.selectFirst(".mw-parser-output"):null;
-        if(main==null)main = doc.selectFirst(mcmod
-                ? ".post-content .text, .post-content.common-text, .item-content.common-text, .class-text .common-text, .class-text.common-text"
-                : "article, main, [role=main], #mw-content-text, .mw-parser-output");
-        if (main == null && !mcmod) main = doc.body();
+        Element main = body(doc,url);
         if (main == null) return new Parsed(name, "", "", List.of());
         main = main.clone();
+        WebBodySanitizer.clean(main);
         main.select("script,style,nav,header,footer,aside,form,.comment,.comments,.common-comment-block,.post-cc,.toc,.navbox,.mw-editsection,.advertisement,.ads,[hidden],.uknowtoomuch,.uknow-too-much").remove();
         var parser = new WebDocumentParser();
         parser.walk(main, url);
+        if (mcmod)
+            for (Element table : doc.select(".item-table-frame table"))
+                if (table.closest(".item-content") == null) parser.table(table, url);
         Element author = doc.selectFirst(mcmod ? ".post-user-name" : "meta[name=author], [rel=author]");
         Element date = doc.selectFirst("meta[property=article:published_time], time[datetime]");
         if (date == null && mcmod) date = doc.select("[data-original-title]").stream()
@@ -42,6 +43,16 @@ final class WebDocumentParser {
                 author == null ? "" : (author.hasAttr("content") ? author.attr("content") : author.text()),
                 date == null ? "" : date.hasAttr("content") ? date.attr("content") : date.hasAttr("datetime") ? date.attr("datetime") : date.attr("data-original-title"),
                 List.copyOf(parser.blocks));
+    }
+
+    static Element body(Document doc,String url){
+        boolean mcmod=isMcmod(url);
+        Element main = !mcmod?doc.selectFirst(".mw-parser-output"):null;
+        if(main==null)main = doc.selectFirst(mcmod
+                ? ".post-content .text, .post-content.common-text, .item-content.common-text, .class-text .common-text, .class-text.common-text"
+                : "article, main, [role=main], #mw-content-text, .mw-parser-output");
+        if (main == null && !mcmod) main = doc.body();
+        return main;
     }
 
     private void walk(Element element, String url) {
@@ -115,6 +126,84 @@ final class WebDocumentParser {
             if(firstRow.isEmpty()) firstRow=String.join(" | ",cells);
             add(text,images(row,url),"TABLE_ROW",id);
         }
+        for (Element block : table.select(".TableBlock")) grid(block, url, id);
+    }
+
+    /** 保留合成网格的 item-id、行列和空位，而不是只拼出左侧材料文本。 */
+    private void grid(Element block, String url, String tableId) {
+        record Cell(String name, String itemId, int left, int top, int order) {}
+        var cells = new ArrayList<Cell>();
+        int order = 0;
+        for (Element item : block.select(".item-table-hover[item-id]")) {
+            String itemId = item.attr("item-id").strip();
+            if (itemId.isBlank()) continue;
+            String name = "";
+            String title = item.attr("data-original-title");
+            if (!title.isBlank()) {
+                var parsed = Jsoup.parseBodyFragment(title);
+                var label = parsed.selectFirst(".item-table-hover-t1");
+                name = label == null ? parsed.text() : label.text();
+            }
+            if (name.isBlank()) name = item.selectFirst("img") == null ? "" : item.selectFirst("img").attr("alt");
+            if (name.isBlank()) name = itemId;
+            int left = 0, top = 0;
+            String style = item.attr("style");
+            int colon = style.indexOf(':');
+            if (colon >= 0) {
+                String[] parts = style.substring(colon + 1).strip().split("\\s+");
+                if (parts.length >= 4) {
+                    top = pixel(parts[0]);
+                    left = pixel(parts[3]);
+                }
+            }
+            cells.add(new Cell(name.strip(), itemId, left, top, order++));
+        }
+        if (cells.isEmpty()) return;
+        Cell output = cells.getFirst();
+        int maxLeft = cells.stream().mapToInt(Cell::left).max().orElse(0);
+        for (var cell : cells) if (cell.left() == maxLeft) output = cell;
+        var inputs = new ArrayList<>(cells);
+        inputs.remove(output);
+        int originLeft = inputs.stream().mapToInt(Cell::left).min().orElse(0);
+        int originTop = inputs.stream().mapToInt(Cell::top).min().orElse(0);
+        int cellSize = 36;
+        var distances = new ArrayList<Integer>();
+        for (int i = 0; i < inputs.size(); i++)
+            for (int j = i + 1; j < inputs.size(); j++) {
+                int dx = Math.abs(inputs.get(i).left() - inputs.get(j).left());
+                int dy = Math.abs(inputs.get(i).top() - inputs.get(j).top());
+                if (dx > 0) distances.add(dx);
+                if (dy > 0) distances.add(dy);
+            }
+        if (!distances.isEmpty()) cellSize = Math.max(1, Collections.min(distances));
+        int cols = 1, rows = 1;
+        var placed = new HashMap<String, Cell>();
+        for (var cell : inputs) {
+            int col = Math.max(0, Math.round((cell.left() - originLeft) / (float) cellSize));
+            int row = Math.max(0, Math.round((cell.top() - originTop) / (float) cellSize));
+            cols = Math.max(cols, col + 1);
+            rows = Math.max(rows, row + 1);
+            placed.put(row + "/" + col, cell);
+        }
+        boolean shapeless = block.selectFirst(".orderly") != null;
+        var text = new StringBuilder("配方网格：" + rows + " 行 × " + cols + " 列");
+        if (shapeless) text.append("（无序合成）");
+        text.append("\n");
+        for (int row = 0; row < rows; row++) {
+            for (int col = 0; col < cols; col++) {
+                var cell = placed.get(row + "/" + col);
+                text.append("[").append(row + 1).append(",").append(col + 1).append("] ");
+                text.append(cell == null ? "—" : cell.name() + " (mcmod-item:" + cell.itemId() + ")");
+                text.append("\n");
+            }
+        }
+        text.append("输出：").append(output.name()).append(" (mcmod-item:").append(output.itemId()).append(")");
+        add(text.toString(), images(block, url), "RECIPE_GRID", tableId);
+    }
+
+    private static int pixel(String value) {
+        try { return Integer.parseInt(value.replaceAll("[^0-9-]", "")); }
+        catch (NumberFormatException ignored) { return 0; }
     }
 
     private static int span(String value,int max) {

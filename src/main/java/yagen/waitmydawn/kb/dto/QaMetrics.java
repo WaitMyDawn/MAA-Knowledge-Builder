@@ -19,7 +19,12 @@ public class QaMetrics {
     public yagen.waitmydawn.kb.service.MediaAudit.Report mediaAudit;
     public yagen.waitmydawn.kb.service.MediaAudit.Performance mediaPerformance;
     /** 表示实际传入的证据块与引用身份，不表示模型正确使用了这些证据。 */
-    public List<String> knowledgeContextChunkIds=List.of(), knowledgeCitedSourceIds=List.of();
+    public List<String> knowledgeContextChunkIds=List.of(), knowledgeContextSourceIds=List.of(),
+            knowledgeCitedSourceIds=List.of(), knowledgeUnusedSourceIds=List.of();
+    /** 每个注入块的来源、类型、分数；便于判断哪些候选最终未被引用。 */
+    public List<Map<String,Object>> knowledgeChunkUsage=List.of();
+    /** 本轮实际工具调用；arguments 不入指标，完整审计另存 tool-runs。 */
+    public List<Map<String,Object>> toolUsage=List.of();
     public int httpRequestCount, httpErrorCount, memoryPageCacheHits, persistentPageCacheHits;
     public int documentEmbeddingCount, queryEmbeddingCount, reusedEmbeddingCount;
     public long httpResponseBytes, embeddingTimeMs;

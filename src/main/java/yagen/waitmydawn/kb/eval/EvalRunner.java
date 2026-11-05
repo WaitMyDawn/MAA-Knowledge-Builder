@@ -589,7 +589,11 @@ public final class EvalRunner {
         map.put("mediaAudit",m.mediaAudit);
         map.put("mediaPerformance",m.mediaPerformance);
         map.put("knowledgeContextChunkIds",m.knowledgeContextChunkIds);
+        map.put("knowledgeContextSourceIds",m.knowledgeContextSourceIds);
         map.put("knowledgeCitedSourceIds",m.knowledgeCitedSourceIds);
+        map.put("knowledgeUnusedSourceIds",m.knowledgeUnusedSourceIds);
+        map.put("knowledgeChunkUsage",m.knowledgeChunkUsage);
+        map.put("toolUsage",m.toolUsage);
         map.put("llmCallCount", m.llmCallCount);
         map.put("tokenIn", m.tokenEstimateInput);
         map.put("tokenOut", m.tokenEstimateOutput);

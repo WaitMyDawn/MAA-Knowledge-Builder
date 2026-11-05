@@ -27,7 +27,7 @@ class WebImagePolicyTest {
         assertThrows(java.io.IOException.class,()->WebImagePolicy.check(FullWebMediaTest.image(1,160,300)));
         WebImagePolicy.check(FullWebMediaTest.image(1,161,161));
     }
-    @Test void acquisitionDoesNotFetchImagesAndOnlySelectedReferencesAreDownloaded()throws Exception {
+    @Test void adoptedTextSelectsImagesAndOnlySelectedReferencesAreDownloaded()throws Exception {
         var db=DatabaseBuilder.atPath(temp.resolve("selected"));db.initDatabase();var calls=new AtomicInteger();final byte[] png=FullWebMediaTest.image(1,192,192);
         var web=new WikiScraperService(){@Override public Resource fetchResource(String url,String referer,boolean image,Map<String,String> headers){
             if(image){calls.incrementAndGet();return new Resource(200,png,"image/png",url,null,null);}
@@ -38,7 +38,7 @@ class WebImagePolicyTest {
             String doc,id;try(var c=db.getConnection();var s=c.createStatement();var rows=s.executeQuery("SELECT document_id,id FROM rag_web_image_reference ORDER BY id")){assertTrue(rows.next());doc=rows.getString(1);id=rows.getString(2);}
             var source=new AnswerArtifacts.Source("s",doc,"说明","https://example.com/guide","",null,"NATIVE","安装核心结构");
             var artifacts=new AnswerArtifacts(null,null,List.of(source),List.of());
-            assertEquals(Set.of(),WebImagePolicy.select(db,artifacts,"安装核心有什么用"));
+            assertEquals(Set.of(id),WebImagePolicy.select(db,artifacts,"安装核心有什么用"));
             assertEquals(Set.of(id),WebImagePolicy.select(db,artifacts,"展示核心安装结构图片"));
             service.completeSelected(List.of(doc),Set.of());assertEquals(0,calls.get());
             service.completeSelected(List.of(doc),Set.of(id));assertEquals(1,calls.get());
@@ -83,7 +83,7 @@ class WebImagePolicyTest {
         assertTrue(fallbacks.getFirst().score()>3.0,Double.toString(fallbacks.getFirst().score()));
         db.shutdown();
     }
-    @Test void pageFallbackUsesLargestCachedPageImageWhenNoTextMatches()throws Exception {
+    @Test void pageFallbackUsesLargestCachedPageImageWithoutImageIntent()throws Exception {
         var db=DatabaseBuilder.atPath(temp.resolve("page"));db.initDatabase();
         try(var c=db.getConnection()) {
             block(c,"b5","d2",5,"画廊","画廊","表格行：");
@@ -95,7 +95,7 @@ class WebImagePolicyTest {
         var artifacts=new AnswerArtifacts(null,null,List.of(new AnswerArtifacts.Source("s1","d2","灾变","https://example.com/mod","模组总览",null,"NATIVE","灾变是一个Boss模组。")),List.of());
         var fallbacks=WebImagePolicy.pageFallbacks(db,artifacts,"灾变模组有哪些主要 BOSS？请结合网页资料的相关插图介绍。",1);
         assertEquals(1,fallbacks.size());assertEquals("d2/image/2",fallbacks.getFirst().referenceId());
-        assertTrue(WebImagePolicy.pageFallbacks(db,artifacts,"灾变有哪些 BOSS",1).isEmpty());
+        assertEquals(1,WebImagePolicy.pageFallbacks(db,artifacts,"灾变有哪些 BOSS",1).size());
         db.shutdown();
     }
     @Test void facetFallbackReservesOneCandidatePerMissingStep()throws Exception {

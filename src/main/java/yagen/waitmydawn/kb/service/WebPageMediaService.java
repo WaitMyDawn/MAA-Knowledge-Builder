@@ -27,8 +27,11 @@ public final class WebPageMediaService {
     private List<TextChunker.TextChunk> syncPage(String url,String mod,String name,String content) {
         String location=WebUrlPolicy.normalize(url);long started=System.nanoTime();
         try {
+            var owners=new WebSourceIdentity(db).owners(location);
+            if(owners.size()>1)throw new IllegalArgumentException("Page ownership is ambiguous; preserve source-specific scope before indexing");
+            if(owners.size()==1){mod=owners.getFirst().id();name=owners.getFirst().label();}
             var snapshot=new PublicKnowledgeCache(db).snapshot(location);
-            String stamp=BuildRequest.fingerprint("structured-qa-v2-clean-body\n"+embedder.profile()+"\n"+mod+"\n"+content+"\n"+(snapshot==null?0:snapshot.fetchedAt()));
+            String stamp=BuildRequest.fingerprint("structured-qa-v3-owned-clean-body\n"+embedder.profile()+"\n"+mod+"\n"+content+"\n"+(snapshot==null?0:snapshot.fetchedAt()));
             String document=BuildRequest.fingerprint(location);boolean fresh=false;
             try(var c=db.getConnection();var s=c.createStatement()){s.execute("CREATE TABLE IF NOT EXISTS rag_qa_page_state(url VARCHAR(4000) PRIMARY KEY,stamp VARCHAR(64) NOT NULL)");}
             try(var c=db.getConnection();var p=c.prepareStatement("SELECT stamp FROM rag_qa_page_state WHERE url=?")){p.setString(1,location);try(var r=p.executeQuery()){fresh=r.next()&&stamp.equals(r.getString(1));}}
@@ -36,7 +39,7 @@ public final class WebPageMediaService {
             if(fresh&&!stored.isEmpty()){RetrievalTelemetry.operation("page.index.reused",System.nanoTime()-started,stored.size());return stored;}
             var source=BuildRequest.Source.of(BuildRequest.Kind.URL,location);var original=context();var context=new BuildSourceProcessor.Context(original.database(),original.content(),original.images(),original.vectors(),original.embedder(),original.progress(),original.result(),true,stored.isEmpty(),original.visitedDocuments());context.content().saveSource(source);context.content().setSourceScope(source.id(),location,"WEB",name,mod);
             new UrlBuildProcessor(scraper).withoutImageDownloads().processDocument(source,location,context,mod,name);
-            if(mod!=null)try(var c=db.getConnection();var p=c.prepareStatement("UPDATE rag_vectors SET mod_id=?,mod_name=? WHERE chunk_id IN (SELECT id FROM rag_content_chunk WHERE document_id=?) AND (mod_id IS NULL OR mod_id=?)")){p.setString(1,mod);p.setString(2,name);p.setString(3,document);p.setString(4,mod);p.executeUpdate();}
+            if(mod!=null)try(var c=db.getConnection();var p=c.prepareStatement("UPDATE rag_vectors SET mod_id=?,mod_name=? WHERE chunk_id IN (SELECT id FROM rag_content_chunk WHERE document_id=?)")){p.setString(1,mod);p.setString(2,name);p.setString(3,document);p.executeUpdate();}
             stored=pageChunks(location);if(stored.isEmpty())throw new IllegalStateException("网页未生成可检索正文");
             try(var c=db.getConnection();var p=c.prepareStatement("MERGE INTO rag_qa_page_state KEY(url) VALUES(?,?)")){p.setString(1,location);p.setString(2,stamp);p.executeUpdate();}
             RetrievalTelemetry.operation("page.index.imported",System.nanoTime()-started,stored.size());return stored;

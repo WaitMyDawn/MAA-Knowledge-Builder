@@ -20,6 +20,13 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
     private final String question, selected, previous, profile;
     private final Runnable media;
     private final KnowledgeRetrievalService.Resolution scope;
+    private final WebSourceIdentity webIdentity;
+    private final String boundNamespace;
+    private final String scopeQuestion;
+    private final Set<String> dependencyIds=new LinkedHashSet<>();
+    private final TaskEvidenceLedger evidenceLedger=new TaskEvidenceLedger();
+    private final Map<String,RecipeDependencies.Group> acquisitionGroups=new LinkedHashMap<>();
+    private String primaryAcquisitionId;
     private final Map<String, EntityAgent.AliasHit> allowed = new LinkedHashMap<>();
     private KnowledgeRetrievalService.Retrieval retrieval;
     private final Map<String, EntityAgent.ResolvedEntity> focus = new LinkedHashMap<>();
@@ -33,7 +40,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
     private final Map<String, FamilyCandidate> familyCandidates = new LinkedHashMap<>();
     private final Map<String, SpawnCandidate> spawnCandidates = new LinkedHashMap<>();
     private boolean searched, prepared;
-    private int pages, discoveryNudges;
+    private int pages, discoveryNudges, recipeNudges;
     private final Map<String, String> downloaded = new HashMap<>();
     String clarification;
     boolean imagesRequested;
@@ -60,7 +67,12 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         profile = RuntimeKnowledgeStore.active(db);
         // 展开的注册名用于对象取证，不是用户新指定的资料来源。
         scope = knowledge.resolve(scopeQuestion, selected, previous);
+        this.scopeQuestion=scopeQuestion;
+        webIdentity=new WebSourceIdentity(db);
+        boundNamespace=knowledge.boundModId(scope.scope());
         if (scope.warning() != null) clarification = scope.warning();
+        TaskEvidence.requirements(question).forEach((facet,pattern)->{if(result.acquisitionTargets.isEmpty()||!facet.equals("获取途径"))evidenceLedger.require("task",facet,pattern);});
+        for(var group:result.acquisitionTargets)requireDependency(group);
         result.mediaAxes = EntityAppearanceState.requestedAxes(question);
     }
 
@@ -94,7 +106,31 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         if (profile == null) throw new IllegalArgumentException("CAPABILITY_MISSING: no selected snapshot");
         if (scope.documentId() != null || scope.scope() != null && "MODPACK".equals(scope.scope().kind()))
             throw new IllegalArgumentException("Selected document scope excludes runtime evidence");
+        if(externalModScope()&&!scopeQuestion.matches("(?s).*[a-z0-9_.-]+:[a-z0-9_./-]+.*"))
+            throw new IllegalArgumentException("Selected MOD source has no runtime namespace binding. Its mechanisms must use that source's documents, not a similarly named installed object. query_environment remains available.");
         return new RuntimeStructuredQuery(db, profile);
+    }
+
+    private boolean externalModScope(){return scope.scope()!=null&&"MOD".equals(scope.scope().kind())&&boundNamespace==null;}
+    private void requireDependency(RecipeDependencies.Group group){
+        acquisitionGroups.putIfAbsent(group.key(),group);dependencyIds.addAll(group.alternatives());
+        evidenceLedger.require(group.key(),group.kind().equals("FLUID")?"流体来源":"获取途径","(?:合成|制作|加工|熔炼|酿造|交易|掉落|宝箱|展示框|挖掘|开采|搜刮|击杀|购买|采集)");
+        for(String id:group.alternatives().stream().limit(32).toList()){
+            evidenceLedger.alias(group.key(),id);
+            if(profile!=null)try{evidenceLedger.alias(group.key(),new RuntimeNameIndex(db,profile).nameOf(id));}catch(Exception failure){throw new IllegalStateException("Prerequisite identity lookup failed",failure);}
+        }
+    }
+    private void acquired(String id,String source){
+        evidenceLedger.require(id,"获取途径","(?:合成|制作|交易|掉落|宝箱|挖掘|采集)");evidenceLedger.rule(id,"获取途径",source);
+        if(id.equals(primaryAcquisitionId))evidenceLedger.rule("task","获取途径",source);
+        for(var group:acquisitionGroups.values())if(group.kind().equals("ITEM")&&group.alternatives().contains(id))evidenceLedger.rule(group.key(),"获取途径",source);
+    }
+    private void checkObject(String id){
+        if(id==null||!id.contains(":"))return;
+        boolean explicit=java.util.regex.Pattern.compile("(?<![a-z0-9_./:-])"+java.util.regex.Pattern.quote(id)+"(?![a-z0-9_./-])").matcher(scopeQuestion).find();
+        if(explicit||dependencyIds.contains(id))return;
+        if(externalModScope()||boundNamespace!=null&&!id.startsWith(boundNamespace+":"))
+            throw new IllegalArgumentException("Object is outside the selected MOD source. Resolve its identity within that source; cross-mod ingredients require an explicit id or a recorded recipe dependency.");
     }
 
     @Override
@@ -102,6 +138,18 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         BuildCancellation.check();
         if (clarification != null && !tool.equals("resolve_objects"))
             return JSON.writeValueAsString(Map.of("status", "CLARIFICATION_REQUIRED", "message", clarification));
+        if(tool.equals("record_evidence")){
+            String chunk=text(args,"chunk_id");var hit=result.vectorResults.stream().filter(source->source.chunkId().equals(chunk)).findFirst().orElseThrow(()->new IllegalArgumentException("Use a chunk returned in this turn"));
+            if(!applicable(hit))throw new IllegalArgumentException("Evidence outside selected scope");
+            evidenceLedger.document(text(args,"subject"),text(args,"requirement"),hit,text(args,"quote"));
+            return JSON.writeValueAsString(Map.of("status","DOCUMENTED_EXCERPT","coverage",evidenceLedger.entries(),"note","An anchored excerpt is not independent semantic verification; retain its source and applicability."));
+        }
+        if(tool.equals("query_page_links")){
+            String url=WebUrlPolicy.normalize(text(args,"url"));
+            if(result.vectorResults.stream().noneMatch(hit->url.equals(hit.sourcePath())))throw new IllegalArgumentException("Read this page before inspecting its body links");
+            var links=pageLinks(url);int start=offset(args),size=args.has("limit")?limit(args,40):20;
+            return JSON.writeValueAsString(Map.of("links",links.stream().skip(start).limit(size).toList(),"total",links.size(),"nextOffset",start+size<links.size()?start+size:-1,"candidateIsEvidence",false));
+        }
         if(tool.equals("find_family")){
             familyToolUsed = true;
             return findFamily(args);
@@ -151,10 +199,16 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             throw new IllegalArgumentException("Object is outside the current follow-up focus: " + result.conversationTargets);
         if (tool.equals("resolve_objects")) {
             String name = text(args, "name");
+            if(name.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")){
+                if(args.has("mod")&&!name.startsWith(text(args,"mod")+":"))throw new IllegalArgumentException("Registered id conflicts with mod filter");
+                checkObject(name);
+            }else if(externalModScope())return JSON.writeValueAsString(Map.of("status","EXTERNAL_SOURCE_OBJECT","source",scope.scope().label(),"webCandidates",candidates(name),"guidance","Use source-local detail pages. A localized name match in another installed mod does not establish identity."));
             if (profile != null && name.matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) {
                 var byId = new RuntimeNameIndex(db, profile);
                 String localized = byId.nameOf(name);
                 if (localized != null) {
+                    evidenceLedger.alias(name,localized);
+                    if(focus.isEmpty())evidenceLedger.alias("task",localized);
                     var resolved = new EntityAgent.ResolvedEntity(name, RuntimeRules.namespace(name), 1, "resolve-by-id");
                     if (result.resolvedEntities.stream().noneMatch(e -> e.registry().equals(name))) {
                         var entities = new ArrayList<>(result.resolvedEntities);
@@ -177,14 +231,17 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
                 default -> kind;
             };
             var names = profile == null ? null : new RuntimeNameIndex(db, profile);
-            var found = names == null ? new RuntimeNameIndex.Resolution("NOT_FOUND", List.of()) : names.resolve(name, args.path("mod").asText(null), kind);
+            var found = names == null ? new RuntimeNameIndex.Resolution("NOT_FOUND", List.of()) : names.resolve(name, args.path("mod").asText(boundNamespace), kind);
             if (names != null && !found.status().equals("UNIQUE")) {
                 var full = names.mentions(question, kind).stream().filter(match -> match.status().equals("UNIQUE") && match.candidates().stream().anyMatch(candidate -> (!args.has("mod") || candidate.registry().startsWith(args.path("mod").asText() + ":")) && RuntimeNameIndex.normalize(candidate.name()).contains(RuntimeNameIndex.normalize(name)))).toList();
                 if (full.size() == 1) found = full.getFirst();
             }
             if (found.status().equals("UNIQUE")) {
                 var candidate = found.candidates().getFirst();
+                checkObject(candidate.registry());
+                evidenceLedger.alias(candidate.registry(),candidate.name());
                 focus.putIfAbsent(candidate.registry(), new EntityAgent.ResolvedEntity(candidate.registry(), RuntimeRules.namespace(candidate.registry()), 1, "tool-focus"));
+                if(focus.size()==1)evidenceLedger.alias("task",candidate.name());
                 result.mediaTargets.add(candidate.registry());
                 var entities = new ArrayList<>(result.resolvedEntities);
                 if (entities.stream().noneMatch(entity -> entity.registry().equals(candidate.registry())))
@@ -201,10 +258,11 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             var local = urls.fetchAndRetrieve(List.of(), List.of(), List.of(query));
             if (!documentScope()) for (var sub : local.subQueryResults())
                 hits.addAll(sub.chunks().stream().filter(this::applicable).toList());
+            hits.replaceAll(webIdentity::canonicalize);
             hits.removeIf(hit -> !applicable(hit));
             addHits(hits.stream().limit(10).toList());
             merge(retrieval.artifacts(), false);
-            return JSON.writeValueAsString(Map.of("status", hits.isEmpty() ? "NOT_FOUND" : "FOUND", "hits", hits.stream().limit(6).toList(), "webCandidates", candidates(query),"taskCoverage",coverageContextBody(),"nextDiscoverySource",preferredDiscoverySource()));
+            return JSON.writeValueAsString(Map.of("status", hits.isEmpty() ? "NOT_FOUND" : "FOUND", "hits", hitViews(hits.stream().limit(6).toList()), "webCandidates", candidates(query),"taskCoverage",coverageContextBody(),"nextDiscoverySource",preferredDiscoverySource()));
         }
         if (tool.equals("discover_sources")) {
             return discover(args);
@@ -217,8 +275,10 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             return value;
         }
         if (tool.equals("list_objects")) {
+            if(externalModScope())throw new IllegalArgumentException("Selected external source has no runtime object binding; use source-local pages");
+            if(boundNamespace!=null&&args.has("mod")&&!boundNamespace.equals(text(args,"mod")))throw new IllegalArgumentException("Object list is outside selected mod");
             int size = args.has("limit") ? limit(args, 100) : args.has("query") ? 20 : args.has("mod") ? 100 : 20;
-            var objects = new RuntimeNameIndex(db, profile).list(args.path("mod").asText(null), args.path("kind").asText(null), args.path("query").asText(null), offset(args), size);
+            var objects = new RuntimeNameIndex(db, profile).list(args.path("mod").asText(boundNamespace), args.path("kind").asText(null), args.path("query").asText(null), offset(args), size);
             var rows = JSON.createArrayNode();
             for (var object : objects) {
                 var entry = rows.addObject();
@@ -300,6 +360,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             for (var idNode : ids) {
                 String object = idNode.asText();
                 RecipePlan.resourceId(object);
+                checkObject(object);
                 if (!result.conversationTargets.isEmpty() && !result.conversationTargets.contains(object))
                     throw new IllegalArgumentException("Object is outside current follow-up focus");
                 focus.put(object, new EntityAgent.ResolvedEntity(object, RuntimeRules.namespace(object), 1, "object-batch"));
@@ -330,7 +391,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             pages++;
             try (var cause = RetrievalTelemetry.resourceCause("AGENT_EVIDENCE_GAP")) {
                 var fetched = urls.fetchAndRetrieve(List.of(allowed.get(url)), List.of(), List.of(question));
-                var hits = fetched.subQueryResults().stream().flatMap(sub -> sub.chunks().stream()).distinct().limit(10).toList();
+                var hits = fetched.subQueryResults().stream().flatMap(sub -> sub.chunks().stream()).map(webIdentity::canonicalize).filter(this::applicable).distinct().limit(10).toList();
                 try {
                     var sb = new StringBuilder("url=" + allowed.get(url) + " hits=" + hits.size() + "\n");
                     for (var hit : hits)
@@ -340,14 +401,28 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
                 }
                 addHits(hits);
                 retrieval = knowledge.retrieve(question, scope, false);
-                merge(retrieval.artifacts(), false);
-                String response = JSON.writeValueAsString(Map.of("status", hits.isEmpty() ? "NO_USABLE_EVIDENCE" : "FOUND", "gap", gap, "hits", hits));
+                retrieval = knowledge.hydrate(retrieval, question);
+                merge(retrieval.artifacts(), true);
+                var links=pageLinks(url);
+                var pictures = retrieval.artifacts().pictures();
+                var responseMap = new LinkedHashMap<String, Object>();
+                responseMap.put("status", hits.isEmpty() ? "NO_USABLE_EVIDENCE" : "FOUND");
+                responseMap.put("gap", gap);
+                responseMap.put("hits", hitViews(hits));
+                responseMap.put("relatedLinks", links.stream().limit(12).toList());
+                responseMap.put("totalLinks", links.size());
+                responseMap.put("linkIsEvidence", false);
+                responseMap.put("images", pictures);
+                responseMap.put("imageTotal", pictures.size());
+                responseMap.put("imageSelectionHint", pictures.isEmpty() ? "NO_RELEVANT_IMAGE_FOUND" : "Use these image ids in the answer or query_images; images are bound to this page evidence.");
+                String response = JSON.writeValueAsString(responseMap);
                 downloaded.put(url, response);
                 return response;
             }
         }
         if (tool.equals("query_images")) {
             text(args, "need");
+            result.explicitImageSelection=true;
             var targets = new ArrayList<String>();
             if (args.has("ids_json")) {
                 var ids = JSON.readTree(text(args, "ids_json"));
@@ -358,6 +433,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             if (!targets.isEmpty()) {
                 for (String target : targets) {
                     RecipePlan.resourceId(target);
+                    checkObject(target);
                     if (!focus.containsKey(target) && result.resolvedEntities.stream().noneMatch(object -> object.registry().equals(target)) && !registered(target))
                         throw new IllegalArgumentException("Resolve the image object first");
                 }
@@ -366,7 +442,8 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
                 String stateKey = args.path("state_key").asText("").trim();
                 result.mediaStateKey = targets.size() == 1 && stateKey.matches("[0-9a-fA-F]{8,64}") ? stateKey : null;
                 String state = args.path("state").asText("");
-                result.mediaQuestion = String.join(" ", targets) + " " + (state.isBlank() ? String.join(" ", MediaRequestPlanner.selectors(question).values()) : state) + " 展示实体图片";
+                String modality=question.contains("实体")&&!question.contains("物品")?"实体":question.contains("物品")&&!question.contains("实体")?"物品":"";
+                result.mediaQuestion = String.join(" ", targets) + " " + (state.isBlank() ? String.join(" ", MediaRequestPlanner.selectors(question).values()) : state) + " 展示"+modality+"图片";
                 prepared = false;
                 result.runtimeMediaPrepared = false;
             }
@@ -387,9 +464,15 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         }
         var query = runtime();
         String id = args.path("id").asText();
+        for(String field:List.of("id","subject","entity","station","outputPotionId","inputPotionId"))checkObject(args.path(field).asText());
+        if(externalModScope()&&List.of("id","subject","entity","station","outputPotionId","inputPotionId").stream().noneMatch(field->args.path(field).asText().contains(":")))
+            throw new IllegalArgumentException("An unbound MOD source permits only explicitly identified runtime objects, not an unfiltered runtime category.");
         if (tool.equals("query_brewing")) return brewing(query, text(args, "id"), args);
         if (tool.equals("query_recipes") || tool.equals("query_acquisition")) {
             id = text(args, "id");
+            checkObject(id);
+            if(primaryAcquisitionId==null)primaryAcquisitionId=focus.isEmpty()?id:focus.keySet().iterator().next();
+            evidenceLedger.require(id,"获取途径","(?:合成|制作|交易|掉落|宝箱|挖掘|采集)");
             var index = query.get("acquisition_index", id);
             var values = JSON.createArrayNode();
             int count = 0;
@@ -409,9 +492,14 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             for (var source : sources.stream().skip(offset(args)).limit(pageSize).toList()) {
                 String category = source.path("category").asText();
                 for (var record : query.get(category, source.path("recordId").asText()).rows()) {
+                    dependencyIds.add(record.key().id());
                     var view = recordView(query, record, args.path("section").asText(""));
                     if(source.has("entrypoints"))view.set("entrypoints",source.path("entrypoints").deepCopy());
-                    if(!record.data().has("error")&&view.has("data")&&!view.path("status").asText().equals("NEEDS_SECTION"))acquisitionCoverage.read(id,source);
+                    if(!record.data().has("error")&&view.has("data")&&!view.path("status").asText().equals("NEEDS_SECTION")){
+                        acquisitionCoverage.read(id,source);acquired(id,record.key().category()+"/"+record.key().id());
+                        if (category.equals("loot_tables") && source.path("entrypoints").isEmpty())
+                            acquisitionCoverage.unresolved(id, source);
+                    }
                     if (Set.of("trades", "loot_tables").contains(category)) {
                         var matched = JSON.createArrayNode();
                         collectMatching(record.data(), id, matched);
@@ -439,13 +527,19 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             response.put("sourceCategories", categories);
             response.put("sources", values);
             response.put("unreadSourceCategories",acquisitionCoverage.missing());
+            response.put("unresolvedAcquisitionSources",acquisitionCoverage.unresolved());
+            response.put("acquisitionNextStep", "A table-level or loot-only source is not a complete acquisition method: read the table with query_loot, then locate the owning entity/container page with search_documents or discover_sources and supplement_web; cover every requested channel, not only recipes or trades.");
+            response.put("sourceReadCoverage",acquisitionCoverage.records());
+            response.put("subjectRequirements",evidenceLedger.entries());
             response.put("total", sources.size());
             response.put("nextOffset", offset(args) + count < sources.size() ? offset(args) + count : -1);
             String mining = BlockMiningRules.describe(db, profile, id);
             if (mining != null) response.put("blockMining", mining);
             return JSON.writeValueAsString(response);
         }
+        if (tool.equals("query_loot")) acquisitionCoverage.resolvedAll();
         String category = tool.equals("query_attributes") ? args.has("state_key") || args.has("baby") || args.has("equipped") || args.has("origin") || args.has("filters_json") ? "entity_state_attributes" : "entity_attributes" : tool.equals("query_trades") ? "trades" : tool.equals("query_loot") ? "loot_tables" : text(args, "category");
+        if(Set.of("registries","entity_attributes","entity_state_attributes","item_attributes","entity_icons").contains(category))checkObject(id);
         RuntimeStructuredQuery.Page page;
         var typedFilters = new TreeMap<String, String>();
         for (String field : List.of("entity", "profession", "level", "station", "outputPotionId", "inputPotionId"))
@@ -711,6 +805,10 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             structuredFacets.add("搭建布局与操作");
         if (row.key().category().equals("recipes") && !row.data().has("error")) {
             var recipe = new RuntimeCatalog(db).recipe(profile, row.key().id());
+            for(var group:RecipeDependencies.capture(db,List.of(recipe))){
+                dependencyIds.addAll(group.alternatives());
+                if(group.kind().equals("FLUID")&&question.matches("(?s).*(获取|获得|制作|来源).*"))requireDependency(group);
+            }
             if (!result.recipeResults.contains(recipe)) {
                 var recipes = new ArrayList<>(result.recipeResults);
                 recipes.add(recipe);
@@ -724,6 +822,22 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         return view;
     }
 
+    private List<WebBodyLinks.Link> pageLinks(String url)throws java.io.IOException{
+        var resource=new WebResourceCache(db,new WikiScraperService()).snapshot(url);
+        if(resource.status()!=200||resource.bytes()==null)return List.of();
+        var links=WebBodyLinks.extract(resource.document(),url);
+        var permitted=new ArrayList<WebBodyLinks.Link>();
+        for(var link:links){
+            var owners=webIdentity.owners(link.url());
+            String mod=owners.size()==1?owners.getFirst().id():null;
+            var candidate=new VectorStore.SearchResult("link","",mod,link.label(),"web",1,link.url());
+            if(!owners.isEmpty()&&!applicable(candidate))continue;
+            allowed.putIfAbsent(link.url(),new EntityAgent.AliasHit(question,link.label(),link.url(),mod,1,"body-link"));
+            permitted.add(link);
+        }
+        return permitted;
+    }
+
     private List<?> candidates(String query) {
         var explicit = java.util.regex.Pattern.compile("https?://[^\\s<>]+", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(question);
         while (explicit.find()) try {
@@ -731,11 +845,13 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             allowed.putIfAbsent(url, new EntityAgent.AliasHit(question, url, url, null, 1, "target"));
         } catch (IllegalArgumentException ignored) {
         }
-        var candidates = vectors.searchAliasesByText(query, 5, null);
+        var candidates = vectors.searchAliasesByText(query, 20, null);
         for (var candidate : candidates)
             try {
                 String url = WebUrlPolicy.normalize(candidate.url());
-                allowed.put(url, new EntityAgent.AliasHit(question, candidate.label(), url, candidate.modId(), candidate.score(), "target"));
+                var hit=webIdentity.canonicalize(new VectorStore.SearchResult("candidate","",candidate.modId(),candidate.label(),"web",candidate.score(),url));
+                if(!applicable(hit))continue;
+                allowed.put(url, new EntityAgent.AliasHit(question, candidate.label(), url, hit.modId(), candidate.score(), "target"));
             } catch (IllegalArgumentException ignored) {
             }
         return allowed.values().stream().map(candidate -> Map.of("label", candidate.label(), "url", candidate.url())).toList();
@@ -955,6 +1071,12 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         return scope.documentId() != null ? "document:" + scope.documentId() : scope.scope() == null ? null : scope.scope().id();
     }
 
+    String constrainEnvironment(String answer,RuntimeEvidencePolicy.Snapshot snapshot){
+        for(var source:knowledge.scopes())if(source.kind().equals("MOD")&&knowledge.boundModId(source)==null)
+            answer=SourceEnvironmentBoundary.constrain(answer,source.label(),null,snapshot);
+        return answer;
+    }
+
     List<EntityAgent.ResolvedEntity> focusObjects() {
         return focus.isEmpty() ? result.resolvedEntities : List.copyOf(focus.values());
     }
@@ -964,7 +1086,8 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
     }
 
     private boolean applicable(VectorStore.SearchResult hit) {
-        if (scope.documentId() != null) return true;
+        if(hit.sourcePath().startsWith("http")&&(scope.documentId()!=null||scope.scope()!=null&&!scope.scope().id().startsWith("runtime:")))
+            return webIdentity.permits(hit,scope,boundNamespace);
         if (scope.scope() != null && "MODPACK".equals(scope.scope().kind())) return true;
         try (var c = db.getConnection(); var p = c.prepareStatement("SELECT 1 FROM rag_document d JOIN rag_knowledge_source s ON s.id=d.source_id WHERE d.location=? AND s.scope_kind='MODPACK'")) {
             p.setString(1, hit.sourcePath());
@@ -1002,7 +1125,10 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         }
         for (var candidate : found) {
             String url = WebUrlPolicy.normalize(candidate.url());
-            allowed.put(url, new EntityAgent.AliasHit(question, candidate.title(), url, (args.path("source").asText().equals("minecraft_wiki") ? "minecraft" : args.path("mod").asText(null)), 1, "target"));
+            var owners=webIdentity.owners(url);
+            String owner=owners.size()==1?owners.getFirst().id():args.path("source").asText().equals("minecraft_wiki")?"minecraft":null;
+            if(!owners.isEmpty()&&!applicable(new VectorStore.SearchResult("candidate","",owner,candidate.title(),"web",1,url)))continue;
+            allowed.put(url, new EntityAgent.AliasHit(question, candidate.title(), url, owner, 1, "target"));
         }
         return JSON.writeValueAsString(Map.of("candidates", found, "gap", gap, "candidateIsEvidence", false));
     }
@@ -1014,7 +1140,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
     }
 
     String coverageContextBody() {
-        return "Required facts: " + TaskEvidence.requirements(question).keySet() + "; missing facts: " + missingFacts() + ". Attributes and loot do not substitute for requested actions. Search or discover a precise source for missing facts; disclose unresolved gaps without claiming completion.";
+        return "Source scope: "+JSON.createObjectNode().put("kind",scope.scope()==null?"CURRENT_TASK":scope.scope().kind()).put("label",scope.scope()==null?"":scope.scope().label()).put("runtimeNamespace",boundNamespace).put("runtimeBindingConfirmed",boundNamespace!=null).put("externalModSource",externalModScope())+". Unbound MOD sources provide external documentation, never current installation/version facts. Required facts: " + TaskEvidence.requirements(question).keySet() + "; missing facts: " + missingFacts() + "; subject coverage: "+JSON.valueToTree(evidenceLedger.entries())+"; recipe prerequisites: "+JSON.valueToTree(acquisitionGroups.values().stream().map(group->Map.of("subject",group.key(),"kind",group.kind(),"candidateIds",group.alternatives().stream().limit(8).toList(),"totalAlternatives",group.alternatives().size(),"recipe",group.recipeId())).toList())+". Use record_evidence to anchor procedural facts to exact returned excerpts. READ_UNCONFIRMED is not completed evidence. Catalogs, attributes and loot do not substitute for requested actions. Preserve excerpt conditions, including versions, prerequisite mods, interaction targets and containers; current availability requires runtime evidence. Search the remaining subject/requirement, not a new broad topic. Fluid input is not proof of fluid production. An unresolved requirement must remain unresolved in the answer.";
     }
 
     private ObjectNode acquisitionOverview(RuntimeStructuredQuery query,RuntimeStructuredQuery.Row row)throws Exception{
@@ -1027,7 +1153,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
     }
 
     private List<String> missingFacts() {
-        if (TaskEvidence.requirements(question).isEmpty()) return List.of();
+        if (TaskEvidence.requirements(question).isEmpty()) return evidenceLedger.missing();
         var namespaces = new LinkedHashSet<String>();
         focus.values().forEach(object -> namespaces.add(object.modId()));
         String bound = knowledge.boundModId(scope.scope());
@@ -1040,7 +1166,11 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             throw new IllegalStateException("Task subject lookup failed", failure);
         }
         String text = result.vectorResults.stream().filter(hit -> namespaces.isEmpty() || hit.modId() == null || namespaces.contains(hit.modId())).filter(hit -> !"category_catalog".equals(hit.type())&&!Objects.toString(hit.type(), "").startsWith("structured_") && (!hit.sourcePath().startsWith("mkb-runtime:") || Set.of("runtime_multiblocks", "runtime_workstation_rules", "runtime_brewing").contains(hit.type()))).map(VectorStore.SearchResult::chunkText).collect(java.util.stream.Collectors.joining("\n"));
-        return TaskEvidence.missing(question, text).stream().filter(facet -> !structuredFacets.contains(facet)).toList();
+        var missing=new LinkedHashSet<String>(TaskEvidence.missing(question,text));
+        for(String facet:TaskEvidence.requirements(question).keySet())if(!evidenceLedger.has("task",facet)||evidenceLedger.entries().stream().anyMatch(entry->entry.subject().equals("task")&&entry.requirement().equals(facet)&&Set.of("DOCUMENTED_EXCERPT","STRUCTURED_RULE").contains(entry.state())))missing.remove(facet);
+        for(var entry:evidenceLedger.entries())if(!Set.of("DOCUMENTED_EXCERPT","STRUCTURED_RULE").contains(entry.state()))missing.add(entry.subject()+" / "+entry.requirement());
+        missing.removeIf(facet->structuredFacets.contains(facet)&&!facet.equals("获取途径"));
+        return List.copyOf(missing);
     }
 
     /**
@@ -1125,6 +1255,15 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
                 && question.matches("(?s).*(有哪些|哪些|列出|列全|全部|名单|list).*");
     }
 
+    /** 当前问题已绑定/已解析出的命名空间；答案英文别名归一化优先使用。 */
+    Set<String> nameNormalizationMods() {
+        var mods = new LinkedHashSet<String>();
+        if (boundNamespace != null && !boundNamespace.isBlank()) mods.add(boundNamespace);
+        for (var entity : focus.values()) if (entity.modId() != null && !entity.modId().isBlank()) mods.add(entity.modId());
+        for (var entity : result.resolvedEntities) if (entity.modId() != null && !entity.modId().isBlank()) mods.add(entity.modId());
+        return mods;
+    }
+
     public String readinessGap() {
         if (clarification != null || localOnly()) return null;
         if(familySelectionPending)return "find_family returned category choices, not family members. Select justified category ids or an advertised structured fallback before claiming a family inventory; unavailable membership must remain unconfirmed.";
@@ -1132,10 +1271,17 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         if(!unread.isEmpty())return "Family candidates still lack member-page evidence for the requested predicate: "+unread+". Read the relevant pages or keep those members explicitly unconfirmed; catalog membership alone does not prove the predicate.";
         if (biologicalInventory() && (!familyToolUsed || !spawnToolUsed))
             return "生物类枚举必须同时使用 find_family（网页目录成员）和 find_mobs_by_spawn（spawn_rules 候选），按注册名合并：目录成员与运行时生成成员必须按注册名合并；目录里有、生成规则没有的保留并标 CATALOG，不能放进“不算水生/不算陆地”的段落；水中放置或结构生成的成员即使 mobCategory 不同也要保留并标对应 basis。先补齐缺失的查询再回答。";
+        if(!acquisitionCoverage.unresolved().isEmpty())return "获取来源仍只有表级摘要，尚未说明归属实体/容器、打开方式或触发条件："+acquisitionCoverage.unresolved()+"。先用 query_loot 读取对应掉落表规则，再用 search_documents/discover_sources 定位归属页面并 supplement_web；不能用“是战利品/有掉落表”代替获取步骤。";
         if(!acquisitionCoverage.missing().isEmpty())return "获取渠道尚未核对："+acquisitionCoverage.missing()+"。继续 query_acquisition 分页；配方、交易不能代替实体掉落或容器战利品，保留入口及条件。";
         if (discoveries.isEmpty()&&pages==0&&result.recipeResults.isEmpty()&&!missingFacts().isEmpty()&&!result.resolvedEntities.isEmpty()&&question.matches("(?s).*(怎么获得|如何获得|获取|获得|怎么得到|怎么拿|合成|制作).*"))
             return "获取证据仍有缺口："+missingFacts()+"。先 search_documents 定位主体及其前置对象；没有相关正文时用 discover_sources(source="+preferredDiscoverySource()+") 查对应对象的获取方式，再 supplement_web 读取详情。配方不存在不能代替获取机制取证。";
-        if (result.tradeIds.isEmpty() && question.matches("(?s).*(交易|购买|出售|商人|职业等级|图书管理员|村民).*") && !question.matches("(?s).*(灾变|利维坦|网页|教程).*"))
+        if (recipeNudges == 0 && pages > 0 && result.recipeResults.isEmpty()
+                && question.matches("(?s).*(获取|获得|制作|合成|召唤).*")
+                && result.vectorResults.stream().anyMatch(hit -> Objects.toString(hit.sourcePath(), "").startsWith("http"))) {
+            recipeNudges++;
+            return "当前已读页面可能只说明“合成/获取”，但没有材料、配方或操作路径。若问题要求召唤物/物品的获取方式，不要停在“通过合成获得”：用 query_page_links 读取当前页面正文链接，或用 discover_sources 查该物品/配方页并 supplement_web，再回答；无法取得的细节保持未确认。";
+        }
+        if (result.tradeIds.isEmpty() && question.matches("(?s).*(交易|购买|出售|商人|职业等级|图书管理员|村民).*") && !externalModScope() && scope.documentId()==null && (scope.scope()==null||!scope.scope().kind().equals("MODPACK")))
             return "该问题涉及交易：先用 query_trades 读取该实体的实际交易记录（职业等级、价格、附魔），网页只能作补充；只有网页不足以回答交易条件。";
         if (!missingFacts().isEmpty()) {
             var gap = coverageContext();
@@ -1157,17 +1303,37 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
         return null;
     }
 
+    private List<Map<String, Object>> hitViews(List<VectorStore.SearchResult> hits) {
+        var result = new ArrayList<Map<String, Object>>();
+        for (var hit : hits) {
+            var row = new LinkedHashMap<String, Object>();
+            row.put("chunkId", hit.chunkId());
+            row.put("chunkText", hit.chunkText());
+            row.put("modId", hit.modId());
+            row.put("modName", hit.modName());
+            row.put("type", hit.type());
+            row.put("score", hit.score());
+            row.put("sourcePath", hit.sourcePath());
+            row.put("images", WebImageReferences.forChunk(db, hit.chunkId()));
+            result.add(row);
+        }
+        return List.copyOf(result);
+    }
+
     private void addHits(List<VectorStore.SearchResult> hits) {
         var all = new LinkedHashMap<String, VectorStore.SearchResult>();
         for (var hit : result.vectorResults) all.put(hit.sourcePath() + "/" + hit.chunkId(), hit);
-        for (var hit : hits) if (applicable(hit)) all.put(hit.sourcePath() + "/" + hit.chunkId(), hit);
+        for (var hit : hits) if (applicable(hit)){var canonical=webIdentity.canonicalize(hit);all.put(canonical.sourcePath() + "/" + canonical.chunkId(), canonical);
+            if(!canonical.type().startsWith("runtime_")&&!canonical.type().startsWith("structured_")&&!canonical.type().equals("category_catalog"))
+                TaskEvidence.requirements(question).forEach((facet,pattern)->evidenceLedger.read("task",facet,canonical.chunkId()));
+        }
         result.vectorResults = List.copyOf(all.values());
     }
 
     private void merge(AnswerArtifacts artifacts, boolean images) {
         var sources = new LinkedHashMap<String, AnswerArtifacts.Source>();
         result.artifacts.sources().forEach(source -> sources.put(source.id(), source));
-        artifacts.sources().forEach(source -> sources.put(source.id(), source));
+        artifacts.sources().stream().filter(source->!source.location().startsWith("http")||applicable(new VectorStore.SearchResult(source.id(),source.evidence(),null,source.title(),"web",1,source.location()))).forEach(source -> sources.put(source.id(), source));
         var pictures = new LinkedHashMap<String, AnswerArtifacts.Picture>();
         result.artifacts.pictures().forEach(picture -> pictures.put(picture.id(), picture));
         if (images) artifacts.pictures().forEach(picture -> pictures.put(picture.id(), picture));
@@ -1184,6 +1350,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
      */
     void hydrateImages() {
         if (localOnly()) return;
+        // 图片随被采纳的网页文本一起进入上下文；不再由问题是否出现“图”决定。
         // 药水/酿造题由本地规则链卡负责配图，不再从宽泛的网页检索里挑无关插图。
         if (question != null && question.matches("(?s).*(酿造|药水|brewing|potion).*")) return;
         // 枚举题默认只要清单与计数；题面明确要图时才补图，避免把无关 BOSS 图塞进枚举答案。
