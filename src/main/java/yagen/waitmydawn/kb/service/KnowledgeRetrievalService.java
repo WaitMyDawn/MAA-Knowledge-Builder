@@ -317,14 +317,21 @@ public final class KnowledgeRetrievalService {
             var fallbacks=WebImagePolicy.facetFallbacks(db,retrieval.artifacts(),question,missingFacets,missingFacets.size());
             appendPictures(present,pageMedia.fallbackPictures(fallbacks,retrieval.artifacts().sources()));
         }
-        var pictures=GuideIllustrationCoverage.select(question,available(present),4);
+        var pictures=new ArrayList<>(GuideIllustrationCoverage.select(question,available(present),4));
+        // 维度仍缺图时，直接补入该维度的来源候选；不能被通用 select 的二次评分吞掉。
+        var stillMissing=GuideIllustrationCoverage.missing(question,pictures);
+        if(!stillMissing.isEmpty()) {
+            var fallbacks=WebImagePolicy.facetFallbacks(db,retrieval.artifacts(),question,stillMissing,stillMissing.size());
+            for(var picture:pageMedia.fallbackPictures(fallbacks,retrieval.artifacts().sources()))
+                if(pictures.stream().noneMatch(existing->existing.id().equals(picture.id()))) pictures.add(picture);
+        }
         // 已按“图片所属段落已出现在本轮证据里”选过的引用，不再被第二次文本相关性打分丢掉。
-        if(pictures.isEmpty()&&!references.isEmpty())pictures=selectedWebPictures(references,retrieval.artifacts().sources(),question.contains("插图"));
+        if(pictures.isEmpty()&&!references.isEmpty())pictures=new ArrayList<>(selectedWebPictures(references,retrieval.artifacts().sources(),question.contains("插图")));
         // 三步之后仍无图且本轮有网页证据时，用该页最大/最相关的一张正文图保底，不用相关性阈值筛掉。
         if(pictures.isEmpty()) {
             var fallbacks=WebImagePolicy.pageFallbacks(db,retrieval.artifacts(),question,2);
             appendPictures(present,pageMedia.fallbackPictures(fallbacks,retrieval.artifacts().sources()));
-            pictures=GuideIllustrationCoverage.select(question,available(present),4);
+            pictures=new ArrayList<>(GuideIllustrationCoverage.select(question,available(present),4));
         }
         var artifacts=retrieval.artifacts();
         var expanded=new AnswerArtifacts(artifacts.scopeId(),artifacts.scopeLabel(),artifacts.sources(),pictures);

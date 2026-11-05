@@ -59,10 +59,10 @@ class EnchantmentIconFallbackTest {
             assertEquals("MISSING",icons.item("minecraft:diamond_sword",true,json.readTree("{\"components\":{\"minecraft:custom_model_data\":1}}" )).source());
             assertEquals("MISSING",icons.item("minecraft:diamond_sword",true,null).source());
             var trade=json.readTree("{\"entries\":[{\"status\":\"DECLARATIVE\",\"inputs\":[{\"item\":\"minecraft:emerald\"}],\"output\":{\"item\":\"minecraft:diamond_sword\",\"components\":{\"minecraft:enchantments\":{\"levels\":{\"minecraft:sharpness\":3}}}}}]}");
-            assertTrue(RuleCardService.usesEnchantmentFallback(trade,icons));assertEquals(350,RuleCardService.draw("trades",trade,icons).getHeight());
+            assertTrue(RuleCardService.usesEnchantmentFallback(trade,icons));assertEquals(410,RuleCardService.draw("trades",trade,icons).getHeight());
             var random=trade.deepCopy();var entry=(ObjectNode)random.path("entries").get(0);entry.put("status","RANDOM_RULE").put("factory","net.minecraft.world.entity.npc.VillagerTrades$EnchantedItemForEmeralds");var randomOutput=(ObjectNode)entry.path("output");randomOutput.remove("components");randomOutput.put("dynamicState",true);
-            assertTrue(RuleCardService.usesEnchantmentFallback(random,icons));assertEquals(350,RuleCardService.draw("trades",random,icons).getHeight());
-            entry.put("factory","example.DynamicModel");assertFalse(RuleCardService.usesEnchantmentFallback(random,icons));assertEquals(320,RuleCardService.draw("trades",random,icons).getHeight());
+            assertTrue(RuleCardService.usesEnchantmentFallback(random,icons));assertEquals(410,RuleCardService.draw("trades",random,icons).getHeight());
+            entry.put("factory","example.DynamicModel");assertFalse(RuleCardService.usesEnchantmentFallback(random,icons));assertEquals(380,RuleCardService.draw("trades",random,icons).getHeight());
             String recipe="{\"type\":\"minecraft:crafting_shapeless\",\"ingredients\":[{\"item\":\"minecraft:diamond_sword\"}],\"result\":{\"id\":\"minecraft:diamond_sword\",\"components\":{\"minecraft:enchantments\":{\"levels\":{\"minecraft:sharpness\":3}}}}}";
             var card=new RendererService(config,db).renderDetailed(List.of(new QaPipeline.RecipeMatch(recipe,"minecraft:diamond_sword","minecraft","TEST_FIXTURE"))).cards().getFirst();
             assertTrue(card.plan().output().stateful());assertEquals(fallback.source(),card.output().source());assertTrue(card.notes().stream().anyMatch(n->n.contains("附魔状态未单独导出")));

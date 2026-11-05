@@ -278,7 +278,7 @@ public class MarkdownRenderer {
         else appendStyled(flow, text);
     }
 
-    private static void appendStyled(TextFlow flow, String text) {
+    static void appendStyled(TextFlow flow, String text) {
         // Simple inline parsing: **bold**, `code`, plain text
         Pattern inline = Pattern.compile("(?s)(\\*\\*(.+?)\\*\\*)|(`(.+?)`)|([^*`]+)");
         Matcher m = inline.matcher(text);

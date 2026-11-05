@@ -119,7 +119,11 @@ public final class ItemIconService {
             if(ingredient.alternatives().stream().anyMatch(RecipePlan.Alternative::tag)&&tags.values().stream().flatMap(List::stream).noneMatch(file->file.source().equals("RUNTIME_SNAPSHOT")))warnings.add("标签候选来自 JAR 声明，未确认整合包运行时覆盖。");
             return new IngredientIcon(ingredient,selected,List.copyOf(candidates),List.copyOf(warnings));
         }
-        private static int rank(Icon icon) { return Set.of("NATIVE","NATIVE_TRANSPARENT").contains(icon.source())?0:Set.of("JAR_FLAT","DEFAULT_ENCHANTMENT_FALLBACK").contains(icon.source())?1:2; }
+        private static int rank(Icon icon) {
+            int namespace=icon.itemId()!=null&&icon.itemId().startsWith("minecraft:")?0:1;
+            int source=Set.of("NATIVE","NATIVE_TRANSPARENT").contains(icon.source())?0:Set.of("JAR_FLAT","DEFAULT_ENCHANTMENT_FALLBACK").contains(icon.source())?1:2;
+            return namespace*10+source;
+        }
         private Icon transparent(String id,Asset asset) {
             var image=load(asset,"TRANSPARENT");
             return image==null?missing(id,"完全透明图标缓存丢失或校验不符"):

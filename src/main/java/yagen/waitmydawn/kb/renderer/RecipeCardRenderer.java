@@ -66,6 +66,7 @@ public final class RecipeCardRenderer {
             g.setStroke(new BasicStroke(6,BasicStroke.CAP_SQUARE,BasicStroke.JOIN_MITER));g.setColor(new Color(80,80,80));g.drawLine(472,246,584,246);g.drawLine(562,224,584,246);g.drawLine(562,268,584,246);
             backgroundSlot(g,652,190,108);drawSlot(g,card.output(),card.plan().output().dynamic()?1:card.plan().output().count(),652,190,108,false);
             g.setFont(SMALL);g.setColor(MUTED);g.drawString(card.plan().output().dynamic()?"动态产物":"产物 ×"+card.plan().output().count(),652,336);
+            g.setFont(CardFont.at(Font.PLAIN,18));g.setColor(MUTED);g.drawString(Objects.toString(card.plan().output().itemId(),"?"),652,358);
             if(card.plan().cookingTicks()!=null){g.setColor(MUTED);g.drawString("耗时："+card.plan().cookingTicks()+" tick（"+card.plan().cookingTicks()/20.0+" 秒）",148,372);}
             if(card.plan().experience()!=null){g.setColor(MUTED);g.drawString("经验："+card.plan().experience(),652,372);}
             g.setFont(CardFont.at(Font.BOLD,25));g.setColor(INK);g.drawString("材料与候选",32,legendY);g.setFont(TEXT);g.setColor(MUTED);int y=legendY+36;

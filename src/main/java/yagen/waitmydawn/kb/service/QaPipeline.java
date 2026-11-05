@@ -982,7 +982,7 @@ public class QaPipeline {
                         if (rows.next()) {
                             var members = mapper.readTree(rows.getString(1)).path("members");
                             if (members.size() > 0) {
-                                found = members.get(0).asText();
+                                found = TagIconChoice.preferred(members);
                                 break;
                             }
                         }
@@ -1015,7 +1015,20 @@ public class QaPipeline {
             if (result.rawQuestion == null) result.rawQuestion = question;
             if (crafting && !result.recipesToRender.isEmpty()) {
                 var config = yagen.waitmydawn.kb.config.AppConfig.forIsolatedRun(false).forBuildTarget(mediaDirectory);
+                if (result.metrics != null) {
+                    result.metrics.recipeRenderInputCount = result.recipesToRender.size();
+                    result.metrics.recipeRenderInputs = result.recipesToRender.stream()
+                            .map(match -> Objects.toString(match.outputItem(), "") + " ← " + Objects.toString(match.recipeJson(), ""))
+                            .toList();
+                }
                 result.recipeRenderBatch = new RendererService(config, baseDb).renderDetailed(result.recipesToRender);
+                if (result.metrics != null) {
+                    result.metrics.recipeRenderImageCount = result.recipeRenderBatch.images().size();
+                    result.metrics.recipeRenderDiagnostics = result.recipeRenderBatch.diagnostics();
+                }
+                log.info("Recipe render audit: inputs={} images={} diagnostics={}",
+                        result.recipesToRender.size(), result.recipeRenderBatch.images().size(),
+                        result.recipeRenderBatch.diagnostics());
                 AnswerMedia.attachRecipes(result, result.recipeRenderBatch, mediaDirectory);
             } else result.recipeRenderBatch = new RendererService.RenderBatch(Map.of(), List.of(), List.of());
             attachMechanicalCrafting(result, question);

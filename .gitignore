@@ -16,8 +16,10 @@ src/main/resources/models/
 Thumbs.db
 
 docs/
-test-set/
+test-set/*
 !test-set/old/
+!test-set/golden-set-modEnv1.json
+!test-set/manager.md
 run.bat
 run.sh
 MKB-QA.md

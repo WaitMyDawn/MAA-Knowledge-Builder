@@ -25,6 +25,11 @@ public class QaMetrics {
     public List<Map<String,Object>> knowledgeChunkUsage=List.of();
     /** 本轮实际工具调用；arguments 不入指标，完整审计另存 tool-runs。 */
     public List<Map<String,Object>> toolUsage=List.of();
+    /** 进入问答渲染的配方与渲染器诊断；用于定位“识别到配方但没有图”。 */
+    public int recipeRenderInputCount;
+    public List<String> recipeRenderInputs=List.of();
+    public int recipeRenderImageCount;
+    public List<String> recipeRenderDiagnostics=List.of();
     public int httpRequestCount, httpErrorCount, memoryPageCacheHits, persistentPageCacheHits;
     public int documentEmbeddingCount, queryEmbeddingCount, reusedEmbeddingCount;
     public long httpResponseBytes, embeddingTimeMs;

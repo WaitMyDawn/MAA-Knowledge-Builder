@@ -136,17 +136,26 @@ public final class RuleCardService {
     }
     private static String effectText(JsonNode rule,String field,String fallback){String text=RuntimeRules.effectNames(rule.path(field));if(!text.isBlank())return text;return BASE_POTION_NAMES.getOrDefault(fallback,fallback);}
     public static BufferedImage draw(String category,JsonNode row,ItemIconService.Snapshot icons){
-        var displayed=new ArrayList<JsonNode>();row.path("entries").forEach(displayed::add);row.path("verifiedGroupRules").forEach(displayed::add);int count=category.equals("trades")?Math.min(80,displayed.size()):0;boolean enchantmentFallback=category.equals("trades")&&displayed.stream().limit(count).anyMatch(entry->usesEnchantmentFallback(entry,icons));int height=category.equals("trades")?220+count*100+(enchantmentFallback?30:0):620;
+        var displayed=new ArrayList<JsonNode>();row.path("entries").forEach(displayed::add);row.path("verifiedGroupRules").forEach(displayed::add);int count=category.equals("trades")?Math.min(80,displayed.size()):0;boolean enchantmentFallback=category.equals("trades")&&displayed.stream().limit(count).anyMatch(entry->usesEnchantmentFallback(entry,icons));int height=category.equals("trades")?240+count*140+(enchantmentFallback?30:0):620;
         var image=new BufferedImage(1080,height,BufferedImage.TYPE_INT_ARGB);var g=image.createGraphics();
         try{g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);g.setColor(new Color(198,198,198));g.fillRect(0,0,1080,height);g.setColor(new Color(55,55,55));g.setFont(CardFont.at(Font.BOLD,27));g.drawString(category.equals("trades")?"交易表 · "+row.path("entity").asText():category.equals("brewing")?"酿造台 · 状态转换":"铁砧 · 操作规则",24,40);g.setFont(CardFont.at(Font.PLAIN,19));
             if(category.equals("trades")){
                 g.drawString("职业 "+row.path("profession").asText()+" · 等级/池 "+row.path("level")+" · 候选 "+row.path("candidateCount")+" · 抽取 "+row.path("draws"),24,74);g.drawString((row.path("selectedView").asBoolean()?"仅展示目标产物条目；候选数和抽取次数仍为完整原池。覆盖：":"入选率指工厂被抽取；随机附魔、折扣及条件另计。覆盖：")+row.path("coverage").asText(),24,103);
-                for(int i=0;i<count;i++){var entry=displayed.get(i);int y=130+i*100;g.setColor(new Color(139,139,139));g.fillRect(18,y,1044,94);g.setColor(Color.WHITE);g.drawString((entry.has("scope")?"已验证工厂组规则 ":"条目 ")+(i+1)+" · "+entry.path("status").asText(),28,y+25);String chance=String.format(Locale.ROOT,"工厂入选 %.3g%%",100*entry.path("selectionProbability").asDouble());g.drawString(chance,28,y+54);String cost=RuntimeRules.costSummary(entry);if(!cost.isBlank())text(g,cost.replace("minecraft:","").replaceAll("（[^）]*）",""),28,y+80,320);
-                    if(entry.path("status").asText().equals("UNSUPPORTED")){text(g,"未解析程序式规则；候选已保留，不能据此判断无交易",350,y+45,680);continue;}
+                for(int i=0;i<count;i++){var entry=displayed.get(i);int y=130+i*140;g.setColor(new Color(139,139,139));g.fillRect(18,y,1044,134);g.setColor(Color.WHITE);g.setFont(CardFont.at(Font.PLAIN,17));g.drawString((entry.has("scope")?"已验证工厂组规则 ":"条目 ")+(i+1)+" · "+entry.path("status").asText(),28,y+23);
+                    String chance=String.format(Locale.ROOT,"工厂入选 %.3g%% · 经验 +%d · 价格乘数 %.2f",100*entry.path("selectionProbability").asDouble(),entry.path("villagerXp").asInt(0),entry.path("priceMultiplier").asDouble(0));g.drawString(chance,28,y+48);
+                    String cost=RuntimeRules.costSummary(entry);if(!cost.isBlank())text(g,cost.replace("minecraft:","").replaceAll("（[^）]*）",""),28,y+73,320);
+                    g.setColor(new Color(55,55,55));g.setFont(CardFont.at(Font.PLAIN,12));text(g,"最大交易次数 "+entry.path("maxUses").asInt(0),28,y+103,300);
+                    if(entry.path("status").asText().equals("UNSUPPORTED")){g.setColor(Color.WHITE);text(g,"未解析程序式规则；候选已保留，不能据此判断无交易",350,y+48,680);continue;}
                     var inputs=entry.path("inputs");for(int slot=0;slot<2;slot++)slot(g,slot<inputs.size()?inputs.get(slot):JSON.createObjectNode(),350+slot*120,y+9,icons);
-                    g.setColor(new Color(55,55,55));if(inputs.size()>1)g.drawString("+",440,y+51);g.drawString("→",605,y+51);slot(g,entry.path("output"),665,y+9,icons,randomEnchantmentOutput(entry));g.setColor(Color.WHITE);text(g,entry.has("priceRule")||randomEnchantmentOutput(entry)?"随机附魔/价格：详见规则正文":entry.has("enchantmentProvider")?"随机附魔提供器：详见JSON":"最大交易次数 "+entry.path("maxUses"),770,y+40,280);
+                    g.setColor(new Color(55,55,55));if(inputs.size()>1)g.drawString("+",440,y+51);g.drawString("→",605,y+51);slot(g,entry.path("output"),665,y+9,icons,randomEnchantmentOutput(entry));
+                    String priceRule=entry.path("priceRule").asText("");String enchantment=entry.path("enchantmentProvider").asText("");
+                    g.setColor(Color.WHITE);g.setFont(CardFont.at(Font.PLAIN,12));
+                    text(g,priceRule.isBlank()?(randomEnchantmentOutput(entry)?"随机附魔交易":"固定交易"):"价格规则："+summarizePriceRule(priceRule),350,y+105,690);
+                    if(!enchantment.isBlank())text(g,"附魔提供器："+enchantment,770,y+30,280);
+                    if(entry.has("limitation")){g.setColor(new Color(55,55,55));g.setFont(CardFont.at(Font.PLAIN,10));text(g,"限制："+entry.path("limitation").asText(),350,y+121,690);}
                 }
-                g.setColor(new Color(55,55,55));g.drawString(count<row.path("entries").size()?"图片仅展示前80条；完整候选请查看目录JSON。":"需求、折扣、职业等级及条目条件会影响实际交易。",24,height-(enchantmentFallback?58:28));
+                g.setColor(new Color(55,55,55));g.setFont(CardFont.at(Font.PLAIN,17));g.drawString(count<row.path("entries").size()?"图片仅展示前80条；完整候选请查看目录JSON。":"需求、折扣、职业等级及条目条件会影响实际交易。",24,height-(enchantmentFallback?58:28));
+                if(row.has("limitation")){g.setFont(CardFont.at(Font.PLAIN,12));text(g,"规则限制："+row.path("limitation").asText(),24,height-52,1030);}
                 if(enchantmentFallback)g.drawString(ItemVisualState.ENCHANTMENT_NOTE+"；对应槽位使用默认物品外观，不显示附魔光效。",24,height-28);
             }else if(category.equals("brewing")){
                 text(g,"原药水："+stackLabel(row.path("input"),icons)+" "+RuntimeRules.effectNames(row.path("inputEffects")),24,88,1010);slot(g,first(row.path("ingredient")),480,135,icons);g.setColor(new Color(55,55,55));g.drawString("材料",485,125);g.setColor(new Color(85,85,85));g.drawLine(516,208,516,332);g.drawLine(396,286,636,286);g.drawLine(396,286,396,310);g.drawLine(636,286,636,310);
@@ -164,6 +173,14 @@ public final class RuleCardService {
         if(node.isContainerNode())for(var child:node)if(usesEnchantmentFallback(child,icons))return true;
         return false;
     }
+    static String summarizePriceRule(String raw){
+        String value=Objects.toString(raw,"");
+        String lower=value.toLowerCase(Locale.ROOT);
+        if(lower.contains("uniformly chosen enchantment")||lower.contains("doubleprice"))
+            return "随机魔咒/等级；价格随等级浮动，宝藏翻倍，上限 64 绿宝石";
+        return value.length()>90?value.substring(0,89)+"…":value;
+    }
+
     static boolean randomEnchantmentOutput(JsonNode entry){
         if(!entry.path("status").asText().equals("RANDOM_RULE")||!entry.path("factory").asText().equals("net.minecraft.world.entity.npc.VillagerTrades$EnchantedItemForEmeralds"))return false;
         var output=entry.path("output");if(!output.path("dynamicState").asBoolean()||!ItemVisualState.fixedVanillaEquipment(output.path("item").asText(output.path("id").asText())))return false;

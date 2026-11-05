@@ -442,14 +442,26 @@ public final class EvalRunner {
         }
         Map<String, String> paths;
         RendererService.RenderBatch batch;
+        boolean usePrepared = result.recipeRenderBatch != null
+                && (!result.recipeRenderBatch.images().isEmpty() || !result.recipeRenderBatch.cards().isEmpty());
         try {
-            batch = result.recipeRenderBatch!=null?result.recipeRenderBatch:renderer.renderDetailed(result.recipesToRender);
+            batch = usePrepared ? result.recipeRenderBatch : renderer.renderDetailed(result.recipesToRender);
             paths = batch.images();
+            log.info("Recipe render audit: inputs={} images={} diagnostics={}",
+                    result.recipesToRender.size(), paths.size(), batch.diagnostics());
+            if (result.metrics != null) {
+                result.metrics.recipeRenderInputCount = result.recipesToRender.size();
+                result.metrics.recipeRenderInputs = result.recipesToRender.stream()
+                        .map(match -> Objects.toString(match.outputItem(), "") + " ← " + Objects.toString(match.recipeJson(), ""))
+                        .toList();
+                result.metrics.recipeRenderImageCount = paths.size();
+                result.metrics.recipeRenderDiagnostics = batch.diagnostics();
+            }
         } catch (Exception e) {
             log.warn("Eval render failed for {} recipes: {}", result.recipesToRender.size(), e.getMessage());
             return List.of();
         }
-        try {if(result.recipeRenderBatch==null)AnswerMedia.attachRecipes(result,batch,cfg.dataDir());}
+        try {if(!usePrepared)AnswerMedia.attachRecipes(result,batch,cfg.dataDir());}
         catch(IOException e) {log.warn("Eval recipe attachment failed: {}",e.getMessage());}
         List<RuleJudge.RenderedImage> images = new ArrayList<>();
         Path archiveDir = runDir.resolve("rendered");
@@ -581,6 +593,10 @@ public final class EvalRunner {
         map.put("vectorMaxScore", m.vectorMaxScore);
         map.put("vectorAvgScore", m.vectorAvgScore);
         map.put("recipeResultCount", m.recipeResultCount);
+        map.put("recipeRenderInputCount", m.recipeRenderInputCount);
+        map.put("recipeRenderInputs", m.recipeRenderInputs);
+        map.put("recipeRenderImageCount", m.recipeRenderImageCount);
+        map.put("recipeRenderDiagnostics", m.recipeRenderDiagnostics);
         map.put("incrementalChunksAcquired", m.incrementalChunksAcquired);
         map.put("subPageUrlCount", m.subPageUrlCount);
         map.put("contextChunksUsed", m.contextChunksUsed);

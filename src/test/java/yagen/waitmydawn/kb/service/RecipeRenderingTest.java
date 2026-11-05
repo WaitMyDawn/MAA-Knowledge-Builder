@@ -45,7 +45,7 @@ class RecipeRenderingTest {
             var mod=new ModEntry();mod.setModId("demo");mod.setDisplayName("Demo");mod.setVersion("2.0");mod.setMcVersion("1.20.1");mod.setLoader("forge");db.saveModEntry(mod);
             var store=new ItemIconStore(db);assertEquals("CONFLICT",store.profiles().getFirst().compatibility());assertThrows(IllegalArgumentException.class,()->store.selectProfile(store.profiles().getFirst().id()));assertNull(store.activeProfileId());
             var batch=new RendererService(config,db).renderDetailed(List.of(new QaPipeline.RecipeMatch(recipe.replace("minecraft:crafting_shapeless","custom:crafting_shapeless"),"demo:widget","demo")));
-            assertTrue(batch.images().isEmpty());assertTrue(batch.diagnostics().getFirst().contains("未适配"));
+            assertFalse(batch.images().isEmpty());assertTrue(batch.diagnostics().stream().anyMatch(message->message.contains("通用卡")));
         }finally{db.shutdown();}
     }
     @Test void statefulOutputAndUnresolvedTagsNeverBorrowDefaultOrTagNamedIcons() throws Exception {

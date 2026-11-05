@@ -1016,8 +1016,10 @@ public class MaaKnowledgeBuilderApp extends Application {
         submitOperation(() -> {
             try {
                 QaPipeline.QaResult result = submittedPipeline.process(q, submittedScope);
-                var recipeImages = result.recipeRenderBatch!=null?result.recipeRenderBatch:rendererService.renderDetailed(result.recipesToRender);
-                if(result.recipeRenderBatch==null)AnswerMedia.attachRecipes(result, recipeImages, config.getDataDir());
+                boolean preparedRecipes = result.recipeRenderBatch!=null
+                        && (!result.recipeRenderBatch.images().isEmpty() || !result.recipeRenderBatch.cards().isEmpty());
+                var recipeImages = preparedRecipes?result.recipeRenderBatch:rendererService.renderDetailed(result.recipesToRender);
+                if(!preparedRecipes)AnswerMedia.attachRecipes(result, recipeImages, config.getDataDir());
                 final var media=AnswerMedia.assess(result.answer,result.artifacts,config.getDataDir());
                 final String answerWithImages = result.answer;
 

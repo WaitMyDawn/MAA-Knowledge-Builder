@@ -99,10 +99,64 @@ public class RendererService {
                 images.put(key,rendered.path());cards.add(rendered);
             } catch(Exception e) {
                 String message=Objects.toString(match.outputItem(),"未知产物")+"："+e.getMessage();diagnostics.add(message);LOG.warn("Recipe rendering skipped: {}",message);
+                genericFallback(match,icons,images,diagnostics);
             }finally{RetrievalTelemetry.operation("render.recipe.total",System.nanoTime()-renderStarted,1);}
         }
         return new RenderBatch(images,cards,diagnostics);
     }
+    /** 标签图标：优先 minecraft 命名空间成员；没有则取标签展开后的第一个。 */
+    private String firstTagMember(String tag, Map<String,String> cache) {
+        if (cache.containsKey(tag)) return cache.get(tag);
+        String member = null;
+        try (var c=db.getConnection()) {
+            var tags=RecipeResourceStore.tags(c);
+            var resolved=RecipeResourceStore.resolveTag(tag,tags);
+            if (resolved.resolved() && !resolved.items().isEmpty()) member=TagIconChoice.preferred(resolved.items());
+            if(member==null) {
+                try(var p=c.prepareStatement("SELECT record_data FROM rag_runtime_record WHERE category='tags' AND record_id LIKE ? ORDER BY record_id")) {
+                    p.setString(1,"%|"+tag);
+                    try(var rows=p.executeQuery()) {
+                        while(rows.next() && member==null) {
+                            var members=JSON.readTree(rows.getString(1)).path("members");
+                            if(members.size()>0) member=TagIconChoice.preferred(members);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        cache.put(tag,member);
+        return member;
+    }
+
+    /** 专用 RecipePlan/图标路径失败时，仍按通用字段画出一张可读卡，避免“识别到配方但零图”。 */
+    private void genericFallback(QaPipeline.RecipeMatch match, ItemIconService.Snapshot icons,
+                                 Map<String,String> images, List<String> diagnostics) {
+        try {
+            if(Set.of("TEST_FIXTURE","SEED").contains(Objects.toString(match.sourceType(),""))) return;
+            var root=JSON.readTree(match.recipeJson());
+            var definition=root.has("definition")?root.path("definition"):root;
+            if(!GenericRecipeCard.supports(definition))return;
+            String output=Objects.toString(match.outputItem(),"").isBlank()?"recipe":match.outputItem();
+            String fingerprint=BuildRequest.fingerprint("generic-recipe-v8\n"+match.recipeJson()+"\n"+icons.revision());
+            Path directory=config.getGeneratedDir().resolve("recipes");
+            Files.createDirectories(directory);
+            String safe=output.replaceAll("[^a-zA-Z0-9_-]","_");
+            if(safe.length()>80)safe=safe.substring(0,80);
+            Path file=directory.resolve(safe+"_"+fingerprint.substring(0,24)+".png");
+            if(!Files.isRegularFile(file)) {
+                var tagCache=new HashMap<String,String>();
+                var image=GenericRecipeCard.draw(definition,match.outputItem(),icons,tag->firstTagMember(tag,tagCache));
+                Path temp=Files.createTempFile(directory,"generic-",".png");
+                try {ImageIO.write(image,"PNG",temp.toFile());move(temp,file);} finally {Files.deleteIfExists(temp);}
+            }
+            images.putIfAbsent(output+"#generic"+fingerprint.substring(0,12),file.toAbsolutePath().toString());
+            diagnostics.add(Objects.toString(match.outputItem(),"未知产物")+"：专用配方卡未适配，已回退通用卡");
+        } catch(Exception fallbackFailure) {
+            diagnostics.add(Objects.toString(match.outputItem(),"未知产物")+"：通用卡回退失败 "+fallbackFailure.getMessage());
+            LOG.warn("Generic recipe fallback failed",fallbackFailure);
+        }
+    }
+
     private RecipeMeta metadata(QaPipeline.RecipeMatch match) {
         if("RUNTIME_SNAPSHOT".equals(match.sourceType())) {
             try(var c=db.getConnection();var p=c.prepareStatement("SELECT r.recipe_id,p.manifest_json FROM rag_runtime_recipe r JOIN rag_item_icon_profile p ON p.id=r.profile_id WHERE r.profile_id=? AND r.recipe_data=?")) {

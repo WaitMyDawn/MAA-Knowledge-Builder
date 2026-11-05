@@ -1,0 +1,2974 @@
+{
+  "version": "2",
+  "name": "golden-set-modEnv1：当前快照、多来源获取、实体、玩法与外部网页",
+  "environment": {
+    "minecraft": "1.21.1",
+    "loader": "neoforge",
+    "database": "D:/Minecraft/MKB-Database",
+    "requiredExternalSources": [
+      "https://www.mcmod.cn/modpack/737.html",
+      "https://www.mcmod.cn/class/5214.html"
+    ]
+  },
+  "evaluation": {
+    "judges": [
+      "deterministic-rules",
+      "human"
+    ],
+    "humanGrades": [
+      "S",
+      "A",
+      "B",
+      "C",
+      "D"
+    ],
+    "modelJudge": false,
+    "expectedTurns": 61,
+    "expectedConversations": 11,
+    "notes": [
+      "同一大类连续会话；MultiStep六组独立，类别间清空上下文。",
+      "钻石剑保留为Crafting-01，但不预设无序；配方类型以当前快照为准。",
+      "交易、功能方块配方、属性和概率若未导出或未检索到，记录证据缺口，不能以编造满足要点。",
+      "六位法师和两位Boss按现有modEnv1版本预期冻结；版本变化须审查题集。",
+      "v2修正规则覆盖与中文问题线索；v1运行快照和人工评分保持不变。旧答案按v2检查只作诊断，不作同口径模型重测。"
+    ]
+  },
+  "conversations": [
+    {
+      "id": "Crafting",
+      "name": "Crafting",
+      "turns": [
+        {
+          "id": "Crafting-01",
+          "question": "当前环境中钻石剑怎么制作和获取？请展示可用配方，并区分合成与其他有证据的获取途径。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "当前快照配方、材料排列及产物数量正确。",
+              "不得只因有合成配方就断言没有其他来源；没有证据的途径明确未确认。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "recipe_output_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "minecraft:diamond_sword"
+              ]
+            },
+            {
+              "kind": "render_image_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Crafting-02",
+          "question": "附魔台怎么制作和获取？请展示当前环境的有序合成图。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "材料、排列、数量与快照一致。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "recipe_output_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "minecraft:enchanting_table"
+              ]
+            },
+            {
+              "kind": "render_image_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Crafting-03",
+          "question": "Create 的安山合金怎么制作和获取？请列出当前环境中的不同配方并展示合成图。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "保留无序配方及不同替代配方；不能只展示第一种后声称已列全。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "recipe_output_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "create:andesite_alloy"
+              ]
+            },
+            {
+              "kind": "render_image_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Crafting-04",
+          "question": "探索者指南针怎么制作和获取？请展示当前环境的有序合成图。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "只用当前快照配方，不套用737的魔改配方。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "recipe_output_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "explorerscompass:explorerscompass"
+              ]
+            },
+            {
+              "kind": "render_image_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Crafting-05",
+          "question": "力量药水 II 怎么制作和获取？请详细介绍多步骤酿造流程、每步材料和必要设备。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "完整说明基础药水到力量II的步骤、设备和材料；区分延长时间与增强等级。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches_at_least",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "酿造|brewing",
+                "荧石|glowstone",
+                "烈焰粉|blaze powder",
+                "下界疣|nether wart"
+              ],
+              "min": 4
+            }
+          ]
+        },
+        {
+          "id": "Crafting-06",
+          "question": "下界合金胸甲怎么制作和获取？请介绍当前版本锻造台升级流程，以及模板和材料的获取。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "锻造模板、钻石胸甲、下界合金锭与锻造台；模板获取有证据，不套用旧版本。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches_at_least",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "锻造|smithing",
+                "模板|template",
+                "钻石胸甲|diamond chestplate",
+                "下界合金锭|netherite ingot"
+              ],
+              "min": 4
+            }
+          ]
+        },
+        {
+          "id": "Crafting-07",
+          "question": "此呼彼应法杖怎么制作和获取？",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "核对流浪商人交易；未知交易条件不能编造，不把无配方等同于无法获取。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches",
+              "weight": 1,
+              "required": true,
+              "value": "流浪商人|wandering trader"
+            }
+          ]
+        },
+        {
+          "id": "Crafting-08",
+          "question": "传说墨水有哪些制作和获取途径？请分别说明。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "核对炼金锅制作、流浪商人交易、战利品箱三条来源及条件，不能只回答合成。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches_at_least",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "炼金锅|alchemist.?s cauldron|alchemy",
+                "流浪商人|wandering trader",
+                "战利品|宝箱|箱子|loot"
+              ],
+              "min": 3
+            }
+          ]
+        },
+        {
+          "id": "Crafting-09",
+          "question": "背叛者徽记怎么获取？请说明掉落来源与必要条件。",
+          "type": "scenario",
+          "category": "Crafting",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "核对生物掉落及触发条件；权重不等于最终概率，未知概率不编造。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches",
+              "weight": 1,
+              "required": true,
+              "value": "掉落|loot|drop"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Entity",
+      "name": "Entity",
+      "turns": [
+        {
+          "id": "Entity-01",
+          "question": "对比成年牛和幼年牛的外观，分别展示图片并介绍区别。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "两种年龄图片正确；各图独立缩放，不把图片大小当真实体型，不混入其他版本牛变种。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|minecraft:cow|age=adult",
+                "ENTITY|minecraft:cow|age=baby"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Entity-02",
+          "question": "对比红色雌性火龙和绿色雄性火龙，分别展示图片并介绍区别。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "两个独立条件组的颜色、性别和实体全部匹配。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|iceandfire:fire_dragon|variant=red|sex=female",
+                "ENTITY|iceandfire:fire_dragon|variant=green|sex=male"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Entity-03",
+          "question": "展示虎斑猫的实体外观并简要介绍。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "精确命名空间变种，不使用其他猫变种。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|minecraft:cat|variant=minecraft:tabby"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Entity-04",
+          "question": "请图文介绍铁魔法的冰蜘蛛。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "冰蜘蛛实际图可见、完整，对象与介绍一致；属性没有证据时说明。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|irons_spellbooks:ice_spider"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Entity-05",
+          "question": "铁魔法有哪些法师？请完整介绍，每位至少包含实体图片、属性和基本信息。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "核对pyromancer、cryomancer、necromancer、archevoker、priest、apothecarist六位。",
+              "逐位给出图片、属性及基本信息；不得用debug_wizard或投射物充数。",
+              "属性数值必须有当前版本证据，不能用名称出现代替介绍。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|irons_spellbooks:pyromancer",
+                "ENTITY|irons_spellbooks:cryomancer",
+                "ENTITY|irons_spellbooks:necromancer",
+                "ENTITY|irons_spellbooks:archevoker",
+                "ENTITY|irons_spellbooks:priest",
+                "ENTITY|irons_spellbooks:apothecarist"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Entity-06",
+          "question": "请详细介绍当前版本图书管理员村民的交易，包括职业等级、商品、价格及附魔书交易的限制或变化。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "说明等级和交易池、价格条件及随机性；区分实验性村民交易再平衡与当前世界已启用设置。",
+              "没有实际交易池证据不能把常识当导出交易数据。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches",
+              "weight": 1,
+              "required": true,
+              "value": "交易|trade"
+            }
+          ]
+        },
+        {
+          "id": "Entity-07",
+          "question": "铁魔法有哪些 BOSS？请图文介绍它们的基本信息和属性。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "核对dead_king与fire_boss；不能把残骸、调试实体、普通精英算成Boss。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches_at_least",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "死.*王|dead.?king",
+                "原初受火者|提洛斯|fire.?boss"
+              ],
+              "min": 2
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "values": [
+                "ENTITY|irons_spellbooks:dead_king",
+                "ENTITY|irons_spellbooks:fire_boss"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Entity-08",
+          "question": "介绍它们，请分别详细介绍这些 BOSS，包括图片、属性、基本信息、出现或召唤条件以及战斗特点。",
+          "type": "scenario",
+          "category": "Entity",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "继承上一轮两个Boss；分别介绍，不切换到灾变Boss。",
+              "召唤和属性必须有证据。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|irons_spellbooks:dead_king",
+                "ENTITY|irons_spellbooks:fire_boss"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Gameplay",
+      "name": "Gameplay",
+      "turns": [
+        {
+          "id": "Gameplay-01",
+          "question": "铁傀儡如何建造？请说明材料、结构和注意事项。",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "区分结构建造与工作台合成，摆放条件有证据。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-02",
+          "question": "凋灵如何召唤？请说明材料、摆放顺序和必要条件。",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "召唤材料、结构及必要限制完整。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-03",
+          "question": "当前版本末影龙怎么打？请给出可执行的准备、战斗流程和注意事项。",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "战术必须适用于1.21.1；不借用其他版本装备或机制。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-04",
+          "question": "冰火传说的龙鳞如何获取、有什么用途？请说明与龙尸体交互的具体步骤。",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "核对尸体交互、采集条件及用途，不仅给泛化掉落列表。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-05",
+          "question": "冰火传说龙钢如何获得？请详细说明龙钢锻炉多方块结构的制作、搭建和使用，并提供相关配方图或结构图。",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "锻炉部件制作、结构摆放、龙与材料条件、产物流程；结构图必须确实对应锻炉。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_positive_matches_at_least",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "锻炉|dragonforge",
+                "搭建|结构|多方块",
+                "龙钢|dragonsteel"
+              ],
+              "min": 3
+            },
+            {
+              "kind": "answer_media_displayed_min",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-06",
+          "question": "Alex生物的水滴鱼是什么？有什么特点和用途？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "对象正确，区分生物与物品条目，不把评论故事当正文事实。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-07",
+          "question": "Alex生物的森蚺能驯服吗？玩家可以如何与它交互？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "不预设可驯服，结论及交互步骤有来源。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-08",
+          "question": "Alex洞穴的弹跳机兵如何交互或使用？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "命中正确实体，说明实际可执行过程。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-09",
+          "question": "Alex洞穴的糖果独角兽如何驯服？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "条件和步骤有正文支持。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-10",
+          "question": "铁魔法的法术书有什么用，如何获取和使用？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "用途、获取和使用分别覆盖。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_positive_matches",
+              "value": "(?:装备|装入|放入|右键|施法|法术栏)",
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-11",
+          "question": "铁魔法的法术卷轴如何升级？所需材料怎么获得？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "升级与材料获取两部分有证据，不能只回答其中一部分。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-12",
+          "question": "铁魔法的法术等级怎么提升？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "澄清卷轴等级和法术强度等歧义，不能直接断言不存在等级。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-13",
+          "question": "冰火传说有哪些龙？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "介绍当前模组的龙种类，区分品种、颜色、性别和成长阶段。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-14",
+          "question": "介绍下它们。",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "继承上一轮龙种类，分别介绍，有条件配图，不切到其他模组。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "values": [
+                "ENTITY|iceandfire:fire_dragon",
+                "ENTITY|iceandfire:ice_dragon",
+                "ENTITY|iceandfire:lightning_dragon"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Gameplay-15",
+          "question": "怎么驯服它们？",
+          "type": "scenario",
+          "category": "Gameplay",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "继承龙种类，区别野生成年龙与龙蛋孵化养育，各种必要条件有依据。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Webpage",
+      "name": "Webpage",
+      "turns": [
+        {
+          "id": "Webpage-01",
+          "question": "龙之冒险新征程的 T3 装备、武器和饰品怎么推荐？",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "三类证据分别覆盖，不混淆强度梯度与流程阶段。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:modpack:737"
+              ]
+            },
+            {
+              "kind": "source_url_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "https://www.mcmod.cn/modpack/737.html",
+                "https://www.mcmod.cn/post/4727.html",
+                "https://www.mcmod.cn/post/4984.html",
+                "https://www.mcmod.cn/post/5267.html",
+                "https://www.mcmod.cn/post/5355.html",
+                "https://www.mcmod.cn/post/5454.html",
+                "https://www.mcmod.cn/post/5557.html"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "Webpage-02",
+          "question": "龙之冒险新征程如何组装并升级傀儡？请结合相关步骤图详细介绍。",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "组装和升级均有正文与对应步骤图，不能用组装图代替升级图。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:modpack:737"
+              ]
+            },
+            {
+              "kind": "source_url_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "https://www.mcmod.cn/modpack/737.html",
+                "https://www.mcmod.cn/post/4727.html",
+                "https://www.mcmod.cn/post/4984.html",
+                "https://www.mcmod.cn/post/5267.html",
+                "https://www.mcmod.cn/post/5355.html",
+                "https://www.mcmod.cn/post/5454.html",
+                "https://www.mcmod.cn/post/5557.html"
+              ]
+            },
+            {
+              "kind": "answer_image_facets_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "傀儡组装",
+                "傀儡升级"
+              ],
+              "min": 1
+            }
+          ]
+        },
+        {
+          "id": "Webpage-03",
+          "question": "龙之冒险新征程的女仆有什么用？",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "以整合包教程为依据，不用通用模组介绍代替。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:modpack:737"
+              ]
+            },
+            {
+              "kind": "source_url_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "https://www.mcmod.cn/modpack/737.html",
+                "https://www.mcmod.cn/post/4727.html",
+                "https://www.mcmod.cn/post/4984.html",
+                "https://www.mcmod.cn/post/5267.html",
+                "https://www.mcmod.cn/post/5355.html",
+                "https://www.mcmod.cn/post/5454.html",
+                "https://www.mcmod.cn/post/5557.html"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "Webpage-04",
+          "question": "龙之冒险新征程的 Goety 怎么玩？请介绍入门与发展流程。",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "提供可执行发展路径与来源，缺失部分说明。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:modpack:737"
+              ]
+            },
+            {
+              "kind": "source_url_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "https://www.mcmod.cn/modpack/737.html",
+                "https://www.mcmod.cn/post/4727.html",
+                "https://www.mcmod.cn/post/4984.html",
+                "https://www.mcmod.cn/post/5267.html",
+                "https://www.mcmod.cn/post/5355.html",
+                "https://www.mcmod.cn/post/5454.html",
+                "https://www.mcmod.cn/post/5557.html"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "Webpage-05",
+          "question": "龙之冒险新征程的亚波伦怎么打？",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "区分资料中的环境和情境；召唤条件和获取链若适用需要解释。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:modpack:737"
+              ]
+            },
+            {
+              "kind": "source_url_any",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "https://www.mcmod.cn/modpack/737.html",
+                "https://www.mcmod.cn/post/4727.html",
+                "https://www.mcmod.cn/post/4984.html",
+                "https://www.mcmod.cn/post/5267.html",
+                "https://www.mcmod.cn/post/5355.html",
+                "https://www.mcmod.cn/post/5454.html",
+                "https://www.mcmod.cn/post/5557.html"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "Webpage-06",
+          "question": "灾变模组有哪些主要 BOSS？请结合网页资料的相关插图介绍。",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "网页证据独立于本地快照；不能声称灾变已经安装，图文对象一致。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:class:5214"
+              ]
+            },
+            {
+              "kind": "answer_illustration_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Webpage-07",
+          "question": "这些整合包教程能否直接代表我当前 modEnv1 的配方和机制？灾变已经安装在我的游戏里了吗？",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "同时核对737外部资料与灾变环境外模组的边界，不以刚才聊过为安装证据。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_mod_absent",
+              "values": [
+                "cataclysm"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_positive_matches",
+              "value": "(?:未安装|没有安装|未装|没有装|不在.{0,16}(?:快照|安装|模组)|(?:快照|安装名单).{0,16}(?:不包含|没有|未包含))",
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Webpage-08",
+          "question": "灾变的利维坦怎么打？请详细介绍前置准备、召唤流程、召唤物的获取方式（若需要）和战斗策略。",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "网页证据覆盖获取链、召唤与战斗；不拿本地其他模组资源代替。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:class:5214"
+              ]
+            },
+            {
+              "kind": "answer_illustration_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Webpage-09",
+          "question": "灾变的焰魔怎么打？请详细介绍前置准备、召唤流程、召唤物的获取方式（若需要）和战斗策略。",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "区分灾变焰魔与铁魔法Boss；召唤获取流程有依据。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:class:5214"
+              ]
+            },
+            {
+              "kind": "answer_illustration_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Webpage-10",
+          "question": "灾变的斯库拉怎么打？请详细介绍前置准备、召唤流程、召唤物的获取方式（若需要）和战斗策略。",
+          "type": "scenario",
+          "category": "Webpage",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "网页支持召唤、召唤物获取和战斗策略；未知条件与概率不编造。",
+              "引用必须属于该网页资料，正文末尾去重；同名对象须根据当前问题重新消歧。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "knowledge_scope",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "mcmod:class:5214"
+              ]
+            },
+            {
+              "kind": "answer_illustration_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Error",
+      "name": "Error",
+      "turns": [
+        {
+          "id": "Error-01",
+          "question": "展示 iceandfire:fire_dragon growth_stage=99 成年实体外观；没有对应状态就说明。",
+          "type": "scenario",
+          "category": "Error",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "不回落其他状态。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_images_absent",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Error-02",
+          "question": "展示六阶火龙的实体图片；没有对应状态就说明。",
+          "type": "scenario",
+          "category": "Error",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "不能把五阶图称作六阶。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_images_absent",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Error-03",
+          "question": "展示 iceandfire:fire_dragon sex=unknown 的实体图片；没有对应状态就说明。",
+          "type": "scenario",
+          "category": "Error",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "不忽略非法性别条件。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_images_absent",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Error-04",
+          "question": "展示戴着钻石头盔的牛的实体图片；没有对应装备状态就说明。",
+          "type": "scenario",
+          "category": "Error",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "缺失指定装备快照时不能用默认牛冒充。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_images_absent",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "Error-05",
+          "question": "当前环境能合成鞘翅吗？它有哪些有证据的获取方式？",
+          "type": "scenario",
+          "category": "Error",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "不预设原版一定无配方；核对快照后说明真实获取，不编造合成。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_positive_matches",
+              "value": "(?:末地船.{0,80}物品展示框|物品展示框.{0,80}末地船)",
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Error-06",
+          "question": "Alex洞穴的 T-Rex 如何驯服？",
+          "type": "scenario",
+          "category": "Error",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "不捏造正式同名对象；有依据地解释候选撼地龙及名称歧义。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_task_complete",
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_not_contains",
+              "values": [
+                "请确认具体对象"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_positive_matches",
+              "value": "撼地龙",
+              "required": true,
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "id": "Error-07",
+          "question": "Alex生物的九头蛇在哪里生成？",
+          "type": "scenario",
+          "category": "Error",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "泛化核对实体与模组归属；本环境对应冰火传说，说明生成位置及证据范围。同名实体跨模组时保留消歧，不把其他环境的唯一预期泛化。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "entity_resolved_any",
+              "values": [
+                "iceandfire:hydra"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_positive_matches",
+              "value": "(?:(?:生成|出没|栖息|发现).{0,40}(?:群系|沼泽|巢穴|洞穴)|(?:群系|沼泽|巢穴|洞穴).{0,40}(?:生成|出没|栖息))",
+              "required": true,
+              "weight": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MultiStep-01",
+      "name": "MultiStep-01",
+      "turns": [
+        {
+          "id": "MultiStep-01",
+          "question": "钻石剑怎么合成？请展示当前环境的配方图。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "保持钻石剑上下文；第二轮覆盖材料获取，不只重述合成。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "MultiStep-02",
+          "question": "只解释刚才所需材料的获取方式。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "保持钻石剑上下文；第二轮覆盖材料获取，不只重述合成。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MultiStep-02",
+      "name": "MultiStep-02",
+      "turns": [
+        {
+          "id": "MultiStep-03",
+          "question": "展示成年牛的实体图片。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "继承minecraft:cow，切换年龄。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|minecraft:cow|age=adult"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "MultiStep-04",
+          "question": "再展示它的幼年形态。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "继承minecraft:cow，切换年龄。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|minecraft:cow|age=baby"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MultiStep-03",
+      "name": "MultiStep-03",
+      "turns": [
+        {
+          "id": "MultiStep-05",
+          "question": "展示红色雄性五阶火龙的实体图片。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "只改颜色，保留雄性、五阶和火龙。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|iceandfire:fire_dragon|growth_stage=5|sex=male|variant=red"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "MultiStep-06",
+          "question": "改成绿色，其他条件不变。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "只改颜色，保留雄性、五阶和火龙。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|iceandfire:fire_dragon|growth_stage=5|sex=male|variant=green"
+              ]
+            },
+            {
+              "kind": "answer_media_sources_bound",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MultiStep-04",
+      "name": "MultiStep-04",
+      "turns": [
+        {
+          "id": "MultiStep-07",
+          "question": "龙之冒险新征程的傀儡如何组装？",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "继承737范围，第二轮正文和配图覆盖升级。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "MultiStep-08",
+          "question": "组装好后如何升级？请展示升级步骤图。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "继承737范围，第二轮正文和配图覆盖升级。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MultiStep-05",
+      "name": "MultiStep-05",
+      "turns": [
+        {
+          "id": "MultiStep-09",
+          "question": "请结合网页资料介绍灾变模组。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "网页介绍不是安装证据，核对快照并说明边界。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "MultiStep-10",
+          "question": "当前游戏已经装了它吗？",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "网页介绍不是安装证据，核对快照并说明边界。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_mod_absent",
+              "values": [
+                "cataclysm"
+              ],
+              "required": true,
+              "weight": 1
+            },
+            {
+              "kind": "answer_positive_matches",
+              "value": "(?:未安装|没有安装|未装|没有装|不在.{0,16}(?:快照|安装|模组)|(?:快照|安装名单).{0,16}(?:不包含|没有|未包含))",
+              "required": true,
+              "weight": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MultiStep-06",
+      "name": "MultiStep-06",
+      "turns": [
+        {
+          "id": "MultiStep-11",
+          "question": "分别展示火龙和冰龙的实体图片。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "收窄对象，五阶雌性冰龙，排除火龙。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "MultiStep-12",
+          "question": "只看冰龙五阶雌性。",
+          "type": "scenario",
+          "category": "MultiStep",
+          "stabilityRuns": 1,
+          "expected": {
+            "answerPoints": [
+              "收窄对象，五阶雌性冰龙，排除火龙。"
+            ]
+          },
+          "judgeRubric": [
+            "人工逐项核对回答要点、证据适用版本、充分性和图片视觉语义。规则通过不代表事实正确。",
+            "不得从参考要点补充检索库；不得把未安装模组或外部整合包教程视为本地运行时规则。"
+          ],
+          "assertions": [
+            {
+              "kind": "no_error",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "runtime_snapshot_selected",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_refs_valid",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "resource_http_zero",
+              "weight": 1,
+              "required": true
+            },
+            {
+              "kind": "answer_media_identity_all",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|iceandfire:ice_dragon|growth_stage=5|sex=female"
+              ]
+            },
+            {
+              "kind": "answer_media_identity_only",
+              "weight": 1,
+              "required": true,
+              "values": [
+                "ENTITY|iceandfire:ice_dragon|growth_stage=5|sex=female"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
