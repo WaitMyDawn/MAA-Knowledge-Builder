@@ -6,22 +6,27 @@ import java.util.regex.Pattern;
 /** 取证完成检查是确定性下限；不能把属性表或缺口说明当作操作步骤。 */
 public final class TaskEvidence {
     private TaskEvidence() {}
-    private static final Pattern NEGATIVE=Pattern.compile(".*(?:未找到|未查到|没有找到|没有取得|未取得|未确认|无法确认|无法提供|无法给出|尚不能|尚未|未覆盖|缺少|没有明确|没有直接|未提供|未包含|不包含|没有.*(?:包含|说明|证据)|请确认具体对象|如需更详细|需要你.*(?:明确|指定)).*");
+    private static final Pattern NEGATIVE=Pattern.compile(".*(?:未找到|未查到|没有找到|没有取得|未取得|未确认|无法确认|无法提供|无法给出|尚不能|尚未|未覆盖|缺少|没有明确|没有直接|未提供|未包含|没有说明|没有提供|没有给出|没有[^。！？\\n]{0,40}(?:包含|说明|证据)|请确认具体对象|如需更详细|需要你.*(?:明确|指定)).*");
     public static String positiveText(String text){
         var result=new StringBuilder();boolean uncertaintySection=false;
         for(String line:Objects.toString(text,"").replace("**","").replace("__","").split("\\R")){
             if(line.stripLeading().matches("#{1,6}\\s+.*")){uncertaintySection=line.matches(".*(?:无法确认|未确认|未知|缺口|未找到).*");result.append(line).append('\n');continue;}
             if(uncertaintySection)continue;
-            // 同一行里“已确认步骤（具体细节未确认）”应保留步骤；只丢弃确实否定的分句。
-            var kept=new ArrayList<String>();
-            for(String clause:line.split("[；;]")){
-                String value=clause;
-                int paren=value.indexOf('（');
-                if(paren>=0&&NEGATIVE.matcher(value.substring(paren)).find())value=value.substring(0,paren);
+            // 逐句判断：同一句里“已确认步骤（具体细节未确认）”只去掉括注，保留步骤；
+            // “清单中不包含X”这类事实性否定不是缺口说明，必须保留。
+            var kept=new StringBuilder();
+            for(String sentence:line.split("(?<=[。！？])")){
+                String value=sentence;
+                int open=value.indexOf('（');
+                if(open>=0){
+                    int close=value.indexOf('）',open);
+                    String inner=close>open?value.substring(open,close+1):value.substring(open);
+                    if(NEGATIVE.matcher(inner).find())value=value.substring(0,open)+(close>open?value.substring(close+1):"");
+                }
                 if(value.isBlank()||NEGATIVE.matcher(value).find())continue;
-                kept.add(value);
+                kept.append(value);
             }
-            if(!kept.isEmpty())result.append(String.join("；",kept)).append('\n');
+            if(!kept.isEmpty())result.append(kept).append('\n');
         }
         return result.toString();
     }
