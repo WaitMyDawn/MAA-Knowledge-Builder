@@ -817,6 +817,7 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
             if (section.isBlank()) return multiblockView(query, row);
         }
         if (row.key().category().equals("trades")) result.tradeIds.add(row.key().id());
+        if (row.key().category().equals("loot_tables")) result.lootIds.add(row.key().id());
         if (row.key().category().equals("recipes")) result.toolRecipes.add(row.data().toString());
         var node = section.isBlank() ? row.data() : row.data().at(normalizePointer(section));
         var view = JSON.createObjectNode().put("id", row.key().id()).put("category", row.key().category()).put("section", section);
@@ -1273,6 +1274,8 @@ final class QaAgentTurn implements AgentToolLoop.Executor {
                 if (key != null) view.put("translationKey", key);
             }
         }
+        if (node.toString().contains("survives_explosion"))
+            view.put("predicateNote", "survives_explosion 是战利品表谓词：方块被爆炸破坏时按 1/P（P=爆炸威力）概率满足该谓词，不是保证掉落，也不是保证不掉落。");
         var pools = ChestLootRenderer.pools(node.path("definition"));
         var summary = new StringBuilder();
         for (int i = 0; i < pools.size(); i++) {

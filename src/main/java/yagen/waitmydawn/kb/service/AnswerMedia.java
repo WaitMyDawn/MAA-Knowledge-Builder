@@ -119,7 +119,7 @@ public final class AnswerMedia {
             }
             matcher.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(replacement));
         }
-        matcher.appendTail(out); safe = alignIllustrations(out.toString(),artifacts);
+        matcher.appendTail(out); safe = relocateTrailingIllustrations(alignIllustrations(out.toString(),artifacts),artifacts);
         usedImages.clear();var visibleImages=IMAGE_REFERENCE.matcher(referenceText(safe));while(visibleImages.find())usedImages.add(visibleImages.group(1));
         for (var image : artifacts.pictures()) {
             if (usedImages.contains(image.id()) || java.util.Set.of("ENTITY","ITEM","RECIPE","RUNTIME_RULE").contains(image.role())) continue;
@@ -150,6 +150,57 @@ public final class AnswerMedia {
             if(!labels.isEmpty())safe += "\n\n资料来源：" + String.join(" · ", labels.values().stream().limit(5).toList());
         }
         return ModpackSources.format(safe,artifacts);
+    }
+
+    private static final java.util.regex.Pattern MEDIA_HEADING=java.util.regex.Pattern.compile("(?i)^#{0,6}\\s*(?:外观对照|参考配图|图片参考|附图|外观图|图片)\\s*[:：]?\\s*$");
+
+    /**
+     * 模型常把插图统一堆在末尾的“外观对照/参考配图”下。这里按图注与上下文把尾部插图
+     * 移到正文中最相关的段落后面，只移动能匹配到段落的图，其余保留在尾部。
+     */
+    static String relocateTrailingIllustrations(String text,AnswerArtifacts artifacts) {
+        if (text == null || text.isBlank()) return text;
+        var paragraphs = new ArrayList<>(List.of(text.split("\\n\\s*\\n")));
+        int start = paragraphs.size();
+        for (int i = paragraphs.size() - 1; i >= 0; i--) {
+            String strip = paragraphs.get(i).strip();
+            boolean imageOnly = strip.matches("(?s)(?:!\\[[^\\]]*]\\(kb-image:[a-zA-Z0-9]+\\)\\s*)+");
+            if (imageOnly || MEDIA_HEADING.matcher(strip).matches()) { start = i; continue; }
+            break;
+        }
+        if (start >= paragraphs.size()) return text;
+        var pictures = new HashMap<String,AnswerArtifacts.Picture>(); artifacts.pictures().forEach(p -> pictures.put(p.id(), p));
+        var leftovers = new ArrayList<String>(); boolean changed = false;
+        for (int i = start; i < paragraphs.size(); i++) {
+            String paragraph = paragraphs.get(i);
+            if (MEDIA_HEADING.matcher(paragraph.strip()).matches()) { leftovers.add(paragraph); continue; }
+            var matcher = IMAGE_REFERENCE.matcher(paragraph);
+            var rest = new StringBuilder(); int cursor = 0;
+            while (matcher.find()) {
+                rest.append(paragraph, cursor, matcher.start()); cursor = matcher.end();
+                var picture = pictures.get(matcher.group(1));
+                int best = -1; double score = 0;
+                for (int j = 0; j < start; j++) {
+                    String candidate = paragraphs.get(j).strip();
+                    if (candidate.isBlank() || candidate.startsWith("#") || candidate.startsWith("![") || candidate.contains("kb-image:")) continue;
+                    String context = picture == null ? "" : Objects.toString(picture.context(), "");
+                    if (picture != null && picture.grounding() != null) context = Objects.toString(picture.grounding().stepText(), context);
+                    double value = KnowledgeSearchText.overlap(Objects.toString(picture == null ? "" : picture.caption(), " ") + " " + context, paragraphs.get(j));
+                    if (value > score) { score = value; best = j; }
+                }
+                if (best >= 0 && score >= 0.05 && picture != null) {
+                    paragraphs.set(best, paragraphs.get(best) + "\n\n" + imageMarkdown(picture));
+                    changed = true;
+                } else rest.append(matcher.group());
+            }
+            rest.append(paragraph.substring(cursor));
+            if (!rest.toString().isBlank()) leftovers.add(rest.toString());
+        }
+        if (!changed) return text;
+        var rebuilt = new ArrayList<String>();
+        for (int i = 0; i < start; i++) rebuilt.add(paragraphs.get(i));
+        rebuilt.addAll(leftovers);
+        return String.join("\n\n", rebuilt);
     }
 
     private static String alignIllustrations(String text,AnswerArtifacts artifacts) {

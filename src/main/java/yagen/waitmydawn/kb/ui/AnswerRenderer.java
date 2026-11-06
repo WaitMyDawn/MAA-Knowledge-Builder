@@ -96,8 +96,9 @@ public final class AnswerRenderer {
             String body=modpack?cleaned.toString().replaceAll("(?m)^[ \\t]*[-*][ \\t]*$",""):cleaned.toString();
             if (!body.isBlank()) container.getChildren().add(MarkdownRenderer.render(body, List.of(dataDir.resolve("generated"))));
             var links = new FlowPane(8, 4);
-            for (String id : refs) if (sources.containsKey(id)) {
-                var source=sources.get(id);
+            // 同一页面的多个来源行合并成一个入口；正文仍保留每段的引用标记。
+            var merged = refs.stream().map(sources::get).filter(Objects::nonNull).toList();
+            for (var source : AnswerSourceLinks.dedupeByLocation(merged)) {
                 var link=modpack?SourceLinks.create(source.title(),source.location()):sourceLink(source);
                 if(modpack) link.getStyleClass().add("modpack-source-link");
                 links.getChildren().add(link);

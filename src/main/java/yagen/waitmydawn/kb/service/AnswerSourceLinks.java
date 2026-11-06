@@ -2,12 +2,20 @@ package yagen.waitmydawn.kb.service;
 
 import java.util.*;
 import java.util.regex.Pattern;
+import yagen.waitmydawn.kb.model.AnswerArtifacts;
 
 /** 来源链接写入回答 Markdown；会话持久化与重新渲染无需依赖当前检索状态。 */
 public final class AnswerSourceLinks {
     private AnswerSourceLinks() {}
     private static final Pattern NAME = Pattern.compile("(?m)^(?:名称|标题)：+\\s*(.+)$");
     private static final Pattern PROTECTED = Pattern.compile("(?s)(```.*?```|`[^`]*`|!?\\[[^\\]]*\\]\\([^\\n]*?\\)|https?://[^\\s<>]+)");
+
+    /** 同一页面的多条来源行只保留一个入口；正文引用标记仍可解析到原始 id。 */
+    public static List<AnswerArtifacts.Source> dedupeByLocation(Collection<AnswerArtifacts.Source> sources) {
+        var merged = new LinkedHashMap<String, AnswerArtifacts.Source>();
+        for (var source : sources) merged.putIfAbsent(Objects.toString(source.location(), source.id()), source);
+        return List.copyOf(merged.values());
+    }
 
     public static String enrich(String answer, List<VectorStore.SearchResult> evidence) {
         if (answer == null || evidence == null) return answer;
@@ -50,8 +58,7 @@ public final class AnswerSourceLinks {
         matcher.appendTail(result); return result.toString();
     }
 
-    public static boolean safeUrl(String value) {
-        try {
+    public static boolean safeUrl(String value) {        try {
             var uri = java.net.URI.create(value);
             return ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
                     && uri.getHost() != null && uri.getUserInfo() == null;

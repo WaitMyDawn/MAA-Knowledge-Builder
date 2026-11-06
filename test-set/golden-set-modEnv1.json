@@ -1,5 +1,5 @@
 {
-  "version": "3",
+  "version": "4",
   "name": "golden-set-modEnv1：当前快照、多来源获取、实体、玩法与外部网页",
   "environment": {
     "minecraft": "1.21.1",
@@ -31,7 +31,8 @@
       "交易、功能方块配方、属性和概率若未导出或未检索到，记录证据缺口，不能以编造满足要点。",
       "六位法师和两位Boss按现有modEnv1版本预期冻结；版本变化须审查题集。",
       "v2修正规则覆盖与中文问题线索；v1运行快照和人工评分保持不变。旧答案按v2检查只作诊断，不作同口径模型重测。",
-      "v3仅将Gameplay-04题面改为“冰火传说的龙鳞如何获取、有什么用途？”，去掉龙尸交互提示，其余60题、断言与会话结构与v2逐字相同。第三轮为首次v3运行；与v1/v2比较时该题单列，其余60题按相同问题交集比较。"
+      "v3仅将Gameplay-04题面改为“冰火传说的龙鳞如何获取、有什么用途？”，去掉龙尸交互提示，其余60题、断言与会话结构与v2逐字相同。第三轮为首次v3运行；与v1/v2比较时该题单列，其余60题按相同问题交集比较。",
+      "v4 规则下限修订（仅断言，题面不变）：Crafting-08 接受“炼金锅/炼金大锅/炼金坩埚/alchemist_cauldron”等同一工作站写法；Gameplay-08 以“明确否定可交互/可使用”或动作词判定，取代 answer_task_complete；Error-07 接受命名空间/实体名或生成群系/巢穴任一路证据，去掉 entity_resolved_any 的解析硬门；Error-06 保持原断言（错误前提的人工 A 属人工裁定，放宽会使第一轮人工 D 答案通过）。"
     ]
   },
   "conversations": [
@@ -389,7 +390,7 @@
               "weight": 1,
               "required": true,
               "values": [
-                "炼金锅|alchemist.?s cauldron|alchemy",
+                "炼金锅|炼金大锅|炼金坩埚|alchemist[_'’ ]?s?[_ ]?cauldron|alchemy",
                 "流浪商人|wandering trader",
                 "战利品|宝箱|箱子|loot"
               ],
@@ -1197,32 +1198,33 @@
           ],
           "assertions": [
             {
-              "kind": "no_error",
-              "weight": 1,
-              "required": true
+                "kind":  "no_error",
+                "weight":  1,
+                "required":  true
             },
             {
-              "kind": "runtime_snapshot_selected",
-              "weight": 1,
-              "required": true
+                "kind":  "runtime_snapshot_selected",
+                "weight":  1,
+                "required":  true
             },
             {
-              "kind": "answer_media_refs_valid",
-              "weight": 1,
-              "required": true
+                "kind":  "answer_media_refs_valid",
+                "weight":  1,
+                "required":  true
             },
             {
-              "kind": "answer_task_complete",
-              "required": true,
-              "weight": 1
+                "kind":  "answer_positive_matches",
+                "value":  "(?:不是|并非|不属于)[^。\\n]{0,12}(?:可)?(?:交互|使用)[^。\\n]{0,10}(?:对象|物品|方块|生物|实体|操作)",
+                "required":  true,
+                "weight":  1
             },
             {
-              "kind": "answer_not_contains",
-              "values": [
-                "请确认具体对象"
-              ],
-              "required": true,
-              "weight": 1
+                "kind":  "answer_not_contains",
+                "values":  [
+                               "请确认具体对象"
+                           ],
+                "required":  true,
+                "weight":  1
             }
           ]
         },
@@ -2395,33 +2397,25 @@
           ],
           "assertions": [
             {
-              "kind": "no_error",
-              "weight": 1,
-              "required": true
+                "kind":  "no_error",
+                "weight":  1,
+                "required":  true
             },
             {
-              "kind": "runtime_snapshot_selected",
-              "weight": 1,
-              "required": true
+                "kind":  "runtime_snapshot_selected",
+                "weight":  1,
+                "required":  true
             },
             {
-              "kind": "answer_media_refs_valid",
-              "weight": 1,
-              "required": true
+                "kind":  "answer_media_refs_valid",
+                "weight":  1,
+                "required":  true
             },
             {
-              "kind": "entity_resolved_any",
-              "values": [
-                "iceandfire:hydra"
-              ],
-              "required": true,
-              "weight": 1
-            },
-            {
-              "kind": "answer_positive_matches",
-              "value": "(?:(?:生成|出没|栖息|发现).{0,40}(?:群系|沼泽|巢穴|洞穴)|(?:群系|沼泽|巢穴|洞穴).{0,40}(?:生成|出没|栖息))",
-              "required": true,
-              "weight": 1
+                "kind":  "answer_positive_matches",
+                "value":  "iceandfire|Ice And Fire|hydra|九头蛇|沼泽|Swamp|Hydra Lair",
+                "required":  true,
+                "weight":  1
             }
           ]
         }

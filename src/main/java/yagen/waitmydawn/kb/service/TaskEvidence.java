@@ -6,7 +6,7 @@ import java.util.regex.Pattern;
 /** 取证完成检查是确定性下限；不能把属性表或缺口说明当作操作步骤。 */
 public final class TaskEvidence {
     private TaskEvidence() {}
-    private static final Pattern NEGATIVE=Pattern.compile(".*(?:未找到|未查到|没有找到|没有取得|未取得|未确认|无法确认|无法提供|无法给出|尚不能|尚未|未覆盖|缺少|没有明确|没有直接|未提供|未包含|没有说明|没有提供|没有给出|没有[^。！？\\n]{0,40}(?:包含|说明|证据)|请确认具体对象|如需更详细|需要你.*(?:明确|指定)).*");
+    private static final Pattern NEGATIVE=Pattern.compile(".*(?:未找到|未查到|没有找到|没有取得|未取得|未确认|无法确认|无法提供|无法给出|尚不能|尚未|未覆盖|缺少|没有明确|没有直接|未提供|未包含|没有说明|没有提供|没有给出|未读取|未核对|未查询|没有[^。！？\\n]{0,40}(?:包含|说明|证据)|请确认具体对象|如需更详细|需要你.*(?:明确|指定)).*");
     public static String positiveText(String text){
         var result=new StringBuilder();boolean uncertaintySection=false;
         for(String line:Objects.toString(text,"").replace("**","").replace("__","").split("\\R")){
